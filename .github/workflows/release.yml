@@ -66,8 +66,17 @@ jobs:
           path: ${{ runner.temp }}/release-plan.json
           retention-days: 7
 
-  publish:
+  validate:
+    name: Release validation
     needs: prepare
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml
+    with:
+      commit: ${{ needs.prepare.outputs.commit }}
+
+  publish:
+    needs: [prepare, validate]
     if: needs.prepare.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -125,7 +134,7 @@ jobs:
 
   reconcile:
     name: Verify current stable aliases
-    needs: prepare
+    needs: [prepare, validate]
     if: needs.prepare.outputs.reconcile == 'true'
     runs-on: ubuntu-latest
     permissions:

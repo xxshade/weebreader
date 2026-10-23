@@ -32,10 +32,10 @@ app/
 
 Tests: `python3 -m unittest discover -s tests -t .` (stdlib only). Also
 `pyflakes app scripts`, `node --check` on each JS file, and
-`scripts/test_webauthn_isolated.py`. Run validation locally and record results in
-the PR; GitHub Actions only publishes releases/packages and runs no tests.
-Both required desktop browsers remain mandatory; see
-`docs/testing/browser-checks.md` for local suites and mutation isolation.
+`scripts/test_webauthn_isolated.py`. The reusable Checks workflow runs the
+complete validation on PRs and the exact commit selected for publication or
+recovery. PRs also build Docker without publishing. Both desktop browsers remain
+mandatory; see `docs/testing/browser-checks.md` for suites and mutation isolation.
 
 ## Invariants that bite
 
