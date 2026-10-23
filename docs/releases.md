@@ -44,11 +44,11 @@ runtime dependencies or installation configuration:
    deliberate negative tests must capture and assert their expected failures.
 
 Create those three labels in the repository if they are not already available.
-GitHub Actions runs no PR checks or tests. Run the required validation locally
-before merging and record its results in the PR. CI test gates are intentionally
-deferred to conserve GitHub Actions minutes. Release labels and upgrade
-notes are checked during publication; missing or ambiguous metadata stops the
-release after the merge. After correcting metadata, retry **Release** on main.
+GitHub Actions validates PR release metadata and runs the full backend,
+static, WebAuthn and Chrome/Firefox suites. PRs also build the Docker image
+without publishing. Correct missing labels or upgrade notes in the PR before
+merging; metadata changes rerun the policy check without repeating unchanged
+source tests. Release planning checks the metadata again before publication.
 
 Documentation, screenshots, tests, CI and release tooling **alone** do not
 create releases. Eligibility is based on paths, not PR labels or title wording:
@@ -56,16 +56,18 @@ create releases. Eligibility is based on paths, not PR labels or title wording:
 Compose files and `.env.example`. Renaming or deleting runtime files still
 counts. A mixed application/documentation PR is eligible.
 
-Remove retired required status checks from branch protection/rulesets, if any:
-**Release label and upgrade notes**, **Backend and static checks**,
-**Chrome and Firefox**, and **Docker image**. Otherwise a check that no longer
-runs can block merging. This requires repository settings access; workflow
-changes do not edit those settings.
+The protected `main` branch requires an up-to-date PR with successful
+**Checks / Validation passed** and **Release metadata** checks, including for
+administrators. No additional reviewer approval is required. The aggregate
+validation check rejects failed, cancelled, skipped or missing required jobs.
+Only the disposable PR image build may be skipped during release validation:
+the publisher builds or recovers the actual versioned image after validation.
 
-Every push to `main` starts publication planning, but the release policy still
-requires an associated merged PR for application changes. A direct runtime push
-without one stops automatic publication; it does not bypass version labels or
-upgrade notes. Direct documentation/test/CI changes do not create a version.
+Workflow files do not themselves configure branch protection. Register these
+checks in repository settings after a successful run, preserving any other
+existing protection requirements. Application changes must still belong to an
+associated merged PR; passing tests do not bypass version labels or upgrade
+notes. Documentation/test/CI changes do not create a numbered release.
 
 ## How automatic publication works
 
@@ -86,7 +88,8 @@ The workflow then:
 2. Rejects any existing Git tag, GitHub Release or numbered registry image, and
    any version at or below an already published stable version. API/authentication
    errors fail the check instead of being interpreted as missing versions.
-3. Revalidates the plan and PR metadata and reserves a draft Release containing
+3. Runs the complete reusable validation on the exact selected source commit,
+   then revalidates the plan and PR metadata and reserves a draft Release containing
    the durable publication journal before the build.
 4. Builds/pushes `ghcr.io/xxshade/weebreader:X.Y.Z` once, or discovers the verified
    original image when recovering an interrupted publication.
@@ -95,9 +98,10 @@ The workflow then:
    the same bytes to `latest`. It marks publication complete only after all
    three registry digests match. Attestations remain in the copied index.
 
-These are publication integrity checks. Backend, static, browser and mutation
-tests, as well as PR-only Docker builds, do not run in GitHub Actions. A successful
-publication establishes artifact consistency, not an automated test result.
+Source validation and artifact consistency are separate requirements. The
+publication jobs depend on successful backend/static and both-browser validation
+of the selected commit; failed or incomplete validation prevents publication.
+Image identity and digest checks still run after the tests pass.
 
 Changes to labels or upgrade notes after planning invalidate the plan; rerun
 with the reviewed metadata. A failed run does not retry indefinitely. After
@@ -125,7 +129,7 @@ leave both inputs empty.
 
 Only `release.yml` publishes images. `latest` means the most recent completed
 stable release, rather than the newest push. Docs/tests/CI changes alone do not
-create a new image or version; they do not run tests in Actions. When no release
+create a new numbered image or version; they still run validation in Actions. When no release
 is pending and a stable release exists, the workflow verifies its aliases. This also aligns
 the previous rolling `latest` with the last numbered stable image during rollout,
 without rebuilding or changing an existing numbered or short commit tag.
@@ -134,7 +138,7 @@ A draft Release holds the exact reviewed plan and publication phase. If any
 external operation fails, rerun **Release** on main with empty inputs. The
 planner recovers the unfinished publication first, even when newer merges exist.
 It checks the original selected commit and reviewed metadata again and reuses
-its original image. Recovery does not run tests. When main has newer commits, completion
+its original image. Recovery reruns validation of that original source commit. When main has newer commits, completion
 queues another Release run automatically, so pending changes are not stranded
 after recovering an older image. This uses `GITHUB_TOKEN` with `actions: write`
 only in the follow-up job; no PAT is needed. If the failure happened between push and journal update,
@@ -163,7 +167,8 @@ or rebuild the image to work around a missing reservation.
 
 Local validation requires Chrome and Firefox desktop with mobile viewport
 simulations. Native Android is deferred and optional; see
-[Android validation](testing/android.md). None of these suites runs in Actions.
+[Android validation](testing/android.md). Desktop suites run in Actions; native
+Android checks and performance measurements remain optional and local.
 
 Back up and restore the matching persistent data when rolling back a database
 migration; image identity alone does not establish downgrade compatibility.

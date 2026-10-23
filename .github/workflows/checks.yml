@@ -1,0 +1,246 @@
+name: Checks
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Exact source commit to validate
+        required: true
+        type: string
+      build_image:
+        description: Build a disposable Docker image without publishing
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  APP_DATA_DIR: /tmp/weebreader-tests
+
+jobs:
+  backend:
+    name: Backend and static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Verify source commit
+        run: python -m scripts.ci_validation verify-checkout --commit "$SOURCE_COMMIT"
+        env:
+          SOURCE_COMMIT: ${{ inputs.commit }}
+      - name: Install development dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Backend, lint, JavaScript and WebAuthn
+        run: python -m scripts.ci_validation backend --logs "$RUNNER_TEMP/ci-logs"
+      - name: Install verified actionlint
+        run: |
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          gh release download v1.7.12 --repo rhysd/actionlint \
+            --pattern actionlint_1.7.12_linux_amd64.tar.gz \
+            --pattern actionlint_1.7.12_checksums.txt --dir "$RUNNER_TEMP/actionlint"
+          cd "$RUNNER_TEMP/actionlint"
+          sha256sum --check --ignore-missing actionlint_1.7.12_checksums.txt
+          tar -xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Validate workflows
+        run: actionlint .github/workflows/*.yml
+      - name: Validation summary
+        if: always()
+        run: python -m scripts.ci_validation summary --logs "$RUNNER_TEMP/ci-logs" --status "$JOB_STATUS"
+        env:
+          JOB_STATUS: ${{ job.status }}
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: backend-failure-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  versions:
+    name: Select stable browsers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      metadata: ${{ steps.resolve.outputs.metadata }}
+      chrome: ${{ steps.resolve.outputs.chrome }}
+      firefox: ${{ steps.resolve.outputs.firefox }}
+      suites: ${{ steps.resolve.outputs.suites }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Verify source commit
+        run: python -m scripts.ci_validation verify-checkout --commit "$SOURCE_COMMIT"
+        env:
+          SOURCE_COMMIT: ${{ inputs.commit }}
+      - name: Resolve current stable versions once
+        id: resolve
+        run: |
+          python scripts/browser_versions.py --output "$RUNNER_TEMP/browser-versions.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from scripts.ci_validation import BROWSER_SUITES
+          data = json.loads(Path(os.environ['RUNNER_TEMP'], 'browser-versions.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('metadata=' + json.dumps(data) + '\n')
+              output.write('suites=' + json.dumps(BROWSER_SUITES) + '\n')
+              for name, version in data['versions'].items():
+                  output.write(name + '=' + version + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('Selected stable browsers: `' + json.dumps(data['versions']) + '`\n')
+          PY
+
+  browsers:
+    name: ${{ matrix.browser }} / ${{ matrix.suite }}
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, firefox]
+        suite: ${{ fromJSON(needs.versions.outputs.suites) }}
+    env:
+      SE_CACHE_PATH: /tmp/weebreader-selenium
+      SE_AVOID_STATS: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Verify source commit
+        run: python -m scripts.ci_validation verify-checkout --commit "$SOURCE_COMMIT"
+        env:
+          SOURCE_COMMIT: ${{ inputs.commit }}
+      - name: Install development dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - uses: actions/cache@v5
+        with:
+          path: /tmp/weebreader-selenium
+          key: selenium-${{ runner.os }}-${{ matrix.browser }}-${{ matrix.browser == 'chrome' && needs.versions.outputs.chrome || needs.versions.outputs.firefox }}-v1
+      - name: Restore selected version metadata
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads(os.environ['BROWSER_METADATA'])
+          Path(os.environ['RUNNER_TEMP'], 'browser-versions.json').write_text(json.dumps(data))
+          PY
+        env:
+          BROWSER_METADATA: ${{ needs.versions.outputs.metadata }}
+      - name: Provision the selected browser and matching driver
+        run: |
+          python scripts/provision_webdrivers.py --browser "$BROWSER" \
+            --versions "$RUNNER_TEMP/browser-versions.json" \
+            --env "$RUNNER_TEMP/browser.env" --directory "$RUNNER_TEMP/browser-drivers"
+        env:
+          BROWSER: ${{ matrix.browser }}
+      - name: Run the complete browser suite and its controls
+        run: |
+          python -m scripts.ci_validation browser --browser "$BROWSER" --suite "$SUITE" \
+            --environment "$RUNNER_TEMP/browser.env" --logs "$RUNNER_TEMP/ci-logs"
+        env:
+          BROWSER: ${{ matrix.browser }}
+          SUITE: ${{ matrix.suite }}
+      - name: Confirm mutation controls restored the source
+        run: git diff --exit-code
+      - name: Validation summary
+        if: always()
+        run: python -m scripts.ci_validation summary --logs "$RUNNER_TEMP/ci-logs" --status "$JOB_STATUS"
+        env:
+          JOB_STATUS: ${{ job.status }}
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-failure-${{ matrix.browser }}-${{ matrix.suite }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ci-logs/
+            ${{ runner.temp }}/browser-versions.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  docker:
+    name: Docker build
+    if: inputs.build_image
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: 'false'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Verify source commit
+        run: python -m scripts.ci_validation verify-checkout --commit "$SOURCE_COMMIT"
+        env:
+          SOURCE_COMMIT: ${{ inputs.commit }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Build without publishing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,scope=ci,mode=min
+
+  passed:
+    name: Validation passed
+    needs: [backend, versions, browsers, docker]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Require every selected validation job
+        run: python -m scripts.ci_validation gate --build-image "$BUILD_IMAGE"
+        env:
+          BUILD_IMAGE: ${{ inputs.build_image }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          VERSIONS_RESULT: ${{ needs.versions.result }}
+          BROWSERS_RESULT: ${{ needs.browsers.result }}
+          DOCKER_RESULT: ${{ needs.docker.result }}
+      - name: Validation summary
+        if: always()
+        run: |
+          echo "Validation of source \`$SOURCE_COMMIT\`: **$JOB_STATUS**" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          SOURCE_COMMIT: ${{ inputs.commit }}
+          JOB_STATUS: ${{ job.status }}

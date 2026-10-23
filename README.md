@@ -86,7 +86,8 @@ Find available versions and their notes in [Releases](https://github.com/xxshade
 The first stable release is planned as `v8.3.6`, published manually through
 the Release workflow. Subsequent eligible merges publish new versions
 automatically. Backend checks and both desktop browser targets (Chrome and
-Firefox, including mobile viewport simulations) must be validated locally.
+Firefox, including mobile viewport simulations) are validated by CI before
+merge and again on the exact source commit selected for publication.
 Documentation, tests and CI changes alone do not create releases. No moving major/minor
 aliases are published.
 
@@ -208,7 +209,7 @@ application dependencies. They create temporary databases and media; no
 existing development server or library is required.
 
 ```bash
-./.venv/bin/pip install pyflakes requests soft-webauthn
+./.venv/bin/pip install -r requirements-dev.txt
 APP_DATA_DIR=/tmp/publication-reader-tests ./.venv/bin/python -m scripts.test_backend
 ./.venv/bin/pyflakes app scripts
 find app/static -name '*.js' -print0 | xargs -0 -n1 node --check
@@ -244,12 +245,15 @@ restarts, retained disk cache after browser restart, image preservation,
 navigation and the readers. `immutable` permits reuse while an image remains
 cached; browsers can still evict it when their cache fills.
 
-Run validation locally before merging and record the results in the PR.
-GitHub Actions runs only release/package publication on pushes to `main`
-(including direct pushes), plus manual recovery. It does not run PR or
-post-merge tests or PR-only Docker builds. The publisher checks release metadata
-and image identity; it does not enforce test results. Remove retired required
-status checks from branch protection/rulesets if they were configured.
+GitHub Actions runs backend/static checks, isolated WebAuthn and all desktop
+browser suites, including their mobile viewport simulations and mutation
+controls. PRs also build the Docker image without publishing. The required
+`Checks / Validation passed` and `Release metadata` checks protect `main`,
+including administrator merges; another person's approval is not required.
+Release publication and recovery wait for validation of their exact selected
+source commit. There is no scheduled daily run. Failure diagnostics are retained
+for seven days; summaries are written for every job. Local runs remain useful
+for development and diagnosis.
 Browser commands run both engines by default; see
 [browser validation](docs/testing/browser-checks.md) for the suites, target
 selection and isolation of deliberate-defect controls.

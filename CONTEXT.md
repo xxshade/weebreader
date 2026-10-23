@@ -42,7 +42,7 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 
 | Term | Meaning |
 | --- | --- |
-| Stable release | A numbered application version whose publication and artifact identity checks completed successfully. Publication does not attest that tests ran in GitHub Actions. |
+| Stable release | A numbered application version whose publication and artifact identity checks completed successfully. Artifact consistency and source validation are distinct requirements. |
 | Latest | The moving reference to the most recent successfully published stable release. It identifies the same published image as that release's numbered version. |
 | Commit alias | An additional reference to a released image, identifying the source commit from which it was built. It selects the same image as the corresponding numbered version. |
 | Initial publication | The explicitly authorized first stable publication in WeebReader's independent version history. It establishes the baseline for subsequent automatic versions. |
@@ -56,6 +56,7 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Browser validation target | One required browser at its selected stable version, evaluated across all required desktop and mobile viewport scenarios and deliberate-defect controls. |
 | Required browser coverage | Chrome/Chromium and Firefox desktop, including mobile viewport simulations in both. Both targets must pass. Native Android checks are deferred and optional. |
 | Android browser validation | Execution in an installed Android browser on a device or emulator, with the browser and operating system versions recorded. Desktop viewport emulation does not constitute Android browser validation. |
+| Source validation | Successful completion of all required checks for one exact source commit and its selected browser versions. Skipped, cancelled or incomplete checks do not constitute successful validation. |
 | Validation browser version | The current stable browser version selected for a local validation run and retained throughout that run. Its identity is part of the validation evidence. |
 
 ## Tracking configuration

@@ -3,10 +3,21 @@
 Required coverage is Chrome and Firefox, including the mobile viewport scenarios
 and deliberate-defect controls in each engine. Native Android remains deferred.
 
-Browser suites run locally. GitHub Actions is reserved for release/package
-publication on pushes to `main` and manual recovery; no PR or post-merge tests
-run there. Record local validation results in the PR. Publication does not
-assert that browser tests passed.
+The reusable Checks workflow runs every desktop suite on standard
+`ubuntu-latest` runners: one isolated job per browser and suite, with matrix
+fail-fast disabled. Versions are selected once per workflow and retained for
+all jobs; missing, skipped or failed coverage blocks the aggregate validation
+check. `scripts/ci_validation.py` lists the suites and preserves each runner's
+exit status. Android and performance-measurement tools remain optional.
+
+PRs run this workflow plus a Docker build without registry publication. Release
+runs on pushes to `main` and manual dispatches validate the exact planned source
+commit before image publication or recovery. There is no daily schedule.
+Summaries record the commit and outcomes; diagnostic artifacts are uploaded only
+on failure, retained for seven days. Browser profiles are not uploaded. Browser
+caches use version-specific keys and the repository's default storage cap.
+
+The same scripts run locally for development and diagnosis.
 
 Select the current stable versions once per local validation run with
 `python scripts/browser_versions.py --output browser-versions.json`, then

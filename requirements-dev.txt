@@ -1,0 +1,4 @@
+-r requirements.txt
+pyflakes==4.0.3
+requests==2.34.2
+soft-webauthn==0.1.3
