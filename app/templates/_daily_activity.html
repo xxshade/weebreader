@@ -1,0 +1,139 @@
+{# The daily charts and the control that picks their window.
+
+   Swapped as a whole by the range control (see /stats/daily-activity), so
+   everything that depends on the window lives INSIDE this element: the
+   heading, both charts, the axis labels, and which preset is highlighted.
+   Nothing outside it needs updating when the window changes, which is what
+   keeps a swap from leaving the page half-describing the old range.
+
+   Two measures on two separate charts rather than one with two scales:
+   minutes and pages do not share an axis, and overlaying them would invite
+   reading a crossing as meaning something. #}
+<div id="daily-activity"
+     data-window-start="{{ daily_window.start }}"
+     data-window-end="{{ daily_window.end }}"
+     {# The SERVER's today, not the browser's. The days are grouped in
+        the container's timezone (see queries.py), so a phone a day
+        ahead would otherwise be offered a date the chart calls the
+        future and get an empty column for it. #}
+     data-today="{{ today }}"
+     data-max-days="{{ max_window_days }}">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <h2 class="text-lg font-semibold">{{ daily_window.label }}</h2>
+
+        {# Ordinary links, so the section works with no JavaScript and a
+           window can be shared or bookmarked as a URL. htmx turns each one
+           into a swap of this element; stats-range.js owns only the custom
+           range, which has no single URL to link to until it is picked. #}
+        <nav class="flex flex-wrap items-center gap-2" role="group" aria-label="Chart window">
+            {% for preset in daily_presets %}
+            <a href="/stats?days={{ preset }}"
+               hx-get="/stats/daily-activity?days={{ preset }}"
+               hx-target="#daily-activity" hx-swap="outerHTML"
+               class="px-2 py-1 rounded text-xs {{ 'bg-neutral-800 text-neutral-100' if daily_window.preset == preset
+                      else 'text-neutral-400 hover:text-neutral-100 hover:bg-neutral-900' }}">
+                {{ preset }} days
+            </a>
+            {% endfor %}
+            <button type="button" id="range-custom-toggle" aria-expanded="false"
+                    class="px-2 py-1 rounded text-xs {{ 'bg-neutral-800 text-neutral-100' if daily_window.preset is none
+                           else 'text-neutral-400 hover:text-neutral-100 hover:bg-neutral-900' }}">
+                Custom…
+            </button>
+        </nav>
+    </div>
+
+    {# Built by stats-range.js when it is opened -- month navigation has to
+       be instant, and a server-rendered grid would mean a round trip per
+       arrow press for a calendar that is not yet asking anything. #}
+    <div id="range-picker" class="cal-panel" hidden>
+        <div class="cal-months" id="cal-months"></div>
+        <div class="cal-footer">
+            <span id="cal-summary" class="text-xs text-neutral-400">Pick a start date</span>
+            <span class="flex items-center gap-2">
+                <button type="button" data-cal-action="cancel"
+                        class="px-2 py-1 rounded text-xs text-neutral-400 hover:text-neutral-100 hover:bg-neutral-900">
+                    Cancel
+                </button>
+                <button type="button" data-cal-action="apply" disabled
+                        class="px-3 py-1 rounded text-xs bg-neutral-800 text-neutral-100">
+                    Apply
+                </button>
+            </span>
+        </div>
+    </div>
+
+    {# A column per day, stacked by what was read: one segment per kind,
+       comics at the baseline, in the fixed slots DAILY_KIND_SLOTS gives
+       them (router.py). The column's height is the day's TOTAL against the
+       window's peak, and the segments share it with flex-grow set to each
+       kind's own number -- so the split is exact without any rounding done
+       here, and the total the column stands for is still the one the old
+       single-colour column drew.
+
+       The hover layer is the whole column, gaps included, never the
+       painted pixels: one tooltip per day listing every kind and the
+       total (stats-daily.js). The same text is the column's aria-label, so
+       nothing the tooltip says is reachable ONLY by hovering. No `title`:
+       the native one would open on top of the tooltip a second later.
+
+       Keyboard: one column per chart is in the tab order (the latest
+       day); the arrow keys, Home and End walk the rest. #}
+    {% macro stacked(caption, measure, peak, peak_text, kinds) %}
+    <p class="text-xs text-neutral-500 mb-1" id="daily-{{ measure }}-caption">{{ caption }}</p>
+    <div class="viz-columns {{ 'viz-dense' if daily | length > 45 }} mb-1"
+         role="group" aria-labelledby="daily-{{ measure }}-caption" data-daily-chart>
+        {% for day in daily %}
+        {# A namespace, because a plain `set` inside the loop below would
+           be scoped to that loop and leave this list empty. #}
+        {% set tip = namespace(rows=[]) %}
+        {% for kind in kinds if kind in day.kinds or measure == 'comic_visits' %}
+        {% set tip.rows = tip.rows + [[daily_kind_labels.get(kind, kind),
+                                       caller(day.kinds.get(kind, {}).get(measure, 0)) | string,
+                                       daily_kind_slots.get(kind, 'none')]] %}
+        {% endfor %}
+        {% set rows = tip.rows %}
+        {% set total = (caller(day[measure]) | string) if day[measure] or measure == 'comic_visits' else 'nothing read' %}
+        <div tabindex="{{ 0 if loop.last else -1 }}" role="img"
+             aria-label="{{ day.label }}: {% for row in rows %}{{ row[0] }} {{ row[1] }}, {% endfor %}total {{ total }}"
+             data-tip='{{ {"day": day.label, "rows": rows, "total": total} | tojson }}'>
+            {% if day[measure] %}
+            <span class="viz-bar" style="height: {{ (day[measure] / peak * 100) | round(1) }}%;">
+                {% for kind in kinds if kind in day.kinds and day.kinds[kind][measure] %}
+                <span class="viz-{{ daily_kind_slots.get(kind, 'none') }}"
+                      style="flex-grow: {{ day.kinds[kind][measure] | round(1) }};"></span>
+                {% endfor %}
+            </span>
+            {% else %}
+            <span class="viz-empty"></span>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    <div class="flex items-center justify-between text-xs text-neutral-500">
+        <span>{{ daily[0].day }}</span>
+        <span>peak {{ peak_text }}</span>
+        <span>{{ daily[-1].day }}</span>
+    </div>
+    {% endmacro %}
+
+    {# The time chart legend includes every format contributing reading time.
+       The comic pages chart has only one category and needs no legend.
+       Only with two or more kinds in the window -- a single one is named
+       by the tooltip, and a legend box of one says nothing. A rect, as
+       the mark it keys is a filled segment. #}
+    {% if daily_kinds | length > 1 %}
+    <ul class="flex flex-wrap items-center gap-3 text-xs text-neutral-400 mb-3" aria-label="Legend">
+        {% for kind in daily_kinds %}
+        <li class="flex items-center gap-1.5">
+            <span class="viz-key viz-{{ daily_kind_slots.get(kind, 'none') }}" aria-hidden="true"></span>
+            {{ daily_kind_labels.get(kind, kind) }}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% call(value) stacked("Time read per day", "seconds", daily_max_seconds, daily_max_seconds | duration, daily_kinds) %}{{ value | duration }}{% endcall %}
+    <div class="mb-4"></div>
+    {% call(value) stacked("Comic pages per day", "comic_visits", daily_max_pages, daily_max_pages, ["cbz"]) %}{{ value }} page{{ 's' if value != 1 }}{% endcall %}
+</div>

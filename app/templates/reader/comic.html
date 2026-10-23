@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title }}{% endblock %}
+{# A reader is the page, edge to edge. viewport-fit=cover lets it paint
+   into a phone's safe areas, and the chrome and the live-update stream
+   are both dropped: there is no card here for an event to update, and a
+   reader tab is the one most likely to sit open for hours.
+
+   The body owning the viewport is deliberately NOT a block override: it
+   comes from `body:has(#reader-root)` in theme.css, which is inside the
+   markup a swap replaces where a class on <body> would not be. #}
+{% block viewport_content %}width=device-width, initial-scale=1.0, viewport-fit=cover{% endblock %}
+{# BOOSTED, like every other page. It was the one exception for a long
+   time, because a boosted navigation leaves the document in place and
+   `pagehide` -- where these readers save the position -- never fires. The
+   readers save on the two events htmx DOES raise now
+   (`htmx:before:history:update` for a link, `htmx:history:cache:hit` for
+   Back), take their own listeners with them when they go, and the live
+   stream is carried across the swap rather than torn down. See "Readers
+   are boosted too" in AGENTS.md for what that rests on. #}
+{% block chrome %}{% endblock %}
+{% block live_updates %}{% endblock %}
+{% block main_attrs %}class="h-full"{% endblock %}
+{% block content %}
+    <div id="reader-root"
+         data-item-id="{{ item.id }}"
+         {# The file's hash, put on every page URL this reader builds as
+            `?v=`. It is what lets /reader/{id}/page/{n} be answered
+            `immutable`: the URL itself is not content-addressed, so
+            without a version in it a replaced file would keep being
+            served from the browser's own cache. See
+            reader/router.py's _content_cache_headers. #}
+         data-version="{{ item.file_hash }}"
+         data-page-count="{{ item.page_count }}"
+         data-start-page="{{ progress.current_page if progress else 0 }}"
+         {# Where the SERVER had this when the page was rendered. It is the
+            baseline reader-resume.js measures a later answer against, so a
+            tab that was opened and never scrolled still notices another
+            device moving on while it sat in the back/forward cache. #}
+         data-start-percent="{{ progress.progress_percent if progress else 0 }}"
+         data-next-item-id="{{ next_item_id if next_item_id else '' }}"
+         {# The black a comic page is letterboxed against. On this
+            element rather than on <body> because this one is inside
+            the swap -- see body:has(#reader-root) in theme.css. #}
+         class="relative h-full w-full flex items-center justify-center bg-black">
+
+        <div id="page-single" class="h-full w-full flex" style="overflow: auto; justify-content: safe center; align-items: safe center;">
+            <img id="page-image" class="select-none" draggable="false">
+        </div>
+
+        <div id="page-double" class="hidden h-full w-full gap-0.5" style="overflow: auto; justify-content: safe center; align-items: safe center;">
+            <img id="page-image-right" class="select-none" draggable="false">
+            <img id="page-image-left" class="select-none" draggable="false">
+        </div>
+
+        <div id="page-scroll" class="hidden h-full w-full overflow-y-auto" style="overflow-anchor: none;"></div>
+
+        {# The end of the series, which is something the reader has to SAY.
+           A page turn past the last page of the last volume used to do
+           nothing at all -- advanceToNextChapter() returned at its first
+           line -- so the reader was left tapping a page that would not
+           move, with no way to tell that from a stuck app.
+
+           Rendered here rather than built in JS, so what the reader can
+           show is readable in the template. reader-comic.js decides WHERE:
+           over the page in the paged modes, where a turn is the gesture
+           that asks; moved to the foot of the strip in Continuous scroll,
+           where there is no such gesture and "below the last page" is the
+           only place the answer belongs. #}
+        <div id="series-end" class="hidden flex-col items-center justify-center gap-3 p-4 text-center">
+            <p class="text-xs text-neutral-500">End of series</p>
+            <p class="text-sm text-neutral-300">There is nothing after this one.</p>
+            <a href="{{ '/series/' ~ item.series_id if item.series_id else '/' }}"
+               class="text-sm rounded border border-neutral-700 px-4 py-2 text-neutral-200 hover:bg-neutral-800">Back to the series</a>
+        </div>
+
+        <div id="controls" class="absolute top-0 left-0 right-0 z-10 flex flex-wrap items-center justify-between gap-2 p-3 bg-gradient-to-b from-black/80 to-transparent opacity-0 pointer-events-none transition-opacity">
+            <a href="{{ '/series/' ~ item.series_id if item.series_id else '/' }}" class="text-sm">← Back</a>
+            <span id="page-indicator" class="text-sm"></span>
+            <div class="flex flex-wrap gap-1 text-xs items-center">
+                <div id="fit-group" class="flex gap-1 pr-2 mr-1 border-r border-neutral-700">
+                    <button data-fit="width" class="fit-btn px-2 py-1 bg-neutral-800 rounded">Width</button>
+                    <button data-fit="height" class="fit-btn px-2 py-1 bg-neutral-800 rounded">Height</button>
+                    <button data-fit="original" class="fit-btn px-2 py-1 bg-neutral-800 rounded">Original</button>
+                </div>
+                <button data-mode="single" class="mode-btn px-2 py-1 bg-neutral-800 rounded">Single</button>
+                <button data-mode="double" class="mode-btn px-2 py-1 bg-neutral-800 rounded">Double</button>
+                <button data-mode="scroll" class="mode-btn px-2 py-1 bg-neutral-800 rounded">Scroll</button>
+                <button id="btn-rtl" class="px-2 py-1 bg-neutral-800 rounded">Western</button>
+                <button id="btn-fullscreen" class="px-2 py-1 bg-neutral-800 rounded">Fullscreen</button>
+            </div>
+        </div>
+    </div>
+
+    {# The engine only. The two files it calls into
+       (window.readerResume, window.createReadingTimeTracker) are loaded
+       from <head> in base.html, because a swap re-executes what is in
+       page content and does NOT keep its order -- see the comment there. #}
+    <script src="{{ asset_url('js/reader-comic.js') }}" defer></script>
+{% endblock %}

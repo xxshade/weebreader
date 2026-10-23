@@ -1,0 +1,86 @@
+{# The home page's filters, behind the shared button.
+
+   They used to sit in the header row as two selects and an eye, which
+   together are 317px of a 390px content row -- so the row wrapped to two
+   lines at every phone width, and the search box, the control used most,
+   was left with whatever was over (158px at 360, narrower than the select
+   beside it). Widening the screen did not help: from 360 to 430 the wrap
+   is identical and every extra pixel goes to the search box, because what
+   decides it is the selects' own width and not the viewport's.
+
+   The button and the popover are the macro in _filters_panel.html, which
+   the series and web-novel pages call with their own one control. What
+   lives here is only what the HOME page filters by.
+
+   The controls stay in the DOM, hidden
+   inside the popover rather than rendered when it opens. That is what
+   lets applyFilters() and index.html's pre-paint block agree:
+   both restore the same controls and filter state, so the
+   two copies of the filter rule cannot fall out of step -- the same
+   reasoning that keeps a hidden status in the select's markup rather than
+   leaving it out. #}
+{% import "_filters_panel.html" as filters %}
+{% call filters.panel() %}
+<label class="flex items-center gap-3 text-sm text-neutral-400">
+    <span>Your status</span>
+    <select autocomplete="off" id="status-filter" aria-label="Your tracking status"
+            class="bg-neutral-950 border border-neutral-700 rounded px-2 py-1.5 text-sm text-neutral-100">
+        <option value="all">Show all</option>
+        {% for value, label in status_labels.items() %}
+        {# A status hidden in /settings shows no card regardless of this
+           filter's selection (see applyFilters in home.js), so its option
+           is rendered but hidden -- a dead choice that always yields zero
+           results. The eye below is what brings both the cards and these
+           options back, and it is marked server-side rather than removed
+           so that switch has something to unhide. #}
+        <option value="{{ value }}"{% if value in hidden_statuses %} data-hidden-status="1" hidden{% endif %}>{{ label }}</option>
+        {% endfor %}
+    </select>
+</label>
+{# The work's own status, beside the reader's. Every value a card can
+   carry is offered, novels included: their status comes from their source
+   page through publication_status_from_source, which only ever answers
+   with one of these or with nothing. #}
+<label class="flex items-center gap-3 text-sm text-neutral-400">
+    <span>Publication</span>
+    <select autocomplete="off" id="publication-filter" aria-label="Publication status"
+            class="bg-neutral-950 border border-neutral-700 rounded px-2 py-1.5 text-sm text-neutral-100">
+        <option value="all">Any publication</option>
+        {% for value, label in publication_labels.items() %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+    </select>
+</label>
+<label class="flex items-center gap-3 text-sm text-neutral-400">
+    <span>Unread only</span>
+    <input autocomplete="off" type="checkbox" id="home-unread-only" class="accent-indigo-600">
+</label>
+{# The one control that overrides the account's hidden statuses. Those are
+   set in /settings and are otherwise invisible from here: a series with a
+   hidden status is simply absent, and the only way to see it was to go and
+   uncheck the setting.
+
+   Still an EYE, and still the same checkbox underneath: the glyph is
+   decided by :checked in CSS and by nothing else, so it is right on the
+   first frame with no script. What changed with the move into a panel is
+   that .eye-label is VISIBLE -- the icon was wordless because the row it
+   lived in had no room for a word, and this panel does. #}
+<label id="show-hidden" class="eye-toggle flex items-center gap-3 cursor-pointer text-sm text-neutral-400 hover:text-neutral-100"
+       title="Also show series whose status is hidden in settings">
+    <span class="eye-label">Show everything</span>
+    <input autocomplete="off" type="checkbox" id="show-hidden-filter" class="eye-input">
+    <svg class="eye-open" width="20" height="20" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+         aria-hidden="true">
+        <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+    </svg>
+    <svg class="eye-closed" width="20" height="20" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+         aria-hidden="true">
+        <path d="M3 3l18 18"/>
+        <path d="M10.6 6.2A9.9 9.9 0 0 1 12 6c6.5 0 10 6 10 6a17 17 0 0 1-3.2 3.9"/>
+        <path d="M6.2 7.4A17 17 0 0 0 2 12s3.5 6 10 6a9.7 9.7 0 0 0 4-.8"/>
+        <path d="M9.9 10.1a3 3 0 0 0 4.1 4.2"/>
+    </svg>
+</label>
+{% endcall %}

@@ -1,0 +1,26 @@
+{# Expects: errors. Also rendered standalone as the htmx swap target for
+   "Clear list" -- see library/router.py's clear_errors, which re-renders
+   this same partial (now empty) instead of redirecting. #}
+<section id="processing-errors">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Processing errors</h2>
+        {% if errors %}
+        <form method="post" action="/library/issues/clear-errors"
+              hx-post="/library/issues/clear-errors" hx-target="#processing-errors" hx-swap="outerHTML">
+            <button class="text-sm text-neutral-400 hover:text-neutral-100">Clear list</button>
+        </form>
+        {% endif %}
+    </div>
+    {% if errors %}
+    <ul class="space-y-2">
+        {% for e in errors %}
+        <li class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm">
+            <span class="text-neutral-400">{{ e.occurred_at }}</span> — {{ e.file_path }}
+            <span class="block text-red-400 mt-1">{{ e.detail }}</span>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-sm text-neutral-500">No errors recorded.</p>
+    {% endif %}
+</section>

@@ -1,0 +1,13 @@
+{# Expects: series, items, progress_map. Also rendered standalone
+   (not just included from series.html) as the htmx swap target for the
+   mark-all-read/unread buttons -- see library/router.py's mark_series_read
+   /mark_series_unread, which return this same partial for an hx-request
+   instead of a redirect, so the whole grid reflects the new read state
+   without a page reload. #}
+<div id="items-grid" class="thumb-grid grid gap-4"
+     data-manual-sort="{{ 'true' if series.manual_sort_editing else 'false' }}"
+     data-reorder-url="/series/{{ series.id }}/manual-sort/reorder">
+    {% for item in items %}
+    {% include "library/_item_card.html" %}
+    {% endfor %}
+</div>

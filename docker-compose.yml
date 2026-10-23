@@ -1,0 +1,28 @@
+services:
+  app:
+    image: ${PUBLICATION_READER_IMAGE:-ghcr.io/xxshade/weebreader:latest}
+    environment:
+      APP_WEBAUTHN_RP_ID: ${APP_WEBAUTHN_RP_ID:?e.g. reader.yourdomain.com}
+      APP_WEBAUTHN_RP_NAME: "Publication Reader"
+      APP_WEBAUTHN_ORIGIN: ${APP_WEBAUTHN_ORIGIN:?e.g. https://reader.yourdomain.com}
+      # Controls both the app's own logger and uvicorn's request/startup
+      # logs (see entrypoint.sh). One of: DEBUG, INFO, WARNING, ERROR,
+      # CRITICAL. Optional -- defaults to INFO when unset.
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      # MyAnimeList tracking (optional -- leave unset and the MyAnimeList
+      # section simply cannot be connected; MangaUpdates needs none of
+      # this). Register an app at https://myanimelist.net/apiconfig and
+      # give it the REDIRECT URI below, character for character: MAL
+      # matches it exactly and refuses anything else.
+      #
+      # The SECRET is what MAL issues alongside the id for most app types,
+      # and its token endpoint answers `invalid_client: Client
+      # authentication failed` without it. Leave unset only for an app
+      # registered without one.
+      APP_MYANIMELIST_CLIENT_ID: ${APP_MYANIMELIST_CLIENT_ID:-}
+      APP_MYANIMELIST_CLIENT_SECRET: ${APP_MYANIMELIST_CLIENT_SECRET:-}
+      APP_MYANIMELIST_REDIRECT_URI: ${APP_MYANIMELIST_REDIRECT_URI:-}
+    volumes:
+      - ./data:/app/data
+      - ${LIBRARY_PATH:?path to your library on the host}:/media/library:ro
+    restart: unless-stopped

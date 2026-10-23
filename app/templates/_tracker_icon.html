@@ -1,0 +1,61 @@
+{# One icon per tracking SERVICE, and the one thing each of them says.
+
+   A macro because THREE places have to render it identically: the series
+   page, the novel page, and the panel itself -- which sends it back as an
+   out-of-band swap when a link or an unlink changes what it should say.
+   Two copies of this markup drifted apart the moment one of them learned
+   something, which is the same reason `_series_headline` and
+   `_novel_headline` are macros.
+
+   TWO icons rather than one, because there are two services and every
+   question you can ask about them is per service: whether this shelf is
+   linked to it, what it holds, what to send it. One icon could only ever
+   report a COUNT, and every click on it then began by asking which one
+   you meant.
+
+   The colour IS the state, and with the count now visible in the icons
+   themselves it is down to two: grey unlinked, a soft green linked. Muted
+   -300 tones on purpose -- it sits inches from the status badges, and a
+   saturated icon reads as a warning. (The DOT on the home grid keeps its
+   three colours: there is only one of it per cover, so there the count is
+   still all it can say.)
+
+   The mark is the service's own short name in a box rather than a glyph:
+   a "report this outwards" arrow said what tracking DOES, which was the
+   right icon while there was one of them and says nothing about WHICH
+   service once there are two. Drawn as SVG text so it needs no font
+   utility and no new stylesheet rule, and so it scales with the 16px row
+   the other icons sit on.
+
+   The click handler is DELEGATED from the document (tracker-toggle.js)
+   because an out-of-band swap replaces the button -- a listener bound to
+   this node would go with it on the first swap, and silently, since the
+   button would still be there and still do nothing. #}
+{% macro icon(tracker, target_name, target_value, oob=False) %}
+<button type="button" id="tracking-toggle-{{ tracker.name }}"
+        data-tracker-dialog="{{ tracker.name }}"
+        {# Read by tracker-toggle.js, which empties the panel on the click
+           and names what it is waiting for. The label and not the short
+           mark: the box it lands in has room, and "MU" is what is already
+           on the icon being pressed. #}
+        data-tracker-label="{{ tracker.label }}"
+        {% if oob %}hx-swap-oob="true"{% endif %}
+        aria-haspopup="dialog"
+        hx-get="/tracking/{{ tracker.name }}/panel?{{ target_name }}={{ target_value }}"
+        hx-target="#tracker-panel" hx-swap="outerHTML"
+        title="{{ tracker.label }}{% if tracker.link %} — linked to {{ tracker.link.remote_title }}{% else %} — not linked{% endif %}"
+        aria-label="{{ tracker.label }} tracking"
+        class="cursor-pointer flex-shrink-0 flex items-center hover:text-neutral-100 {{ 'text-emerald-300' if tracker.link else 'text-neutral-500' }}">
+    <svg width="26" height="16" viewBox="0 0 26 16" fill="none" aria-hidden="true">
+        <rect x="0.75" y="0.75" width="24.5" height="14.5" rx="3"
+              stroke="currentColor" stroke-width="1.5"></rect>
+        {# dominant-baseline rather than a hand-tuned y: the two labels are
+           three characters and two, and centring them by eye put one of
+           them a pixel low against the other at 16px. #}
+        <text x="13" y="8.5" fill="currentColor" stroke="none"
+              text-anchor="middle" dominant-baseline="central"
+              style="font-size: 8px; font-weight: 600; letter-spacing: 0.2px;"
+              >{{ tracker.short }}</text>
+    </svg>
+</button>
+{% endmacro %}

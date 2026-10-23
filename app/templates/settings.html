@@ -1,0 +1,467 @@
+{% extends "base.html" %}
+{% import "_tooltip.html" as tip %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+{#
+  Every class here was checked against app/static/src/app.css before being
+  written: it is a hand-maintained stylesheet with no generator, so a class
+  with no rule silently does nothing.
+
+  The page is one column of sections, each separated by a rule and each
+  built the same way: heading, at most one line saying what the setting
+  does, then the control. It used to be a stack of same-weight <h2>s with
+  no page title above them and three-sentence paragraphs between them, so
+  there was nothing to tell "which group am I in" from "what does this
+  do", and the settings themselves were the smallest thing on screen.
+  Anything a sentence here used to explain at length now lives in the
+  commit that added it -- the same treatment the project notes got.
+
+  Grouped by what you are changing, not by when each was built: your
+  account, how the app looks, how reading is measured and shown, the
+  library, then the novels being scraped.
+#}
+<div class="max-w-2xl mx-auto space-y-3">
+
+    <h1 class="text-xl font-semibold mb-4">Settings</h1>
+
+    <section id="profile" class="border-t border-neutral-800">
+        <div class="tip-row">
+            <h2 class="text-lg font-semibold mt-4 mb-2">Account</h2>
+            {% call tip.help("What the avatar is used for") %}
+                An avatar replaces your name in the header. Any picture will do —
+                it is re-encoded to a 128x128 WebP.
+            {% endcall %}
+        </div>
+        {% if profile_error %}
+        <p class="text-sm text-red-400 mb-3">
+            {% if profile_error == "no-file" %}No file was selected.
+            {% elif profile_error == "too-large" %}That image is too large (10 MB maximum).
+            {% elif profile_error == "not-an-image" %}That file could not be read as an image.
+            {% elif profile_error == "bad-cap" %}The page time limit must be between 5 and 3600 seconds.
+            {% elif profile_error == "bad-blur" %}The cover blur must be between {{ min_cover_blur }} and {{ max_cover_blur }} pixels.
+            {% endif %}
+        </p>
+        {% endif %}
+        <div class="flex items-center gap-4 mb-3">
+            <div class="avatar-preview rounded-full overflow-hidden bg-neutral-800 flex-shrink-0 flex items-center justify-center">
+                {% if user.avatar_path %}
+                <img src="/covers/{{ user.avatar_path }}" alt="" class="w-full h-full object-cover">
+                {% else %}
+                <span class="text-sm text-neutral-500">{{ user.username[:1]|upper }}</span>
+                {% endif %}
+            </div>
+            <div class="min-w-0 flex flex-wrap items-center gap-2">
+                {# The native file input cannot be styled to match anything
+                   else here, so it is hidden behind a label wearing the
+                   button style -- the same treatment the series cover
+                   upload already uses. #}
+                <form method="post" action="/settings/avatar" enctype="multipart/form-data"
+                      class="flex items-center gap-2">
+                    <label class="btn cursor-pointer">
+                        Choose image
+                        <input type="file" name="avatar" accept="image/*" class="hidden"
+                               onchange="this.form.requestSubmit()">
+                    </label>
+                </form>
+                {% if user.avatar_path %}
+                <form method="post" action="/settings/avatar/remove">
+                    <button class="btn">Remove</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+        <a href="/settings/security"
+           class="flex items-center justify-between bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm hover:bg-neutral-800">
+            <span>Password, two-factor and passkeys</span>
+            <span class="text-neutral-600">›</span>
+        </a>
+    </section>
+
+    <section id="appearance" class="border-t border-neutral-800">
+        <div class="tip-row">
+            <h2 class="text-lg font-semibold mt-4 mb-2">Appearance</h2>
+            {% call tip.help("What the app theme covers") %}
+                AMOLED paints the background pure black instead of near-black,
+                switching those pixels off entirely on an OLED screen. This is the
+                app itself — each reader has its own theme in its “Aa” panel.
+            {% endcall %}
+        </div>
+        <label class="flex items-center gap-2 text-sm mb-3">
+            Theme
+            <select autocomplete="off" id="app-theme-select"
+                    class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-300">
+                <option value="dark">Dark</option>
+                <option value="amoled">AMOLED (pure black)</option>
+            </select>
+        </label>
+        {# On by default on a phone or tablet, which is the whole point of
+           it; here so it can be turned off without hunting for the
+           reader's own toggle. Hidden where the browser has no Fullscreen
+           API at all (iOS Safari on iPhone) -- see appearance.js. #}
+        <label id="app-fullscreen-row" class="hidden tip-anchor items-center gap-2 bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm cursor-pointer hover:bg-neutral-800">
+            <input autocomplete="off" type="checkbox" id="app-fullscreen-toggle" class="accent-indigo-600">
+            <span>Full screen on phones and tablets</span>
+            {% call tip.help("What full screen does on a phone") %}
+                Hides the browser's own toolbar. It takes one tap on each
+                page, since a browser only allows this in response to a
+                gesture — installed as an app, it is simply always on.
+            {% endcall %}
+        </label>
+    </section>
+
+    <section id="reading-time" class="border-t border-neutral-800">
+        <div class="tip-row">
+            <h2 class="text-lg font-semibold mt-4 mb-2">Reading time</h2>
+            {% call tip.help("How the page time limit is applied") %}
+                Comics use a limit per page visit. EPUBs and web novels use a
+                separate limit per 300 words, with at least 30 seconds per text
+                passage. Hidden readers pause timing. A passage reaching its
+                limit does not contribute to words-per-minute estimates.
+                Changing a limit is not
+                retroactive — every page already recorded keeps the limit it was
+                measured under, so your
+                <a href="/stats">statistics</a>
+                never change behind you.
+            {% endcall %}
+        </div>
+        <form method="post" action="/settings/page-time-cap" class="flex flex-wrap items-center gap-2"
+              hx-post="/settings/page-time-cap" hx-swap="none">
+            <label class="text-sm" for="cap-seconds">Comic page visit limit</label>
+            <input autocomplete="off" id="cap-seconds" name="cap_seconds" type="number" min="5" max="3600" required
+                   value="{{ user.page_time_cap_seconds }}"
+                   class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-300"
+                   style="width: 6rem;">
+            <span class="text-sm text-neutral-500">seconds</span>
+            <button class="btn">Save</button>
+            <span class="save-flash hidden text-xs text-indigo-400">Saved</span>
+        </form>
+        <form method="post" action="/settings/text-time-cap" class="flex flex-wrap items-center gap-2 mt-2"
+              hx-post="/settings/text-time-cap" hx-swap="none">
+            <label class="text-sm" for="text-cap-seconds">Text limit per 300 words</label>
+            <input autocomplete="off" id="text-cap-seconds" name="cap_seconds" type="number" min="5" max="3600" required
+                   value="{{ user.text_time_cap_seconds }}"
+                   class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-300"
+                   style="width: 6rem;">
+            <span class="text-sm text-neutral-500">seconds (minimum 30 seconds per passage)</span>
+            <button class="btn">Save</button>
+            <span class="save-flash hidden text-xs text-indigo-400">Saved</span>
+        </form>
+    </section>
+
+    {# Anchored: the add/delete endpoints redirect back to /settings, and
+       this section is well down the page. #}
+    <section id="text-replacements" class="border-t border-neutral-800">
+        <div class="tip-row">
+            <h2 class="text-lg font-semibold mt-4 mb-2">Text replacements</h2>
+            {% call tip.help("What a text replacement changes") %}
+                Show one piece of text as another while reading a book or a web
+                novel. This changes what the reader draws and nothing else — the
+                file on disk and the scraped chapter are never touched, so
+                removing a rule puts the original back.
+            {% endcall %}
+        </div>
+        {% if replacement_targets %}
+        {# hx-post + hx-target: adding a rule swaps the list below and
+           leaves the rest of the page alone. method/action stay so the
+           same endpoint still answers a plain POST with a redirect when
+           htmx is not there. #}
+        <form method="post" action="/settings/text-replacements"
+              hx-post="/settings/text-replacements"
+              hx-target="#replacement-rules" hx-swap="outerHTML"
+              id="add-replacement" class="space-y-2 mb-4">
+            {# data-searchable turns this into a type-to-filter box (see
+               searchable-select.js). Progressive enhancement on purpose:
+               this form is a plain POST, so without JS the native <select>
+               is still what submits. A library is long enough that scrolling
+               it to find one name is the wrong control.
+
+               One select, not two: a rule belongs to exactly one series or
+               one novel, and two controls would let you pick both.
+               Comic-only series are not listed -- there is no text in a page
+               of a comic to substitute. #}
+            <select autocomplete="off" name="target" required data-searchable aria-label="Which series or novel"
+                    class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm">
+                <option value="" disabled selected>Which series or novel…</option>
+                {% for target in replacement_targets %}
+                <option value="{{ target.value }}">{{ target.name }} ({{ target.kind }})</option>
+                {% endfor %}
+            </select>
+            <div class="flex flex-col sm:flex-row gap-2">
+                <input autocomplete="off" name="find_text" required placeholder="Find this text"
+                       class="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm">
+                <input autocomplete="off" name="replace_text" placeholder="Show this instead"
+                       class="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm">
+                <button class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm font-medium whitespace-nowrap">Add</button>
+            </div>
+        </form>
+        {% else %}
+        <p class="text-sm text-neutral-500 mb-4">
+            Nothing to attach a rule to yet — add a web novel below, or scan a
+            library holding EPUBs.
+        </p>
+        {% endif %}
+
+        {% include "_replacement_rules.html" %}
+    </section>
+
+    {# Anchored: the connect/disconnect endpoints redirect back to
+       /settings#tracking, and this section is well down the page. #}
+    <section id="tracking" class="border-t border-neutral-800">
+        <div class="tip-row">
+            <h2 class="text-lg font-semibold mt-4 mb-2">Tracking</h2>
+            {% call tip.help("What a tracking account is used for") %}
+                Reports how far you have read. Nothing is sent until you open
+                a series or a novel and link it to an entry yourself — a lot
+                of what this app holds is not in either catalogue, and leaving
+                those untracked is the normal case. MyAnimeList asks for your
+                password on its own page and hands this app a token instead;
+                MangaUpdates has no such flow, so its password is used once,
+                to get a session, and is never stored.
+            {% endcall %}
+        </div>
+        {% if tracker_error %}
+        <p class="text-sm text-red-400 mb-3">
+            {% if tracker_error == "bad-credentials" %}That username and password were not accepted.
+            {% elif tracker_error == "unreachable" %}Could not reach the service. Try again in a moment.
+            {% elif tracker_error == "bad-callback" %}That sign-in did not complete. Start it again from here.
+            {% elif tracker_error == "not-configured" %}
+                MyAnimeList is not configured. Set APP_MYANIMELIST_CLIENT_ID and
+                APP_MYANIMELIST_REDIRECT_URI to the values registered for your own
+                MyAnimeList app, then restart the server.
+            {% elif tracker_error == "refused" %}
+                {# The service's OWN words. A generic "did not complete"
+                   named nothing, and a sign-in refused for a fixable
+                   reason ("Client authentication failed" — a missing
+                   client secret) looked exactly like one that had simply
+                   done nothing. #}
+                The service refused the sign-in{% if tracker_detail %}: {{ tracker_detail }}{% endif %}
+            {% endif %}
+        </p>
+        {% endif %}
+
+        {# One block per service. They are separate accounts and separate
+           links, and connecting one says nothing about the other. #}
+        {% for tracker in trackers %}
+        <div class="{{ 'mt-4' if not loop.first else '' }}">
+            {% if tracker.account %}
+            <div class="flex flex-wrap items-center gap-3 bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm">
+                <span class="min-w-0 truncate">
+                    {{ tracker.label }} as <span class="text-neutral-400">{{ tracker.account.username }}</span>
+                </span>
+                <form method="post" action="/settings/tracking/{{ tracker.name }}/disconnect" class="ml-auto">
+                    <button class="btn">Disconnect</button>
+                </form>
+            </div>
+            {% if tracker.account.last_error %}
+            {# A session that has ended fails every push silently otherwise
+               -- this is the only place that can say "sign in again". #}
+            <p class="text-xs text-red-400 mt-2">{{ tracker.account.last_error }} — sign in again.</p>
+            {% endif %}
+
+            {% elif tracker.name == "myanimelist" %}
+            {# OAuth: no password is typed here at all. The button starts a
+               handshake and MyAnimeList asks for the password on its own
+               page, which is the point of doing it this way. #}
+            <form method="post" action="/settings/tracking/myanimelist/connect"
+                  class="flex items-center gap-3 bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm">
+                <span>{{ tracker.label }}</span>
+                <button class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-1.5 text-sm font-medium ml-auto">Connect</button>
+            </form>
+
+            {% else %}
+            {# MangaUpdates has no OAuth: its API trades a username and
+               password for a session token. The password is used for that
+               one request and never stored. #}
+            {# The label is rendered even though the placeholders name the
+               service: with two forms on screen, "which one am I filling
+               in" has to be answerable without reading a placeholder that
+               disappears the moment you type. #}
+            <p class="text-sm mb-1">{{ tracker.label }}</p>
+            <form method="post" action="/settings/tracking/{{ tracker.name }}/connect"
+                  class="flex flex-col sm:flex-row gap-2">
+                <input name="username" required placeholder="{{ tracker.label }} username" autocomplete="username"
+                       class="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm">
+                <input name="password" type="password" required placeholder="Password" autocomplete="current-password"
+                       class="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm">
+                <button class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm font-medium whitespace-nowrap">Connect</button>
+            </form>
+            {% endif %}
+        </div>
+        {% endfor %}
+        <p class="text-xs text-neutral-500 mt-3">
+            Disconnecting a service also forgets which series were linked to it.
+        </p>
+    </section>
+
+    <section id="library" class="border-t border-neutral-800">
+        <div class="tip-row">
+            <h2 class="text-lg font-semibold mt-4 mb-2">Library</h2>
+            {% call tip.help("What hiding a status does") %}
+                Series with a status checked here are hidden from browsing by
+                default. Same as the status filter on the library page — searching
+                by name still finds them.
+            {% endcall %}
+        </div>
+        <form method="post" action="/settings/hidden-statuses" class="space-y-2 mb-3"
+              hx-post="/settings/hidden-statuses" hx-swap="none">
+            {% for value, label in status_labels.items() %}
+            <label class="flex items-center gap-2 bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm cursor-pointer hover:bg-neutral-800">
+                <input autocomplete="off" type="checkbox" name="hidden_statuses" value="{{ value }}"
+                       {{ 'checked' if value in hidden_statuses else '' }}
+                       class="accent-indigo-600">
+                {{ label }}
+            </label>
+            {% endfor %}
+            <div class="flex items-center gap-2 mt-1">
+                <button class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm font-medium">Save</button>
+                <span class="save-flash hidden text-xs text-indigo-400">Saved</span>
+            </div>
+        </form>
+
+        {# How hard a blurred cover is blurred. WHICH covers are blurred is
+           set per series, on the series page -- what is on a cover is a
+           fact about the book; how hard to hide it is about the room you
+           are in, so it is one number here rather than one per cover. #}
+        <div class="tip-row">
+            <label class="text-sm" for="cover-blur">Cover blur</label>
+            {% call tip.help("Where the cover blur applies") %}
+                Only on this page's home grid, and only for a series with
+                “Blur this cover on the home page” ticked on its own page —
+                that is the one screen showing every cover at once. The series
+                page, the reader and the “Reading” strip are places you opened
+                on purpose, and they show the cover as it is.
+            {% endcall %}
+        </div>
+        {# The slider saves itself on release (`change`, not `input`, which
+           would post once per pixel travelled). No Save button: with the
+           reload gone there is nothing for one to do that letting go of the
+           handle does not, and the sample beside it already shows the
+           result. method/action stay, so with no JavaScript the button
+           below is the one that submits. #}
+        <form method="post" action="/settings/cover-blur" class="flex items-center gap-3 mb-3"
+              hx-post="/settings/cover-blur" hx-trigger="change" hx-swap="none">
+            <input autocomplete="off" id="cover-blur" name="blur_px" type="range"
+                   min="{{ min_cover_blur }}" max="{{ max_cover_blur }}" step="1"
+                   value="{{ user.cover_blur_px }}" data-range-value="px"
+                   class="w-28 accent-indigo-600">
+            {# A number of pixels says nothing about whether a cover is still
+               recognisable, which is the only thing this setting decides, so
+               the slider is shown doing it to a real cover from the library.
+               Absent rather than faked when there is no cover to show. #}
+            {% if blur_preview_cover %}
+            <div id="cover-blur-preview" class="cover flex-shrink-0"
+                 style="--cover-blur: {{ user.cover_blur_px }}px; width: 2.5rem;">
+                <img src="/covers/{{ blur_preview_cover }}" alt="" class="cover-blur">
+            </div>
+            {% endif %}
+            <noscript><button class="btn">Save</button></noscript>
+            <span class="save-flash hidden text-xs text-indigo-400">Saved</span>
+        </form>
+
+        <a href="/library/issues"
+           class="flex items-center justify-between bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm hover:bg-neutral-800">
+            <span class="flex items-center gap-2">
+                Problem items
+                {# Only rendered when there is actually something to look at,
+                   so the entry stays quiet the rest of the time. Sized with
+                   an inline style on purpose: app.css is frozen and has no
+                   w-2/h-2 rule, so those would silently collapse the dot to
+                   nothing. #}
+                {% if problem_count %}
+                <span class="inline-block bg-red-600 rounded-full"
+                      style="width: 0.5rem; height: 0.5rem;"
+                      title="{{ problem_count }} problem item{{ 's' if problem_count != 1 else '' }}"></span>
+                {% endif %}
+            </span>
+            <span class="text-neutral-600">›</span>
+        </a>
+    </section>
+
+    {# Scan progress. Populated entirely by library-events.js: it asks
+       /library/job-status once on load (for a scan already under way when
+       this page opened) and then follows scan_progress events on the SSE
+       stream it already holds open. Rows are rendered per library so
+       "which library is this?" never has to be guessed; each starts hidden
+       and is revealed when there is something to report. #}
+    <section id="scan-status-section" data-job-section class="hidden border-t border-neutral-800">
+        <h2 class="text-lg font-semibold mt-4 mb-2">Scans</h2>
+        <ul class="space-y-2">
+            {% for library in libraries %}
+            <li class="job-row hidden bg-neutral-900 border border-neutral-800 rounded px-3 py-2"
+                data-job-key="scan:{{ library.id }}">
+                <div class="flex items-center justify-between gap-3">
+                    <span class="text-sm min-w-0 truncate">{{ library.name }}</span>
+                    <span class="job-counts text-xs text-neutral-400 flex-shrink-0"></span>
+                </div>
+                <div class="mt-2 h-1 bg-neutral-800 rounded overflow-hidden">
+                    <div class="job-bar h-full bg-indigo-500 transition" style="width: 0%"></div>
+                </div>
+                {# break-all: a file name with no spaces has no natural wrap
+                   point and would otherwise widen the whole row. #}
+                <p class="job-current mt-1 text-xs text-neutral-500 break-all"></p>
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section id="novels" class="border-t border-neutral-800">
+        <div class="tip-row">
+            <h2 class="text-lg font-semibold mt-4 mb-2">Web novels</h2>
+            {% call tip.help("What adding a novel does") %}
+                Add a novel's page URL to start scraping it. It syncs immediately,
+                then periodically to pick up new chapters.
+            {% endcall %}
+        </div>
+        <form method="post" action="/settings/novels/add" class="flex gap-2 mb-4">
+            <input autocomplete="off" name="source_url" type="url" placeholder="https://..." required
+                   class="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm">
+            <button class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm font-medium whitespace-nowrap">Add</button>
+        </form>
+
+        {% if novels %}
+        <ul class="space-y-2">
+            {% for novel in novels %}
+            {% set counts = chapter_counts.get(novel.id, (0, 0)) %}
+            <li class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div class="min-w-0">
+                        <a href="/novels/{{ novel.id }}" class="text-sm hover:text-indigo-400 truncate block">{{ novel.title }}</a>
+                        <p class="text-xs text-neutral-500 mt-0.5">
+                            {{ counts[1] }}/{{ counts[0] }} chapter(s) downloaded
+                            {% if not novel.active %}· inactive (won't auto-sync){% endif %}
+                        </p>
+                        {# break-all: a sync failure quotes the underlying
+                           error, which routinely contains a long URL with no
+                           spaces in it -- with no wrap point that one line
+                           widens the whole settings page past the viewport
+                           (measured at 390px: 575px of scroll width against
+                           390 available). #}
+                        <p class="text-xs mt-0.5 break-all {{ 'text-red-400' if novel.sync_status == 'error' else 'text-neutral-500' }}">
+                            {{ novel.sync_error if novel.sync_status == 'error' and novel.sync_error else novel.sync_status }}
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-1 flex-shrink-0 text-xs">
+                        <form method="post" action="/settings/novels/{{ novel.id }}/sync">
+                            <button class="bg-neutral-800 hover:bg-neutral-700 rounded px-2.5 py-1.5">Sync now</button>
+                        </form>
+                        <form method="post" action="/settings/novels/{{ novel.id }}/toggle-active">
+                            <button class="bg-neutral-800 hover:bg-neutral-700 rounded px-2.5 py-1.5">
+                                {{ 'Deactivate' if novel.active else 'Activate' }}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-neutral-500">No novels added yet.</p>
+        {% endif %}
+    </section>
+</div>
+<script src="{{ asset_url('js/tooltip.js') }}" defer></script>
+<script src="{{ asset_url('js/appearance.js') }}" defer></script>
+<script src="{{ asset_url('js/searchable-select.js') }}" defer></script>
+<script src="{{ asset_url('js/text-replacements.js') }}" defer></script>
+<script src="{{ asset_url('js/settings-save.js') }}" defer></script>
+{% endblock %}

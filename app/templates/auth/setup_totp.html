@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Set up TOTP{% endblock %}
+{% block content %}
+<div class="max-w-sm mx-auto mt-16">
+    <h1 class="text-xl font-semibold mb-4">Set up two-factor authentication</h1>
+    <div class="flex justify-center mb-4">
+        <img src="{{ qr_data_uri }}" alt="TOTP QR code" width="200" height="200" class="rounded bg-white p-2">
+    </div>
+    <p class="text-sm text-neutral-400 mb-3">Scan the QR code above with your authenticator app (Aegis, Google Authenticator, etc.), or enter this secret manually:</p>
+    <code class="block bg-neutral-900 border border-neutral-700 rounded px-3 py-2 mb-4 break-all">{{ secret }}</code>
+    {% if error %}<p class="text-sm text-red-400 mb-4" role="alert">{{ error }}</p>{% endif %}
+    {# hx-boost="false": a plain POST, so a refusal comes back as this page
+       with its reason. Boosted, it came back as a 4xx, which htmx never
+       swaps (base.html's noSwap) -- a wrong password looked like nothing
+       happening at all. On the form rather than as the page's boost block,
+       because a boosted visit (Log out -> /login) keeps the old <body>. #}
+    <form method="post" action="/settings/totp" class="space-y-3" hx-boost="false">
+        <input type="hidden" name="secret" value="{{ secret }}">
+        <input name="code" placeholder="6-digit code" required
+               class="input">
+        <button class="btn-primary">Confirm</button>
+    </form>
+</div>
+{% endblock %}

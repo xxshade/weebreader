@@ -1,0 +1,66 @@
+{# The novel page's "Edit title and description" dialog's contents, as their own partial
+   so both endpoints can hand back exactly this markup instead of a
+   redirect -- the same shape as the series page's _series_edit.html, and
+   for the same reason: the panel re-renders in place inside the dialog
+   (novels/detail.html), so the dialog stays open and the page does not
+   reload, and the title and the description can be
+   fixed in one sitting.
+
+   They are two separate forms rather than one: they are different lengths
+   and different kinds of writing, and saving a corrected title should not
+   re-submit a paragraph you never touched.
+
+   `oob` is only true on those responses, never on the initial include --
+   the heading and the description sit outside this panel, so a save has to
+   reach them out of band. #}
+{% import "library/_controls.html" as ui %}
+{% import "novels/_novel_headline.html" as headline %}
+{% if oob %}
+{{ headline.title(novel, oob=True) }}
+{{ headline.synopsis(novel, oob=True) }}
+{% endif %}
+<div id="novel-edit">
+    {% if edit_error %}
+    <p class="text-sm text-red-400 mb-3">{{ edit_error }}</p>
+    {% endif %}
+
+    <form method="post" action="/novels/{{ novel.id }}/title" class="mb-2"
+          hx-post="/novels/{{ novel.id }}/title" hx-target="#novel-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+        <label class="block text-xs text-neutral-500 mb-2" for="novel-title-input">Title</label>
+        <div class="flex items-center gap-2">
+            <input autocomplete="off" id="novel-title-input" name="title" type="text" value="{{ novel.title }}" required data-dialog-focus
+                   class="ctl flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 text-sm">
+            <button class="{{ ui.control('px-3') }}">Save</button>
+        </div>
+    </form>
+    {# Offered only when there is something to go back TO. The source's own
+       wording is kept rather than overwritten (see reconcile_editable_metadata),
+       which is what makes this a button press instead of another scrape. #}
+    {% if novel.source_title and novel.source_title != novel.title %}
+    <form method="post" action="/novels/{{ novel.id }}/title/reset" class="mb-3"
+          hx-post="/novels/{{ novel.id }}/title/reset" hx-target="#novel-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+        <button class="text-xs text-neutral-500 hover:text-neutral-100 underline cursor-pointer"
+                title="{{ novel.source_title }}">Use the title from the source</button>
+    </form>
+    {% else %}
+    <p class="text-xs text-neutral-500 mb-3">Taken from the source page.</p>
+    {% endif %}
+
+    <form method="post" action="/novels/{{ novel.id }}/synopsis" class="mb-2"
+          hx-post="/novels/{{ novel.id }}/synopsis" hx-target="#novel-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+        <label class="block text-xs text-neutral-500 mb-2" for="novel-synopsis-input">Description</label>
+        <textarea autocomplete="off" id="novel-synopsis-input" name="synopsis" rows="5"
+                  class="input w-full">{{ novel.synopsis or '' }}</textarea>
+        <div class="mt-2">
+            <button class="{{ ui.control('px-3') }}">Save</button>
+        </div>
+    </form>
+    {% if novel.source_synopsis and novel.source_synopsis != novel.synopsis %}
+    <form method="post" action="/novels/{{ novel.id }}/synopsis/reset"
+          hx-post="/novels/{{ novel.id }}/synopsis/reset" hx-target="#novel-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+        <button class="text-xs text-neutral-500 hover:text-neutral-100 underline cursor-pointer">Use the description from the source</button>
+    </form>
+    {% else %}
+    <p class="text-xs text-neutral-500">Taken from the source page.</p>
+    {% endif %}
+</div>

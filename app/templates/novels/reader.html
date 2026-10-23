@@ -1,0 +1,79 @@
+{% from "reader/_settings_panel.html" import settings_panel %}
+{% extends "base.html" %}
+{% block title %}{{ chapter.title }}{% endblock %}
+{# A reader is the page, edge to edge. viewport-fit=cover lets it paint
+   into a phone's safe areas, and the chrome and the live-update stream
+   are both dropped: there is no card here for an event to update, and a
+   reader tab is the one most likely to sit open for hours.
+
+   The body owning the viewport is deliberately NOT a block override: it
+   comes from `body:has(#reader-root)` in theme.css, which is inside the
+   markup a swap replaces where a class on <body> would not be. #}
+{% block viewport_content %}width=device-width, initial-scale=1.0, viewport-fit=cover{% endblock %}
+{# BOOSTED, like every other page -- see reader/comic.html for what
+   had to be paid first. #}
+{% block chrome %}{% endblock %}
+{% block live_updates %}{% endblock %}
+{% block main_attrs %}class="h-full"{% endblock %}
+{% block content %}
+    <div id="reader-root"
+         data-source="novel"
+         data-series-url="/novels/{{ novel.id }}"
+         data-item-id="{{ novel.id }}"
+         data-start-cfi="{{ 'elidx:' ~ saved_paragraph ~ ':' ~ saved_offset if saved_paragraph is not none and saved_paragraph >= 0 else '' }}"
+         data-start-spine-index="{{ chapter.order_index }}"
+         {# Where the SERVER had this when the page was rendered. It is the
+            baseline reader-resume.js measures a later answer against, so a
+            tab that was opened and never scrolled still notices another
+            device moving on while it sat in the back/forward cache. #}
+         data-start-percent="{{ start_percent }}"
+         data-stylesheet-url="{{ asset_url('src/app.css') }}"
+         {# Display-only find-and-replace, from /settings. A JSON array,
+            always present and always valid -- "[]" when there are none. #}
+         data-replacements="{{ replacements_json }}"
+         class="h-full w-full flex flex-col">
+
+        <div class="relative flex items-center justify-between p-2 border-b border-neutral-800 text-sm">
+            {# Just "Back", like the EPUB reader: the novel's title took the
+               width the counter and clock need, and the reader already knows
+               what they are reading. #}
+            <a href="/novels/{{ novel.id }}" class="text-neutral-400 hover:text-neutral-100">← Back</a>
+            {# The clock sits with the page counter as one block so the bar
+               still has exactly three children for justify-between, and so
+               the counter's own "no count yet" state cannot blank it. #}
+            <span class="flex items-center gap-2 text-neutral-500">
+                <span id="page-indicator"></span>
+                <span id="reader-clock"></span>
+            </span>
+            <button id="btn-settings" type="button" class="text-neutral-400 hover:text-neutral-100"
+                    aria-expanded="false" aria-controls="settings-panel" aria-label="Display settings">Aa</button>
+
+            {# Anchored to this row, so it hangs under the button that opens
+               it and takes no height from the reading area. #}
+            {{ settings_panel('Original') }}
+        </div>
+
+        <div id="viewer" class="flex-1 overflow-hidden relative">
+            <div id="loading-indicator" class="absolute inset-0 flex items-center justify-center text-sm text-neutral-500 text-center px-6">
+                Loading…
+            </div>
+            <div id="load-warning" class="hidden absolute top-2 left-2 right-2 z-20 bg-amber-900/90 text-amber-100 text-xs rounded px-3 py-2 flex items-start justify-between gap-3">
+                <span id="load-warning-text"></span>
+                <button id="load-warning-dismiss" class="text-amber-300 hover:text-amber-100 flex-shrink-0">✕</button>
+            </div>
+            <div id="paginated-viewer" class="hidden absolute inset-0"></div>
+            <div id="custom-scroll" class="hidden absolute inset-0 z-10 overflow-y-auto"></div>
+        </div>
+
+        <div id="page-nav" class="hidden flex justify-between p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+            <button id="btn-prev" class="text-neutral-400 hover:text-neutral-100">‹ Previous</button>
+            <button id="btn-next" class="text-neutral-400 hover:text-neutral-100">Next ›</button>
+        </div>
+    </div>
+
+    {# The engine only. The two files it calls into
+       (window.readerResume, window.createReadingTimeTracker) are loaded
+       from <head> in base.html, because a swap re-executes what is in
+       page content and does NOT keep its order -- see the comment there. #}
+    <script src="{{ asset_url('js/reader-text.js') }}" defer></script>
+{% endblock %}

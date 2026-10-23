@@ -1,0 +1,35 @@
+{# The "Show more" under a three-line clamp, for both places that have one
+   (library/_series_headline.html, novels/_novel_headline.html). One macro
+   because the markup and the threshold below have to agree in both, and
+   two copies of a tuned number is exactly the pair that drifts.
+
+   Whether the button is NEEDED is a question only the browser can answer:
+   it depends on how the text wraps at this width. read-more.js answers it.
+   What the server can do is stop that answer from MOVING the page, which
+   is what it used to do -- the button appeared after the first paint and
+   pushed the items grid down (measured in Chromium, which reports it:
+   CLS 0.0062 at 1200px and 0.0159 at 390px on a long description, 0 where
+   no button appeared).
+
+   So the server renders the button already in place whenever the text is
+   long enough to POSSIBLY need it, and marks it `data-reserved`. In that
+   state read-more.js hides an unneeded button with `visibility` instead of
+   `display`, so the slot stays and nothing reflows either way.
+
+   The threshold is the narrowest column the layout has: three lines hold
+   120 characters at 288px, 124 at 320px, 145 at 358px (a 390px phone) and
+   270 at 672px (`max-w-2xl`, the widest this column gets) -- measured by
+   binary search in both browsers, which agreed exactly. Below 120 no
+   width can overflow, so no slot is reserved and nothing is shown. The
+   button can still appear there, for text whose words are far longer than
+   the ones measured; that is the old behaviour, now the rare case rather
+   than the common one. #}
+{% set POSSIBLY_CLAMPED = 120 %}
+
+{% macro toggle(text) %}
+{%- set reserved = (text or '')|length > POSSIBLY_CLAMPED -%}
+<button type="button" aria-expanded="false"
+        {% if reserved %}data-reserved{% endif %}
+        class="clamp-toggle text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer mt-1{{ '' if reserved else ' hidden' }}"
+        >Show more</button>
+{%- endmacro %}

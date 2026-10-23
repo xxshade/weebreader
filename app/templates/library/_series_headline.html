@@ -1,0 +1,31 @@
+{% import "_clamp.html" as clamp %}
+{# The series description, as a macro because two places have to render it
+   identically: the page on load, and the edit panel's response as an
+   out-of-band swap (the paragraph lives outside the panel).
+
+   Rendered even when there is none, hidden. An out-of-band swap needs
+   something to replace: without it, a description arriving from a tracker
+   -- or typed in -- would save and show nothing until the next reload.
+   The same arrangement, and the same reason, as novels/_novel_headline.
+
+   Clamped to three lines, because what a catalogue answers with is often
+   several paragraphs and this sits between the title and everything you
+   came to the page to do. The clamp is CSS (`.clamp-3`), so the short
+   version is what the FIRST frame draws -- a script that cut it down
+   afterwards would show the wall of text and then take it away. What the
+   script does is the one thing CSS cannot: decide whether the text
+   actually overflows at this width, and only then offer the button. So a
+   two-line description gets no "Show more" at all, and the button
+   appearing is additive rather than a reflow of the text.
+
+   The id stays on the WRAPPER, which is what the out-of-band swap
+   replaces -- text and button have to arrive together, or an expanded
+   description could come back clamped with the button still saying
+   "Show less". #}
+{% macro summary(series, oob=False) %}
+<div id="series-summary" data-clamp class="mt-2 max-w-2xl{{ '' if series.summary else ' hidden' }}"
+     {% if oob %}hx-swap-oob="true"{% endif %}>
+    <p class="clamp-text clamp-3 text-sm text-neutral-400">{{ series.summary or '' }}</p>
+    {{ clamp.toggle(series.summary) }}
+</div>
+{% endmacro %}

@@ -1,0 +1,144 @@
+{# The series page's "Edit name and cover" dialog's contents, as their own
+   partial so the four endpoints behind it can hand back exactly this
+   markup instead of a redirect. That is what lets both edits happen in one
+   sitting: the panel re-renders in place INSIDE the dialog, so the dialog
+   stays open and the page does not reload (see the endpoints'
+   _series_edit_response, and the htmx attributes on the forms below). The
+   dialog itself -- heading, ✕, "Saved" -- is in series.html, outside what
+   is swapped.
+
+   `oob` is only true on those responses, never on the initial include: the
+   <h1> lives outside this panel, so a rename has to reach it through an
+   out-of-band swap. #}
+{% import "library/_controls.html" as ui %}
+{% import "library/_series_headline.html" as headline %}
+{% if oob %}
+<h1 id="series-title" class="text-xl font-semibold" hx-swap-oob="true">{{ series.name }}</h1>
+{{ headline.summary(series, oob=True) }}
+{% endif %}
+<div id="series-edit">
+    {% if edit_error %}
+    <p class="text-sm text-red-400 mb-3">{{ edit_error }}</p>
+    {% endif %}
+
+    <form method="post" action="/series/{{ series.id }}/name" class="mb-2"
+          hx-post="/series/{{ series.id }}/name" hx-target="#series-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+        <label class="block text-xs text-neutral-500 mb-2" for="series-name">Name</label>
+        <div class="flex items-center gap-2">
+            <input autocomplete="off" id="series-name" name="name" type="text" value="{{ series.name }}" required data-dialog-focus
+                   class="ctl flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 text-sm">
+            <button class="{{ ui.control('px-3') }}">Save</button>
+        </div>
+    </form>
+    {% if series.name != automatic_name %}
+    <form method="post" action="/series/{{ series.id }}/name/reset" class="mb-3"
+          hx-post="/series/{{ series.id }}/name/reset" hx-target="#series-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+        <button class="text-xs text-neutral-500 hover:text-neutral-100 underline cursor-pointer"
+                title="{{ automatic_name }}">Reset to the folder name</button>
+    </form>
+    {% else %}
+    <p class="text-xs text-neutral-500 mb-3">Taken from the folder name.</p>
+    {% endif %}
+
+    <label class="block text-xs text-neutral-500 mb-2" for="series-cover">Cover</label>
+    <div class="flex items-start gap-3 mb-2">
+        {# The panel is the only place on this page that shows the series'
+           own cover, which is what makes an upload visibly land: the image
+           comes back changed in the same swap that reports the save.
+
+           It is also where a chosen file is PREVIEWED before it is sent
+           (cover-preview.js): the same 2:3 box, so what you see is what the
+           cards will crop it to, and the current cover comes back if the
+           choice is abandoned. #}
+        <div id="series-cover-slot" class="cover flex-shrink-0" style="width: 6rem;">
+            {% if series.cover_path %}
+            <img data-cover-current src="/covers/{{ series.cover_path }}" alt=""
+                 class="w-full h-full object-cover">
+            {% else %}
+            <div data-cover-current class="w-full h-full bg-neutral-800"></div>
+            {% endif %}
+            <img data-cover-new hidden alt="Preview of the chosen image"
+                 class="w-full h-full object-cover">
+        </div>
+        <div class="flex-1 min-w-0">
+            <form method="post" action="/series/{{ series.id }}/cover" enctype="multipart/form-data"
+                  hx-post="/series/{{ series.id }}/cover" hx-target="#series-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML"
+                  hx-encoding="multipart/form-data">
+                {# The native file input renders as the browser's own control
+                   ("Choose File | No file chosen"), which is the one element
+                   here that cannot be styled to match anything else. It is
+                   hidden and driven by a <label> wearing the same style as
+                   every other control, with the chosen file's name below it,
+                   put there by cover-preview.js along with the preview.
+
+                   No `required`: a hidden required field cannot be focused,
+                   so the browser refuses to submit AND refuses to say why.
+                   The server already answers an empty upload with "No file
+                   was selected", which is the check that matters anyway. #}
+                <div class="flex items-center gap-2">
+                    <label for="series-cover" class="{{ ui.control('px-3 flex items-center') }}">Choose image</label>
+                    <button class="{{ ui.control('px-3') }}">Upload</button>
+                    <input id="series-cover" name="cover" type="file" accept="image/*" class="hidden"
+                           data-cover-preview="series-cover-slot">
+                </div>
+                <p data-cover-name class="text-xs text-neutral-500 truncate mt-2">No file chosen</p>
+            </form>
+            {% if series.cover_overridden %}
+            <form method="post" action="/series/{{ series.id }}/cover/reset" class="mt-2"
+                  hx-post="/series/{{ series.id }}/cover/reset" hx-target="#series-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+                <button class="text-xs text-neutral-500 hover:text-neutral-100 underline cursor-pointer">Reset to the first item's cover</button>
+            </form>
+            {% else %}
+            <p class="text-xs text-neutral-500 mt-2">Taken from the first item in the series.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    {# The description. Seeded from whichever tracker this series is linked
+       to (see service.catch_up) and editable here afterwards -- a scanned
+       folder has no description of its own, and the catalogue that was
+       pointed at has a good one.
+
+       An edit is what makes source_summary earn its place: a later fetch
+       updates what the TRACKER says and leaves the shown text alone, so
+       linking a second service cannot silently undo the edit. That is
+       also what makes "use the tracker's again" a button rather than
+       another request. #}
+    <form method="post" action="/series/{{ series.id }}/summary" class="mt-3"
+          hx-post="/series/{{ series.id }}/summary" hx-target="#series-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+        <label class="block text-xs text-neutral-500 mb-2" for="series-summary-input">Description</label>
+        <textarea autocomplete="off" id="series-summary-input" name="summary" rows="5"
+                  class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm"
+                  placeholder="{{ 'Nothing yet — link a tracker below to bring one over.' if not series.source_summary else '' }}">{{ series.summary or '' }}</textarea>
+        <div class="flex items-center gap-2 mt-2">
+            <button class="{{ ui.control('px-3') }}">Save</button>
+        </div>
+    </form>
+    {% if series.source_summary and series.summary != series.source_summary %}
+    <form method="post" action="/series/{{ series.id }}/summary/reset" class="mt-2"
+          hx-post="/series/{{ series.id }}/summary/reset" hx-target="#series-edit" hx-swap="outerHTML" hx-status:422="swap:outerHTML">
+        <button class="text-xs text-neutral-500 hover:text-neutral-100 underline cursor-pointer"
+                title="{{ series.source_summary }}">Use the tracker's description again</button>
+    </form>
+    {% elif series.source_summary %}
+    <p class="text-xs text-neutral-500 mt-2">Taken from the tracker.</p>
+    {% endif %}
+
+    {# Blurring is about the cover, so it sits under it rather than in the
+       row of selects at the top of the page -- that row is already the
+       widest thing after the title, which is why the two bulk actions
+       there are icons.
+
+       hx-trigger="change" with hx-swap="none", the same shape as the two
+       status selects on the series page: the checkbox's own state already
+       shows the choice, and the only other thing that draws on it is the
+       home grid, which follows the series_updated event this publishes. #}
+    <form method="post" action="/series/{{ series.id }}/blur-cover" class="mt-3"
+          hx-post="/series/{{ series.id }}/blur-cover" hx-trigger="change" hx-swap="none">
+        <label class="flex items-center gap-2 text-xs text-neutral-500 cursor-pointer">
+            <input autocomplete="off" type="checkbox" name="blur_cover" value="1" class="accent-indigo-600"
+                   {{ 'checked' if series.blur_cover else '' }}>
+            Blur this cover on the home page
+        </label>
+    </form>
+</div>

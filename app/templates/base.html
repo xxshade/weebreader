@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+{# The thumbnail-size key is per PAGE: the series page keeps its own size,
+   because its grid holds volumes of one series rather than a whole
+   library's covers. It is captured here so the same value names the
+   cookie the server reads AND reaches thumbnail-size.js, which is shared
+   by both pages and has no other way to tell which one it is on. #}
+{%- set thumb_key %}{% block thumb_size_key %}thumbnail-size{% endblock %}{% endset %}
+{#- The viewport as a STRING, not as a tag: it is rendered twice, into
+    <head> for the parse and onto <main> for a swap, and two copies of the
+    same literal is the drift this avoids. See the reconciling script at
+    the foot of <body>. -#}
+{%- set viewport_content %}{% block viewport_content %}width=device-width, initial-scale=1.0{% endblock %}{% endset %}
+{#- These three used to be inline <script> blocks in <head>, each racing
+    the parser to set an attribute before the first paint. They are cookies
+    now (app/ui_prefs.py reads them, static/js/ui-prefs.js writes them), so
+    the server renders <html> already correct: no script, no flash, and
+    nothing that a <head> left behind by a body swap could get wrong.
+    `data-app-theme` is absent for the default theme, which is what
+    appearance.js means by deleting it. #}
+<html lang="en" class="h-full"
+  {%- set app_theme = ui_theme(request) %}{% if app_theme %} data-app-theme="{{ app_theme }}"{% endif %}>
+<head>
+    <meta charset="UTF-8">
+    {# viewport-fit=cover is the READERS' override of viewport_content: it
+       lets the page paint into a phone's safe areas, which is what a
+       full-bleed comic page wants and what the library pages must not have
+       -- the sticky header would slide under the notch. #}
+    <meta name="viewport" content="{{ viewport_content }}">
+    <title>{% block title %}Publication Reader{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="{{ asset_url('favicon.svg') }}">
+    <link rel="manifest" href="{{ asset_url('manifest.webmanifest') }}">
+    <meta name="theme-color" content="#0a0a0a">
+    <link rel="stylesheet" href="{{ asset_url('src/app.css') }}">
+    <link rel="stylesheet" href="{{ asset_url('src/theme.css') }}">
+    {# htmx 4 swaps EVERY response but 204/304, where htmx 2 swapped only
+       2xx. Nothing in this app returns HTML with an error status: a
+       refusal is `raise HTTPException(...)`, which FastAPI answers as the
+       JSON `{"detail": "..."}`, so the htmx 4 default would paint that
+       JSON into whatever the button was pointed at -- a series card
+       replaced by {"detail":"Series not found"}. Roughly twenty endpoints
+       htmx posts to can raise (see the ones with hx-post in these
+       templates against the HTTPException list in the routers).
+
+       This is not the migration bridge the htmx docs describe it as. It
+       is the permanent, correct setting for a server whose error bodies
+       are JSON rather than HTML fragments: a status htmx has no fragment
+       for must not swap. An endpoint that answers 422 with real error
+       markup opts back in with hx-status:422 on its own form, which is
+       the per-element half of this same mechanism -- the two edit panels
+       do, and they are the only things in the app that do. Note the
+       VALUE: a bare hx-status:422 reads as the obvious way to write it
+       and does nothing at all, because htmx gets "" back for a valueless
+       attribute and its truthiness check is what decides. See
+       _series_edit.html. #}
+    {# `extensions` is a WHITELIST: the bundle below ships eleven extensions
+       and registers every one of them unless told otherwise.
+
+       FOUR are named. `resync` is the app's own, registered by
+       library-events.js: the hook that keeps a reader's open <details> and
+       <dialog> open while a fresh render is morphed into the page -- morph
+       hooks are only offered to extensions, not as DOM events.
+       `preload` anticipates explicit home detail and account-menu links on a press;
+       `autoBoost: false` prevents it from prefetching every boosted link.
+       home-preload.js rejects responses after data or display preferences change.
+       `sse` is the live stream. `history-cache` answers
+       Back from a copy of the DOM in sessionStorage instead of from the
+       server, and it is live only because hx-boost is (see the boost
+       block on <body>): the extension acts exclusively inside htmx's own
+       history lifecycle, so until navigation became htmx's it was dead
+       code. It also has to be told it is on -- core sets
+       `historyCache = {disable: true}` before the extension's `??=` can
+       fill it, so the meta says otherwise.
+
+       THE SEPARATOR IS A COMMA, and this is the trap. htmx splits this
+       value on /,\s*/, so "sse history-cache" is ONE name that matches
+       neither and BOTH extensions quietly fail to register. Measured with
+       a space: /library/events was never requested -- the live stream
+       simply did not exist, with nothing in the console. The probe that
+       tells them apart is `htmx.config.historyCache`: bare
+       `{"disable": false}` when the extension never ran, and filled in
+       (`size: 10`, `swapStyle: "outerSync"`) by its own init when it did.
+
+       Leaving the other eight out is a COST decision, not a safety one.
+       Each is gated on an attribute this app does not use, so registering
+       them changes no behaviour -- measured, whitelist against no
+       whitelist: identical but for `history.state` gaining an `htmxId`,
+       and no console error either way. What it costs is a hook on every
+       swap: `hx-live` XPath-scans each processed subtree looking for
+       `[hx-live]`. A 40-element `htmx.swap()`, median of 50 warm rounds,
+       three runs each: 5.60 / 5.70 / 5.70 ms with the whitelist against
+       6.50 / 6.60 / 6.70 ms without it.
+
+       `browser-indicator`, the other one an older version of this comment
+       called a hazard, needs `hx-browser-indicator` on the element and is
+       not one. Neither extension touches the `pageshow` handler in
+       library-events.js, which answers a different mechanism: the BROWSER
+       restoring this very document from its back/forward cache, not htmx
+       restoring a snapshot of it. A couple of the eight assign a global
+       from their own IIFE (`htmx.live` is there either way), so seeing one
+       of those names is not a sign the whitelist leaked. #}
+    {# `defaultSettleDelay: 0` turns off the settle step's attribute swap,
+       which is WRONG for page navigation. With a delay, htmx gives every
+       incoming element whose id matches one on the outgoing page that
+       element's OLD attributes, and puts the new ones back only once the
+       delay is up (its hook for CSS transitions; nothing here animates on
+       it). Every script the swap runs meanwhile reads the previous page:
+       measured boosting /series/1 -> /series/2, `#series-page` still said
+       data-series-id="1" when the pre-paint block and series-search.js
+       ran, so series 2 opened with series 1's "Unread only", and
+       `#series-sort-control` handed series-sort.js series 1's saved order
+       and data-has-manual. A delay of 0 is the one value that skips the
+       swap outright (`a = t && l ? ... : []`); `htmx:after:settle` still
+       fires. #}
+    <meta name="htmx-config" content='{"noSwap": [204, 304, "4xx", "5xx"], "extensions": "sse,history-cache,resync,preload", "preload": {"autoBoost": false}, "historyCache": {"disable": false, "size": 100}, "defaultSettleDelay": 0}'>
+    {# htmAX, not htmx: the same 4.0.0 core with the extensions bundled in.
+       ONE script is the point, not convenience. Loaded as two files, the
+       extension registers in a separate deferred execution from htmx's --
+       and htmx 4 with `defer` schedules its first pass with setTimeout
+       rather than waiting for DOMContentLoaded, so a timer can run between
+       them. Measured, with the extension's response delayed 350ms on a
+       cold cache: 0 of 10 loads connected the SSE stream. Processing the
+       element again from our own script fixed that and opened TWO streams
+       on a warm load instead -- the extension's duplicate guard is set
+       when the response arrives, so two passes inside that window both
+       connect. In one file there is no window: the extension is registered
+       before htmx's first pass can possibly run, and that pass connects
+       exactly once. It costs 26 KB gzipped against 15.5 KB for the pair. #}
+    <script src="{{ asset_url('src/vendor/htmax.min.js') }}" defer></script>
+    <script src="{{ asset_url('js/home-preload.js') }}" defer></script>
+    {# Both are app-wide, not reader-only. fullscreen.js because a phone's
+       browser toolbar eats the screen on every page, not just while
+       reading (the installed PWA asks for it in the manifest instead and
+       needs none of this); range-value.js because any page may carry a
+       slider -- the thumbnail size popover is in the header. #}
+    {# First of the deferred scripts on purpose: it defines window.uiPrefs,
+       which the three owners (appearance.js, thumbnail-size.js,
+       novel-chapters.js) call, and deferred scripts run in document order.
+       It also carries the one-time localStorage -> cookie migration. #}
+    <script src="{{ asset_url('js/ui-prefs.js') }}" defer></script>
+    <script src="{{ asset_url('js/fullscreen.js') }}" defer></script>
+    <script src="{{ asset_url('js/range-value.js') }}" defer></script>
+    <script src="{{ asset_url('js/app-fullscreen.js') }}" defer></script>
+    {# Manual reordering, in <head> because it is SHARED and a whole-<body>
+       swap replaces the content but not this. Both files used to sit in the
+       two pages that reorder (series.html, novels/detail.html), where such
+       a swap re-executes them -- and for a VENDORED library that means a
+       second copy, with its own instance registry, per navigation. Measured
+       under hx-boost, home -> series -> home -> novel -> home -> series:
+       3 copies of Sortable, against 1 from here. What it costs is a page
+       that never reorders parsing 45 KB (15 KB gzipped) it will not use:
+       home page DCL, warm cache, three medians of 15 each, alternated,
+       32.4/33.4/32.4 and 32.8/35.6/34.7 ms before against 33.9/35.3/39.5
+       and 34.9/34.2/35.8 after -- inside the run-to-run spread.
+
+       reorder.js comes along because `window.makeReorderable` is equally
+       shared. That alone fixed nothing (the observer it installs is created
+       per CALL and its callers still re-run); see the guard in reorder.js.
+       The two CALLERS stay with their pages, being the per-page part. #}
+    <script src="{{ asset_url('src/vendor/Sortable.min.js') }}" defer></script>
+    <script src="{{ asset_url('js/reorder.js') }}" defer></script>
+    {# The readers' two SHARED files, here for the same reason and with
+       the same measurement. They used to sit in the three reader
+       templates, above the engine that calls both -- which is document
+       order, and document order is exactly what a swap does not keep:
+       htmx re-inserts each script with `document.createElement`, which
+       the spec marks force-async, and the copied `defer` orders nothing
+       because there is no parser placing it.
+
+       Measured before this, a boosted click from the home page into
+       the comic reader, nothing delayed:
+       Firefox threw `createReadingTimeTracker is not defined` in 3 of 5
+       runs and the reader never rendered at all -- no page, no indicator.
+       Chromium went 5 of 5 warm, and failed the same way the moment
+       reading-time.js was delayed 400ms. reader-resume.js loses more
+       quietly, since the engines call it through `?.`: no error, and the
+       one thing it exists for silently not installed.
+
+       Neither is per-page state, which is what makes <head> right here
+       rather than merely effective: reading-time.js only defines a
+       factory and binds nothing until a reader calls it, and
+       reader-resume.js installs itself once per DOCUMENT already (`if
+       (window.readerResume) return;`) and has nothing to watch on a page
+       with no reader.
+
+       What a library page pays is 15.5 KB (6.1 KB gzipped) it will not
+       use, in two requests. Home page DCL, warm cache, three medians of
+       11 each, alternated: 28.4/29.2/34.5 ms before against
+       29.8/32.2/33.7 ms after -- inside the run-to-run spread, which is
+       about 10 ms within either variant.
+
+       reader-blocks.js joined them for the same reason: reader-text.js
+       calls `window.readerBlocks` for every chapter it loads, and it too
+       only defines functions. #}
+    <script src="{{ asset_url('js/reader-resume.js') }}" defer></script>
+    <script src="{{ asset_url('js/reading-time.js') }}" defer></script>
+    <script src="{{ asset_url('js/reader-blocks.js') }}" defer></script>
+    <script src="{{ asset_url('js/reader-pagination.js') }}" defer></script>
+    {# The plain dialogs (New library, Edit name and cover) and the cover
+       preview inside one. Here for the reason above: both are delegated
+       from the document, and a page script would add its listener again
+       on every boosted visit. Together 4.7 KB before gzip. #}
+    <script src="{{ asset_url('js/dialogs.js') }}" defer></script>
+    <script src="{{ asset_url('js/cover-preview.js') }}" defer></script>
+    {% block head %}{% endblock %}
+</head>
+<!-- min-h-full, NOT h-full: a sticky element cannot leave its containing
+     block, and <header>'s is <body>. With height:100% the body box is
+     exactly one viewport tall however long the page is (measured: 900px of
+     a 6181px page), so the sticky header was released after roughly one
+     screen of scrolling and left behind with the content -- while the
+     sort row, whose containing block grows with the content, kept
+     working. min-height keeps the "fill the screen even when
+     the page is short" property that h-full was there for. -->
+{# hx-boost, and the one block a page overrides to opt OUT of it.
+
+   Navigation is htmx's from here: a click on a same-origin <a> fetches the
+   page and swaps <body>'s children instead of loading a document, which is
+   what puts the history-cache extension in play at all (it only ever acts
+   inside htmx's own history lifecycle -- see the config below).
+
+   `:inherited` because htmx 4 has no implicit inheritance: without it this
+   would boost <body> itself and nothing in it.
+
+   NOTHING OVERRIDES IT TODAY. The readers did, for a long time and not
+   as a preference: a boosted navigation does not unload the document, so
+   `pagehide` -- where all three of them save the position -- never fires,
+   and leaving by a boosted link silently dropped the reading position
+   since the last page turn. What it took to lift that is four separate
+   things, each measured in a scratch build first: the readers saving on
+   the two events htmx does raise, taking their own document-level
+   listeners with them when they go, the live stream stepping out of
+   <body> instead of being torn down, and the two shared reader files
+   moving up here where a swap cannot reorder them. See "THE READERS ARE
+   BOOSTED TOO" in AGENTS.md.
+
+   The block stays as the way out for a page that turns out to need one.
+   A page overriding it renders <body> with no hx-boost at all. #}
+<body {% block boost %}hx-boost:inherited="true"{% endblock %}
+      class="{% block body_class %}min-h-full bg-neutral-950 text-neutral-100 font-sans{% endblock %}">
+    {# Everything a READER does without: the header, the script that
+       publishes its height, and the menu bound to it. A reader is the
+       page, edge to edge -- see reader/comic.html. #}
+    {% block chrome %}
+    <!-- sticky + an explicit background: the header used to be transparent
+         and simply inherit <body>'s, which is fine while it scrolls away
+         with the page and wrong the moment it stays put -- the content
+         would run visibly underneath it. z-30 puts it above the sort row
+         (z-10) that now sticks beneath it.
+
+         The header stays in normal flow on mobile. Desktop sticky pieces
+         use the measured --header-h, including when enlarged text wraps. -->
+    <header id="app-header"
+            class="md:sticky top-0 z-30 bg-neutral-950 border-b border-neutral-800 px-4 py-3 flex flex-wrap items-center gap-3 md:gap-6">
+        {# The app's own icon, the same file as the favicon and the
+           installed app's -- so the header and the tab say the same thing.
+           An <img> of it rather than inline SVG: the browser already has it
+           cached for the tab. One link at every width now; there used to
+           be a second, desktop one sized to line the search box up with
+           the home page's sidebar, and the sidebar is gone. #}
+        <a href="/" class="flex-shrink-0" title="Library" aria-label="Library">
+            <img src="{{ asset_url('favicon.svg') }}" alt="" width="28" height="28" class="block">
+        </a>
+
+        {# Mobile controls share the logo/account row. The header anchors
+           their popovers so a compact search field cannot narrow a panel. #}
+        <div id="header-controls" class="relative flex-1 min-w-0 flex flex-wrap items-center gap-2">
+            {% block header_filters %}{% endblock %}
+        </div>
+
+        {% if user %}
+        <div id="user-menu" class="relative flex-shrink-0 ml-auto md:ml-0">
+            <button id="user-menu-btn" type="button"
+                    class="flex items-center gap-1.5 text-sm text-neutral-400 hover:text-neutral-100"
+                    aria-label="Account menu for {{ user.username }}"
+                    aria-haspopup="true" aria-expanded="false">
+                {# The avatar REPLACES the username rather than sitting beside
+                   it -- that is what was asked for, and it is also what keeps
+                   this from taking more of the header than the name did.
+                   The name is still announced, through the button's own
+                   aria-label and the image's alt. Sized by .avatar in
+                   theme.css, which is capped to the header's content height
+                   so adding it cannot make the header taller. #}
+                {% if user.avatar_path %}
+                <img src="/covers/{{ user.avatar_path }}" alt="{{ user.username }}"
+                     class="avatar rounded-full object-cover flex-shrink-0">
+                {% else %}
+                <span data-account-name>{{ user.username }}</span>
+                <svg data-account-icon width="20" height="20" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                    <circle cx="12" cy="8" r="4"/>
+                    <path d="M4 21v-2a8 8 0 0 1 16 0v2"/>
+                </svg>
+                {% endif %}
+                <svg data-account-caret width="12" height="12" viewBox="0 0 12 12" fill="none" class="mt-px">
+                    <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            {# Inline SVGs, same stroke conventions as the library icons in
+               library/_icons.html. Not a shared macro: these three are used
+               exactly once each, here, and a macro file for three glyphs
+               would be more indirection than it saves -- the same call that
+               file's own header records for not building a sprite. #}
+            <div id="user-menu-dropdown"
+                 class="hidden absolute right-0 mt-2 w-44 bg-neutral-900 border border-neutral-800 rounded-lg shadow-lg py-1 z-20">
+                <p data-account-identity="{{ 'always' if user.avatar_path else 'mobile' }}"
+                   class="px-3 py-2 text-xs text-neutral-500 border-b border-neutral-800">{{ user.username }}</p>
+                <a href="/stats" hx-preload="home-card-press" class="flex items-center gap-2 px-3 py-2 text-sm text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+                         class="flex-shrink-0" aria-hidden="true">
+                        <path d="M3 3v18h18"/><path d="M7 15v3"/><path d="M12 9v9"/><path d="M17 5v13"/>
+                    </svg>
+                    Statistics
+                </a>
+                <a href="/settings" hx-preload="home-card-press" class="flex items-center gap-2 px-3 py-2 text-sm text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+                         class="flex-shrink-0" aria-hidden="true">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5v.2a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H2a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V2a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>
+                    </svg>
+                    Settings
+                </a>
+                <form action="/logout" method="post">
+                    <button class="w-full flex items-center gap-2 px-3 py-2 text-sm text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+                             class="flex-shrink-0" aria-hidden="true">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                            <path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>
+                        </svg>
+                        Log out
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% endif %}
+    </header>
+    {# With the header, not with the stream: it binds to #user-menu, which
+       only exists inside it. #}
+    <script src="{{ asset_url('js/user-menu.js') }}" defer></script>
+    <!-- Publishes the header's real height as --header-h, which is what
+         everything else sticky hangs off (see theme.css). Measured rather
+         than hard-coded because the header WRAPS to a second row on a
+         screen with enlarged text, so its height is not a constant; a ResizeObserver
+         covers that plus font loading and zoom, and the CSS default keeps
+         the first frame right. Un-deferred and right after the element so
+         the value is correct before anything can be scrolled. -->
+    <script>
+        (() => {
+            const header = document.getElementById("app-header");
+            if (!header) return;
+            const publish = () => document.documentElement.style.setProperty(
+                "--header-h", `${Math.round(header.getBoundingClientRect().height)}px`);
+            publish();
+            if (window.ResizeObserver) new ResizeObserver(publish).observe(header);
+            else window.addEventListener("resize", publish);
+        })();
+    </script>
+    {% endblock %}
+    {# <main> carries the per-page state, because it is INSIDE the swap.
+       The same values used to sit on <html>, which an hx-boost-style
+       navigation leaves untouched along with the whole of <head>: measured
+       boosting home -> /series/1, the series grid rendered at the home
+       page's 140px under its key `thumbnail-size`, against 300px and
+       `thumbnail-size:series` on a full load of the same URL. `--thumb-size`
+       reaches every .thumb-grid by inheritance, all of them being in here.
+       `data-app-theme` stays on <html> on purpose: it is the browser's
+       choice, not the page's, so a swap leaving it is correct. #}
+    <main {% block main_attrs %}class="p-4"{% endblock %}
+          data-thumb-size-key="{{ thumb_key }}" data-viewport="{{ viewport_content }}"
+          {% if user %}data-reading-account="{{ user.id }}"{% endif %}
+          data-reading-tracker-url="{{ asset_url('js/reading-time.js') }}"
+          {%- set thumb_px = ui_thumb_size(request, thumb_key) %}{% if thumb_px %} style="--thumb-size: {{ thumb_px }}px"{% endif %}
+          {%- block main_state %}{% endblock %}>
+        {% block content %}{% endblock %}
+    </main>
+    {# <head> is what a <body> swap leaves behind, and the viewport is the
+       one thing in there that differs per page: a reader asks for
+       viewport-fit=cover so it can paint into a phone's safe areas, and a
+       library page must NOT have it or the sticky header slides under the
+       notch. Both come from the one string above; this reconciles the copy
+       in <head> with the page that actually arrived. On a full load it
+       finds them already equal and does nothing. Measured boosting into a
+       reader, before: `width=device-width, initial-scale=1.0` -- the
+       library's -- against `..., viewport-fit=cover` on a full load. #}
+    <script>
+        (() => {
+            const meta = document.querySelector('meta[name="viewport"]');
+            const wanted = document.querySelector("main")?.dataset.viewport;
+            if (meta && wanted && meta.content !== wanted) meta.content = wanted;
+        })();
+    </script>
+
+    {# The live-update stream and its banner, in a block because a READER
+       opts out. Nothing here has anything to update on a reader page --
+       there is no card, no grid and no banner worth covering a comic with
+       -- and the connection is not free: it is one open HTTP request per
+       tab, and a reader tab is the one most likely to be left open for
+       hours on a phone. #}
+    {% block live_updates %}
+    {% if user %}
+    <div id="library-update-banner" class="hidden fixed bottom-4 right-4 z-50 bg-indigo-600 text-white text-sm rounded-lg shadow-lg px-4 py-3 flex items-center gap-3">
+        <span id="library-update-banner-text">The library has been updated.</span>
+        <button id="library-update-banner-reload" class="underline hover:no-underline">Refresh</button>
+        <button id="library-update-banner-dismiss" class="text-indigo-200 hover:text-white">✕</button>
+    </div>
+    {# The live-update stream. htmx's hx-sse extension connects this on
+       load and delivers each named message as a DOM event ON THIS ELEMENT;
+       library-events.js listens for them by name. Nothing is ever swapped
+       INTO it -- an unnamed SSE message is what hx-sse swaps, and every
+       frame the server writes carries an `event:` line (see the `frame`
+       helper in library/router.py).
+
+       Inside `{% if user %}` because the endpoint is authenticated, and
+       `hidden` rather than a class because it has nothing to show and the
+       stylesheet is frozen.
+
+       `hx-preserve` is about the one swap that would otherwise reach this
+       element: an hx-boost-style navigation replaces ALL of <body>, and
+       this element is inside it. htmx then moves THIS element into the new
+       page (by id) instead of destroying and rebuilding it, so the open
+       connection is never torn down. Without it, measured over 5 boosted
+       navigations: 5 closes, 5 reconnects, and 5 uncaught `AbortError:
+       BodyStreamBuffer was aborted` -- the vendored bundle's own sse
+       cleanup calls `abortController.abort()` and then `reader.cancel()`
+       and discards the promise the latter returns, which rejects because
+       the abort has just errored that stream. With it: 0, 0 and 0, one
+       connection held across all five.
+
+       What it costs is that library-events.js runs AGAIN for each such
+       swap while this element does not -- see the bind-once guards there.
+
+       hx-preserve matches by id against the INCOMING page, so it cannot
+       carry this into one that renders no live_updates block at all --
+       a reader. library-events.js parks the element outside <body> for
+       the duration of every swap for that case; the two compose. #}
+    {# WHERE IN THE EVENT SEQUENCE this HTML was rendered, twice over.
+
+       `since` is what the stream's FIRST connection is measured against
+       (a reconnect sends the browser's own `Last-Event-ID` instead). A
+       document served from the browser's HTTP cache never reaches the
+       server, so only the page itself can say how old it is. Measured in
+       the field, Firefox, Back out of a reader: navigation `type:
+       "back_forward", transferSize: 0, decodedBodySize: 318370` -- served
+       from cache with `Cache-Control: private, no-cache` on the response,
+       the server never saw the request. `no-cache` does not bind a
+       session-history navigation; only `no-store` would, and that is the
+       back/forward cache traded away.
+
+       `data-rendered-at` is the same value where library-events.js can
+       read it out of a page it fetched to re-sync with (the URL above is
+       entity-escaped in the HTML). #}
+    {% set rendered_at = library_events_rendered_at() %}
+    <div id="library-events" hx-sse:connect="/library/events?since={{ rendered_at | urlencode }}" hx-preserve="true"
+         data-rendered-at="{{ rendered_at }}" hidden></div>
+    {# Holds every message until library-events.js has bound its handlers
+       (it calls `libraryEventsRelease`). htmx, deferred, initializes on a
+       `setTimeout` once it has run, so the stream can connect -- and its
+       first frame arrive -- before the deferred library-events.js has run.
+       Measured in Chromium on a document that arrived at once (what a page
+       from the HTTP cache does): `events_gap` dispatched at 84ms, DOM ready
+       at 86, no handler yet -- the page sat stale. Un-deferred and right
+       here so it is listening before anything can connect;
+       `htmx:sse:before:message` and its `waitUntil` are the extension's own
+       hold. Once per element: `hx-preserve` carries this one through a
+       boosted swap while the incoming page runs this again. #}
+    <script>
+        (() => {
+            const stream = document.getElementById("library-events");
+            if (!stream || stream.libraryEventsHeld) return;
+            stream.libraryEventsHeld = new Promise((release) => {
+                stream.libraryEventsRelease = release;
+            });
+            stream.addEventListener("htmx:sse:before:message",
+                                    (event) => event.detail.waitUntil(stream.libraryEventsHeld));
+        })();
+    </script>
+    <script src="{{ asset_url('js/library-events.js') }}" defer></script>
+    {% endif %}
+    {% endblock %}
+</body>
+</html>

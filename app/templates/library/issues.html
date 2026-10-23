@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Problem Items{% endblock %}
+{% block content %}
+
+<section class="mb-8">
+    <h2 class="text-lg font-semibold mb-3">Maintenance</h2>
+    {# The explanation lives in the button's own title rather than as a
+       paragraph beside it: it is reference text you need once, and as a
+       block it took more room on this page than everything it sits above. #}
+    <form method="post" action="/library/reindex-numbers">
+        <button class="btn"
+                title="Recomputes every item's volume/chapter number for the whole collection, from the title and file name already saved -- no file is reopened. Use it after an update that changes how that number is worked out: 'Rescan' alone leaves an already-imported item alone as long as its file hasn't changed.">
+            Recompute numbers
+        </button>
+    </form>
+    {# Same markup and same renderer as the scan rows on the settings page
+       (see library-events.js): hidden until the job reports something. #}
+    <div data-job-section class="hidden mt-3">
+        <div class="job-row hidden bg-neutral-900 border border-neutral-800 rounded px-3 py-2"
+             data-job-key="renumber">
+            <div class="flex items-center justify-between gap-3">
+                <span class="text-sm min-w-0 truncate">Recomputing numbers</span>
+                <span class="job-counts text-xs text-neutral-400 flex-shrink-0"></span>
+            </div>
+            <div class="mt-2 h-1 bg-neutral-800 rounded overflow-hidden">
+                <div class="job-bar h-full bg-indigo-500 transition" style="width: 0%"></div>
+            </div>
+            <p class="job-current mt-1 text-xs text-neutral-500 break-all"></p>
+        </div>
+    </div>
+</section>
+
+{% include "library/_processing_errors.html" %}
+
+{% endblock %}

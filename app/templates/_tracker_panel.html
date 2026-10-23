@@ -1,0 +1,346 @@
+{# The tracking dialog's contents: ONE service, on one shelf.
+
+   Rendered by every endpoint in app/tracking/router.py, which is why the
+   whole thing is one element with a stable id -- opening it, a search, a
+   link, an unlink, a send and a push all swap `#tracker-panel` outerHTML,
+   and its context comes from one function (`panel_context`) so no two
+   paths can describe different states.
+
+   One service and not both, because every question in here is per
+   service: what it holds, what to send it, whether this shelf is linked
+   to it at all. The two rows that used to sit one above the other shared
+   nothing but a heading, and the "Send now" under them could not say
+   which of the two a failure came from.
+
+   Every form keeps method/action and every endpoint answers a redirect
+   without the hx-request header, so this works as plain form posts too.
+
+   Expects: tracker_open, tracker_local, tracker_status,
+   tracker_status_labels, tracker_dates, tracker_remote,
+   tracker_remote_error, tracker_results, tracker_query, tracker_message,
+   tracker_outcome, tracker_kind, tracker_all_types, tracker_filtered_out,
+   tracker_summary, and exactly one of tracker_series_id /
+   tracker_novel_id. #}
+{% import "library/_controls.html" as ui %}
+{% import "_tracker_icon.html" as tracker_icon %}
+{% import "library/_series_headline.html" as headline %}
+{% set target_name = "series_id" if tracker_series_id is not none else "novel_id" %}
+{% set target_value = tracker_series_id if tracker_series_id is not none else tracker_novel_id %}
+{% set tracker = tracker_open %}
+<div id="tracker-panel">
+    <div class="flex items-center gap-2">
+        <h2 class="text-sm font-semibold text-neutral-200">{{ tracker.label }}</h2>
+        {# Closes the dialog and nothing else, and it is not decoration:
+           a modal <dialog> closes on Escape by itself and NOT on its
+           backdrop -- that needs `closedby`, which is deliberately not
+           here, because the box holds a half-typed editor and a stray
+           click outside it is not a decision to throw that away.
+           Measured in both browsers: Escape shut it, a click at (20,20)
+           did not. So the pointer's two ways out are this and Cancel. #}
+        <button type="button" data-tracker-close aria-label="Close"
+                class="ml-auto cursor-pointer text-neutral-500 hover:text-neutral-100">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 6L6 18"></path><path d="M6 6l12 12"></path>
+            </svg>
+        </button>
+    </div>
+
+    {% if not tracker.account %}
+    <p class="text-xs text-neutral-500 mt-3">
+        <a href="/settings#tracking" class="text-indigo-400 hover:text-indigo-300">Connect {{ tracker.label }}</a>
+        in settings to report your progress here.
+    </p>
+
+    {% elif tracker.link %}
+    <div class="flex flex-wrap items-center gap-2 mt-3">
+        <a href="{{ tracker.link.remote_url }}" target="_blank" rel="noopener noreferrer"
+           class="text-sm text-indigo-400 hover:text-indigo-300 min-w-0 truncate">{{ tracker.link.remote_title }}</a>
+        <form method="post" action="/tracking/{{ tracker.name }}/unlink"
+              hx-post="/tracking/{{ tracker.name }}/unlink"
+              hx-target="#tracker-panel" hx-swap="outerHTML" class="ml-auto">
+            <input type="hidden" name="{{ target_name }}" value="{{ target_value }}">
+            <button class="{{ ui.control('px-3') }}">Unlink</button>
+        </form>
+    </div>
+
+    <p class="text-xs text-neutral-500 mt-1">
+        {% if tracker_local.anywhere %}
+            Read here:
+            {# Both, when both are known: a web novel is cited as "vol 3
+               ch 41" and reporting one of them alone loses half the
+               position. A scanned series only ever has one. #}
+            {% if tracker_local.volume is not none %}volume {{ tracker_local.volume|number }}{% endif %}
+            {%- if tracker_local.volume is not none and tracker_local.chapter is not none %},{% endif %}
+            {% if tracker_local.chapter is not none %}chapter {{ tracker_local.chapter|number }}{% endif %}
+            {%- if tracker_local.total %} of {{ tracker_local.total|number }}{% endif %}
+        {% else %}
+            Nothing marked read here yet.
+        {% endif %}
+        {%- if tracker_status %} · {{ tracker_status_labels[tracker_status] }}
+            {%- if tracker_status not in tracker.status_for %} ({{ tracker.label }} has no such status, so it is not sent){% endif %}
+        {%- endif %}
+        {%- if tracker.keeps_dates and tracker_dates.start %} · started {{ tracker_dates.start }}{% endif %}
+        {%- if tracker.keeps_dates and tracker_dates.finish %} · finished {{ tracker_dates.finish }}{% endif %}
+    </p>
+
+    {# What the link itself brought over. Said once, on the response to the
+       Link button, because it is a thing that HAPPENED rather than a
+       state -- the numbers themselves are on the line above from the next
+       render onwards. #}
+    {% if tracker_caught_up and (tracker_caught_up.marked or tracker_caught_up.described) %}
+    <p class="text-xs mt-1 text-sky-300">
+        {% if tracker_caught_up.marked %}
+        {{ tracker.label }} was further ahead — {{ tracker_caught_up.marked }}
+        {{ 'item' if tracker_caught_up.marked == 1 else 'items' }} marked read here.
+        {% endif %}
+        {% if tracker_caught_up.described %}Description taken from {{ tracker.label }}.{% endif %}
+    </p>
+    {% endif %}
+
+    <p class="text-xs mt-1 {{ 'text-red-400' if tracker.link.last_error else 'text-neutral-500' }}">
+        {% if tracker.link.last_error %}
+            {{ tracker.link.last_error }}
+        {% elif tracker.link.last_pushed_at %}
+            Last sent
+            {%- if tracker.link.last_pushed_volume is not none %} volume {{ tracker.link.last_pushed_volume|number }}{% endif %}
+            {%- if tracker.link.last_pushed_volume is not none and tracker.link.last_pushed_chapter is not none %},{% endif %}
+            {%- if tracker.link.last_pushed_chapter is not none %} chapter {{ tracker.link.last_pushed_chapter|number }}{% endif %}
+            {%- if tracker.link.last_pushed_status in tracker_status_labels %}, {{ tracker_status_labels[tracker.link.last_pushed_status]|lower }}{% endif %}
+            on {{ tracker.link.last_pushed_at }}
+        {% else %}
+            Nothing sent yet.
+        {% endif %}
+    </p>
+
+    {# ---- What the service holds, and the way to change it ------------
+
+       Every box opens with the SERVICE's own current value, read at the
+       moment this panel was, because the whole point of an editor is to
+       change what is there: pre-filled from anything else, pressing Send
+       would put a stale number back. That is also why an unreadable
+       service leaves the form out entirely rather than showing empty
+       boxes -- an empty box that sends is how a rating gets wiped. #}
+    {% if tracker_remote_error %}
+    <p class="text-xs text-red-400 mt-3">Could not read {{ tracker.label }}: {{ tracker_remote_error }}</p>
+    {% else %}
+    <form method="post" action="/tracking/{{ tracker.name }}/send"
+          hx-post="/tracking/{{ tracker.name }}/send"
+          hx-target="#tracker-panel" hx-swap="outerHTML"
+          class="mt-3 border-t border-neutral-800 pt-3">
+        <input type="hidden" name="{{ target_name }}" value="{{ target_value }}">
+        <p class="text-xs text-neutral-400 mb-2">On {{ tracker.label }} now — edit and send</p>
+        <div class="flex flex-wrap gap-3">
+            <label class="text-xs text-neutral-500">
+                Chapters read
+                <input autocomplete="off" type="number" name="chapter" min="0" step="1" inputmode="numeric"
+                       value="{{ tracker_remote.chapter|number if tracker_remote and tracker_remote.chapter is not none else '' }}"
+                       class="block w-28 bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-200">
+            </label>
+            <label class="text-xs text-neutral-500">
+                Volumes read
+                <input autocomplete="off" type="number" name="volume" min="0" step="1" inputmode="numeric"
+                       value="{{ tracker_remote.volume|number if tracker_remote and tracker_remote.volume is not none else '' }}"
+                       class="block w-28 bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-200">
+            </label>
+            <label class="text-xs text-neutral-500">
+                Score (1–10)
+                {# step .5 rather than 1: MangaUpdates keeps a decimal and
+                   MyAnimeList does not, and the half is rounded UP on the
+                   way to the one that cannot hold it (see _score_for). #}
+                <input autocomplete="off" type="number" name="score" min="1" max="10" step="0.5"
+                       value="{{ tracker_remote.score|number if tracker_remote and tracker_remote.score is not none else '' }}"
+                       class="block w-28 bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-200">
+            </label>
+        </div>
+        <div class="flex flex-wrap gap-3 mt-3">
+            <label class="text-xs text-neutral-500">
+                Status
+                {# The SERVICE's own list, in its own words -- MangaUpdates
+                   files an entry on a list, MyAnimeList gives it a status,
+                   and they do not line up one to one with this app's six.
+                   Opens on where the entry is now. The empty first option
+                   is there only when that is nowhere this select knows (not
+                   on a list yet, or a custom MangaUpdates list), and it
+                   means "leave it where it is". #}
+                {% set current = tracker_remote.status if tracker_remote else none %}
+                <select autocomplete="off" name="status"
+                        class="block bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-200">
+                    {% if current not in tracker.statuses|map('first')|list %}
+                    <option value="" selected>{{ 'Not on a list' if current is none else 'A list of your own' }}</option>
+                    {% endif %}
+                    {% for value, label in tracker.statuses %}
+                    <option value="{{ value }}" {{ 'selected' if value == current else '' }}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            {% if tracker.keeps_dates %}
+            {# Empty means "leave it alone", like every other box here. They
+               open with the SERVICE's dates; the line above says when this
+               app saw the reading start and end, for copying across. #}
+            <label class="text-xs text-neutral-500">
+                Started
+                <input autocomplete="off" type="date" name="start_date"
+                       value="{{ tracker_remote.start_date if tracker_remote and tracker_remote.start_date else '' }}"
+                       class="block bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-200">
+            </label>
+            <label class="text-xs text-neutral-500">
+                Finished
+                <input autocomplete="off" type="date" name="finish_date"
+                       value="{{ tracker_remote.finish_date if tracker_remote and tracker_remote.finish_date else '' }}"
+                       class="block bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-200">
+            </label>
+            {% else %}
+            <p class="text-xs text-neutral-500 w-full">{{ tracker.label }} keeps no reading dates.</p>
+            {% endif %}
+        </div>
+        <div class="flex flex-wrap items-center gap-2 mt-3">
+            <button class="{{ ui.control('px-3') }}">Update</button>
+            {# `type="button"`, so htmx's submit handler never runs and
+               nothing is sent -- Cancel means the boxes above are
+               abandoned. It closes the dialog through the same
+               data-tracker-close the ✕ uses, which is the only way out
+               that does not leave the editor sitting there half-edited.
+
+               What used to be here was "Send what is read here": the
+               automatic push, on demand. It is gone because the push
+               already runs on its own every time something is marked read
+               or a shelf's status changes, and the line above ("Read here:
+               volume 3, chapter 41") is what to type into the boxes when
+               one of those did not land. #}
+            <button type="button" data-tracker-close
+                    class="{{ ui.control('px-3') }}">Cancel</button>
+            {% if tracker_outcome %}
+            <span class="text-xs {{ 'text-red-400' if tracker_outcome == 'failed' else 'text-neutral-500' }}">{{ tracker_outcome }}</span>
+            {% endif %}
+        </div>
+    </form>
+    {% endif %}
+
+    {% else %}
+    {# Connected, not linked. A link is always chosen from these results:
+       matching on the title automatically would eventually push one
+       series' progress onto another's entry, and nothing on screen would
+       ever say so. #}
+    <form method="get" action="/tracking/{{ tracker.name }}/search"
+          hx-get="/tracking/{{ tracker.name }}/search"
+          hx-target="#tracker-panel" hx-swap="outerHTML" class="mt-3">
+        <div class="flex gap-2">
+            <input type="hidden" name="{{ target_name }}" value="{{ target_value }}">
+            <input autocomplete="off" name="q" value="{{ tracker_query if tracker_query is not none else tracker_default_query }}"
+                   placeholder="Find this on {{ tracker.label }}…"
+                   class="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 py-1 text-sm">
+            <button class="{{ ui.control('px-3') }}">Search</button>
+        </div>
+        {# Only where the app can actually tell the two apart: a mixed
+           library says nothing about what its series are, and a filter
+           with nothing behind it would silently drop half the answers.
+           Unticked by default -- a comic shelf searching a catalogue that
+           also indexes light novels gets the novel as its top hit often
+           enough that reading past it is the normal case, and linking the
+           wrong one ties a series to an entry no push will ever move.
+           Ticking it asks the same question with nothing dropped. #}
+        {% if tracker_kind %}
+        <label class="flex items-center gap-2 text-xs text-neutral-500 mt-1 cursor-pointer">
+            <input autocomplete="off" type="checkbox" name="all_types" value="1" class="accent-indigo-600"
+                   {{ 'checked' if tracker_all_types else '' }}>
+            Show every type, not only {{ 'novels' if tracker_kind == 'novel' else 'comics' }}
+        </label>
+        {% endif %}
+    </form>
+
+    {% if tracker_message %}
+    <p class="text-xs text-red-400 mt-2">{{ tracker_message }}</p>
+    {% elif tracker_results is not none and not tracker_results %}
+    {# The ordinary answer for a scanlation, a doujin or a small novel, so
+       it reads as a fact rather than as something having gone wrong.
+       "Nothing there" and "everything there was of the other kind" are
+       two different answers, and only the first means it does not exist. #}
+    {% if tracker_filtered_out %}
+    <p class="text-xs text-neutral-500 mt-2">
+        {{ tracker_filtered_out }} result{{ 's' if tracker_filtered_out != 1 else '' }} on
+        {{ tracker.label }} match “{{ tracker_query }}”, but none of them are
+        {{ 'novels' if tracker_kind == 'novel' else 'comics' }}. Tick the box above to see them.
+    </p>
+    {% else %}
+    <p class="text-xs text-neutral-500 mt-2">
+        Nothing on {{ tracker.label }} matches “{{ tracker_query }}”.
+    </p>
+    {% endif %}
+    {% elif tracker_results %}
+    {% if tracker_filtered_out %}
+    <p class="text-xs text-neutral-500 mt-2">
+        {{ tracker_filtered_out }} other-type result{{ 's' if tracker_filtered_out != 1 else '' }} hidden.
+    </p>
+    {% endif %}
+    <ul class="mt-2 space-y-1 list-scroll-cap">
+        {% for result in tracker_results %}
+        <li class="flex items-center gap-3 bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+            {# The cover is what actually settles it. A catalogue answers in
+               romaji, and a popular series has three entries whose titles
+               differ by a subtitle -- neither is something a line of text
+               tells you apart at a glance. loading="lazy" because these are
+               remote images on a panel usually closed. #}
+            {% if result.cover_url %}
+            <img src="{{ result.cover_url }}" alt="" loading="lazy" referrerpolicy="no-referrer"
+                 class="rounded flex-shrink-0" style="width: 2.5rem; height: 3.5rem; object-fit: cover;">
+            {% endif %}
+            <span class="min-w-0 flex-1">
+                {# The title IS the link to the entry, so checking one before
+                   linking it is one click, not a hunt on the site. #}
+                <a href="{{ result.url }}" target="_blank" rel="noopener noreferrer"
+                   class="text-sm block truncate hover:text-indigo-400">{{ result.title }}</a>
+                <span class="text-xs text-neutral-500 block truncate">
+                    {{ result.kind or 'unknown type' }}{% if result.year %} · {{ result.year }}{% endif %}
+                </span>
+                {% if result.description %}
+                <span class="text-xs text-neutral-500 block truncate">{{ result.description }}</span>
+                {% endif %}
+            </span>
+            <form method="post" action="/tracking/{{ tracker.name }}/link"
+                  hx-post="/tracking/{{ tracker.name }}/link"
+                  hx-target="#tracker-panel" hx-swap="outerHTML">
+                <input type="hidden" name="{{ target_name }}" value="{{ target_value }}">
+                <input type="hidden" name="remote_id" value="{{ result.remote_id }}">
+                <input type="hidden" name="remote_title" value="{{ result.title }}">
+                <input type="hidden" name="remote_url" value="{{ result.url }}">
+                <button class="{{ ui.control('px-3') }}">Link</button>
+            </form>
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+    {% endif %}
+</div>
+{# What the icons beside the title should now say. Linking or unlinking
+   changes whether this shelf is tied to the service, and an icon's whole
+   job is to report that -- but they live outside the dialog, so without
+   this the one you just linked with would go on showing grey until the
+   next page load, on the very page where you linked it.
+
+   Only when the link CHANGED (link and unlink), not on a search, a send
+   or a push: an out-of-band swap replaces the element, and replacing it
+   for nothing throws away the state it is carrying. Both icons are sent,
+   not just this service's: it costs one element and it means the swap
+   cannot be the thing that gets out of step. #}
+{% if tracker_link_changed %}
+{% for row in trackers %}
+{{ tracker_icon.icon(row, target_name, target_value, oob=True) }}
+{% endfor %}
+{% endif %}
+{# The description this link just brought over, painted where it lives.
+
+   The paragraph is outside this dialog (it sits under the series title),
+   so the only way a link can show it without a reload is out of band --
+   the same arrangement the edit panel uses to write it, and the novel
+   page uses for its title and synopsis. Without it, "Description taken
+   from MangaUpdates" would sit on screen next to a page still showing no
+   description, and the reader would have to reload to find out it was
+   true.
+
+   Set only by the link endpoint, and only for a series: a novel page has
+   no such paragraph, and an out-of-band swap aimed at nothing is silently
+   dropped. #}
+{% if tracker_summary %}
+{{ headline.summary(tracker_summary, oob=True) }}
+{% endif %}

@@ -1,0 +1,399 @@
+{% extends "base.html" %}
+{% block title %}{{ novel.title }}{% endblock %}
+{% block main_state %}
+{#- The SERVER's half of restoring "Unread only". A script cannot hide a row
+    that has not been parsed yet, so the block at the foot of this page --
+    which does the real work -- can only act once all 900 rows exist, and
+    the first frame paints before that. Measured: rows visible/total at the
+    first animation frame were 365/365 with the filter remembered, i.e. a
+    screenful of read chapters showing for a frame.
+
+    A STYLE, on the other hand, applies to each row as it is parsed. So the
+    attribute goes on <main> -- inside the swap, where <html> is not -- and
+    the rule (theme.css) hides read rows from the start. This used to be an
+    inline script reading localStorage; the server reads the cookie
+    instead, so the attribute is in the first byte and there is no script
+    in <head> at all. It is handed straight back:
+    the foot-of-page block does the real filtering and removes the
+    attribute in the same task, before anything can paint between the two,
+    so there is exactly one thing deciding what is hidden by the time any
+    script can be asked. -#}
+ data-novel-id="{{ novel.id }}"{% if ui_unread_only(request, novel.id) %} data-unread-only="1"{% endif %}
+{%- endblock %}
+
+{# The controls that act on the chapter list belong in the header, which is
+   where a series page already puts the search over its grid. Down in the
+   body they sat between the novel's metadata and the volumes, reading as
+   part of neither, and the row they were on was a third band of chrome on
+   a page that already has the header.
+
+   Rendered under exactly the conditions the list is: nothing to filter
+   with no chapters, and NOTHING filtered in drag mode -- a filtered list
+   is a list with holes, and a drop into one would hand novel-reorder.js
+   positions computed from what is visible rather than from what is there.
+   novel-chapters.js finds both by id and does not care where they
+   live; its early return on a missing box is what covers both cases. #}
+{% block header_filters %}
+{% if not novel.manual_sort_editing and chapters_total %}
+{% import "_filters_panel.html" as filters %}
+<input id="chapter-filter" type="search" placeholder="Filter chapters..."
+       aria-label="Filter chapters" autocomplete="off"
+       class="flex-1 min-w-[140px] bg-neutral-900 border border-neutral-700 rounded px-3 py-2 md:py-1.5 text-sm">
+{# The same panel the home grid and a series carry, with the one thing a
+   chapter list filters by. The box is UNCHANGED -- same id, same
+   localStorage key, same pre-paint restore at the foot of this page --
+   only where it sits moved. #}
+{% call filters.panel() %}
+<label class="flex items-center gap-3 cursor-pointer text-sm text-neutral-400 hover:text-neutral-100">
+    <span>Unread only</span>
+    <input autocomplete="off" id="chapter-unread-only" type="checkbox" class="accent-indigo-600">
+</label>
+{% endcall %}
+{% endif %}
+{% endblock %}
+
+{% block content %}
+{% import "library/_controls.html" as ui %}
+{% import "novels/_novel_headline.html" as headline %}
+{% import "_tracker_icon.html" as tracker_icon %}
+{% import "_status_badges.html" as badges %}
+<a href="/?library=novels" class="text-sm text-neutral-400 hover:text-neutral-100">← Web Novels</a>
+
+<div class="flex flex-col md:flex-row gap-6 md:items-start mt-3 mb-8">
+    {% if novel.cover_image_content_type %}
+    {# .cover is the 2:3 box every other cover in the app is painted into
+       (aspect ratio, placeholder colour, radius, clipping). This was the
+       last place carrying its own copy of those four, which is how the
+       two would have drifted the first time one of them changed. Only
+       the WIDTH is stated here, since a cover outside a grid has nothing
+       else to take one from. #}
+    <div class="cover w-40 flex-shrink-0">
+        <img src="/novels/{{ novel.id }}/cover{% if novel.cover_image_hash %}?v={{ novel.cover_image_hash }}{% endif %}"
+             alt="" class="w-full h-full object-cover">
+    </div>
+    {% endif %}
+    {# Title on the left with the icons that act on the novel beside it --
+       the shape a series page has. The controls used to be in three places
+       (the tracking status and Reorder up here, the publication status on a
+       row of its own below, the chapter filter further down still), each
+       with its own ad-hoc classes, so they sat at different heights and
+       read as a pile rather than a toolbar. Reorder is now behind an icon,
+       as a series page's order controls are. #}
+    <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2 mb-1 flex-wrap">
+            {{ headline.title(novel) }}
+            {# A pencil beside the title, the same affordance the series
+               page uses: it acts ON the title, so that is where it belongs,
+               and it costs no line of its own. It opens a dialog
+               (dialogs.js), as the series page's does. #}
+            <button type="button" id="novel-edit-toggle" data-dialog-open="novel-edit-dialog"
+                    aria-haspopup="dialog"
+                    title="Edit title and description" aria-label="Edit title and description"
+                    class="text-neutral-500 hover:text-neutral-100 cursor-pointer flex-shrink-0">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 20h9"></path>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+                </svg>
+            </button>
+            {# The tracking affordance, exactly as on a series page: one
+               icon per service, the same macro, so the two cannot drift
+               apart -- and the same out-of-band refresh when a link
+               changes what their colour should say (see _tracker_icon). #}
+            {% for row in trackers %}
+            {{ tracker_icon.icon(row, "novel_id", novel.id) }}
+            {% endfor %}
+            {# Reorder and Reset, behind one icon beside the others, as on a
+               series page and for the same reasons: used now and then, they
+               took the right of this row on every visit; they open on a line
+               of their own under it that only the icon closes; and while
+               dragging that line is open from the start, because "Done" is how
+               the mode ends. See disclosure.js. #}
+            <button type="button" id="novel-order-toggle" data-disclosure
+                    aria-controls="novel-order-panel"
+                    aria-expanded="{{ 'true' if novel.manual_sort_editing else 'false' }}"
+                    title="Reorder chapters" aria-label="Reorder chapters"
+                    class="text-neutral-500 hover:text-neutral-100 cursor-pointer flex-shrink-0 flex items-center">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M7 4v16"></path><path d="M3 8l4-4 4 4"></path>
+                    <path d="M17 20V4"></path><path d="M21 16l-4 4-4-4"></path>
+                </svg>
+            </button>
+            {# The reader's status and the work's, as the BADGES the home grid
+               draws them as -- the same two facts the cover already wears, so
+               a reader does not have to learn that the chip and the control
+               are one thing. The colour and the tone say which family each
+               belongs to, which is what the two identical grey selects in the
+               toolbar could not.
+
+               The publication one keeps its empty option, because NULL means
+               something here that it cannot mean for a series: follow the
+               SOURCE. Its label carries the source's own word when this
+               vocabulary recognises it, so choosing it back is not a guess.
+               An unrecognised wording gets no word -- a guessed "ongoing"
+               would be a confident label with nothing behind it. #}
+            {{ badges.tracking_select("/novels/" ~ novel.id ~ "/status",
+                                      current_status, status_labels) }}
+            {{ badges.publication_select(
+                   "/novels/" ~ novel.id ~ "/publication-status",
+                   novel.publication_status, publication_labels,
+                   empty_label="From the source" ~ (" (" ~ source_publication_label ~ ")"
+                                                    if source_publication_label else ""),
+                   source_word=novel.status) }}
+        </div>
+        <div id="novel-order-panel"
+             class="flex items-center gap-2 flex-wrap mt-2 mb-2{{ '' if novel.manual_sort_editing else ' hidden' }}">
+            {# Reorder keeps its words: it is a MODE, and its label is how
+               you can tell which one you are in ("Done" while dragging). #}
+            <form method="post" action="/novels/{{ novel.id }}/manual-sort/toggle">
+                <button class="{{ ui.control('px-3') }}"
+                        title="{{ 'Chapters not in reading order? Turn this on to fix it yourself by dragging within a volume.' if not novel.manual_sort_editing else '' }}">
+                    {{ 'Done' if novel.manual_sort_editing else 'Reorder' }}
+                </button>
+            </form>
+            {% if novel.manual_sort %}
+            <form method="post" action="/novels/{{ novel.id }}/manual-sort/reset"
+                  onsubmit="return confirm('Discard the manual order and go back to automatic sorting?');">
+                <button class="{{ ui.control('px-3') }}">Reset order</button>
+            </form>
+            {% endif %}
+        </div>
+        {% if novel.manual_sort_editing %}
+        <p class="text-sm text-neutral-500 mb-2">Drag chapters within a volume to reorder. Changes save automatically.</p>
+        {% endif %}
+        {{ headline.synopsis(novel) }}
+        {# A native <dialog>, opened by the pencil, and deliberately NOT
+           what htmx replaces: the endpoints swap #novel-edit INSIDE it, so
+           a save leaves it open, and the heading, the ✕ and "Saved"
+           (driven by an event, and mid-fade when the swap lands) survive
+           every save. Rendered `open` -- not modal -- when a refusal came
+           back without htmx, so the error is not hidden in a closed box.
+           Wider than the series one: a synopsis is paragraphs. #}
+        <dialog id="novel-edit-dialog" class="app-dialog app-dialog-wide"
+                aria-labelledby="novel-edit-heading" {{ 'open' if edit_error else '' }}>
+            <div class="flex items-center gap-2 mb-3">
+                <h2 id="novel-edit-heading" class="text-sm font-semibold text-neutral-200">Edit title and description</h2>
+                <span id="novel-edit-saved" class="hidden text-xs text-indigo-400">Saved</span>
+                <button type="button" data-dialog-close aria-label="Close"
+                        class="ml-auto cursor-pointer text-neutral-500 hover:text-neutral-100">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 6L6 18"></path><path d="M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            {% include "novels/_novel_edit.html" %}
+        </dialog>
+
+        {# How far in you are, which the page never said. The count is the
+           honest unit here: a chapter is what a web-novel reader finishes
+           (the same reasoning that makes a volume the unit in /stats), and
+           the bar is only there so it can be read at a glance. #}
+        {% if chapters_total %}
+        {% set read_percent = (chapters_read / chapters_total * 100) | round | int %}
+        <div class="max-w-sm mb-3">
+            <div class="flex items-center justify-between text-xs text-neutral-400 mb-1">
+                <span>{{ chapters_read }} of {{ chapters_total }} chapters read</span>
+                <span class="text-neutral-500">{{ read_percent }}%</span>
+            </div>
+            <span class="block h-1 bg-neutral-800 rounded">
+                <span class="block h-full bg-indigo-500 rounded" style="width: {{ read_percent }}%"></span>
+            </span>
+        </div>
+        {% endif %}
+
+        {# No scrape facts or controls here: when it was last checked,
+           whether it is active, what is still missing, the source link and
+           the two buttons all live on /settings, which is the list of
+           scrapes and the place to act on one. Saying it twice meant two
+           wordings of the same state to keep in step. The per-chapter
+           "not downloaded" badge stays -- that is about the row it is on,
+           not about the scrape. #}
+        <div class="max-w-2xl">
+            {# The same panel the series page carries, and the reason it is
+               a shared partial: a novel is tracked in CHAPTERS, which is
+               the only difference, and that is decided in store.py rather
+               than here. Closed until the icon above asks for it, and the
+               wrapper is not what htmx replaces -- every endpoint swaps
+               #tracker-panel inside it, so a search leaves it as open as it
+               was. Open on arrival when a search or a link brought you back
+               without htmx. #}
+            {# The same native <dialog> as the series page, for the same
+               reasons -- see the comment there. #}
+            <dialog id="tracker-dialog" class="tracker-dialog" aria-label="Tracking"
+                    {{ 'open' if tracker_open else '' }}>
+                {% if tracker_open %}{% include "_tracker_panel.html" %}{% else %}
+                <div id="tracker-panel"></div>
+                {% endif %}
+            </dialog>
+        </div>
+    </div>
+</div>
+
+{# Every chapter is already in the DOM -- this page has never paginated
+   (see AGENTS.md) -- so finding one is a show/hide over what is here, with
+   no request. On a novel of several hundred chapters spread across
+   collapsed volumes, that is the difference between finding chapter 412
+   and hunting for it. The box that does it is in the header, above. #}
+{% for volume in volumes %}
+{% set chapters = chapters_by_volume.get(volume.id, []) %}
+<section class="mb-4 bg-neutral-900 border border-neutral-800 rounded" data-volume-section="{{ volume.id }}">
+    <details {{ 'open' if (current_volume_id and volume.id == current_volume_id) or (not current_volume_id and loop.first) else '' }}>
+        <summary class="disclosure cursor-pointer flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 px-4 py-3 select-none">
+            <span class="font-medium min-w-0">
+                <span class="disclosure-caret" aria-hidden="true"></span>{{ volume.title or ("Volume " ~ volume.number) }}
+                {% if volume.id == current_volume_id %}
+                <span class="text-indigo-400 text-xs ml-2" title="You're reading this volume">● Reading</span>
+                {% endif %}
+            </span>
+            {% if chapters %}
+            <span class="flex items-center gap-3 flex-shrink-0">
+                {# So a collapsed volume still says how far in you are --
+                   which is the only reason collapsing hundreds of chapters
+                   is tolerable in the first place. #}
+                <span class="text-xs text-neutral-500"
+                      title="Chapters read in this volume">
+                    {{ volume_read_counts.get(volume.id, 0) }} / {{ chapters | length }}
+                </span>
+                <button type="button" class="btn text-xs"
+                        data-volume-id="{{ volume.id }}"
+                        data-read="{{ 'true' if volume_all_read.get(volume.id) else 'false' }}"
+                        onclick="event.preventDefault(); novelToggleVolumeRead(this)">
+                    {{ 'Mark all as unread' if volume_all_read.get(volume.id) else 'Mark all as read' }}
+                </button>
+            </span>
+            {% endif %}
+        </summary>
+        <ul class="border-t border-neutral-800 divide-y divide-neutral-800"
+            data-volume-id="{{ volume.id }}"
+            data-manual-sort="{{ 'true' if novel.manual_sort_editing else 'false' }}"
+            data-reorder-url="/novels/{{ novel.id }}/manual-sort/reorder">
+            {% for chapter in chapters %}
+            <li id="chapter-row-{{ chapter.id }}" data-chapter-id="{{ chapter.id }}"
+                data-chapter-search="{{ (chapter.number|chnum ~ ' ' ~ (chapter.title or '')) | lower }}"
+                {% if novel.manual_sort_editing %}draggable="true"{% endif %}
+                class="flex items-center justify-between px-4 py-2 text-sm {{ 'bg-neutral-800/50' if chapter.id == current_chapter_id else '' }}{{ ' cursor-move' if novel.manual_sort_editing else '' }}">
+                {# draggable="false" -- same reasoning as series-reorder.js's
+                   card link: without it this link's own default drag
+                   would hijack the gesture novel-reorder.js listens for. #}
+                <a href="/novels/{{ novel.id }}/read/{{ volume.number }}/{{ chapter.number|chnum }}"
+                   {% if novel.manual_sort_editing %}draggable="false"{% endif %}
+                   class="min-w-0 truncate {{ 'text-neutral-500' if chapter.id in read_ids else 'text-neutral-200' }} hover:text-indigo-400">
+                    {% if chapter.id == current_chapter_id %}<span title="You're reading this chapter">▶</span>{% endif %}
+                    Ch. {{ chapter.number|chnum }} — {{ chapter.title }}
+                </a>
+                <div class="flex items-center gap-3 flex-shrink-0 ml-3">
+                    {% if not chapter.downloaded %}
+                    <span class="text-xs text-amber-300" title="The sync has not fetched this chapter's text yet">
+                        not downloaded
+                    </span>
+                    {% endif %}
+                    {% if chapter.release_date %}<time class="text-xs text-neutral-600">{{ chapter.release_date }}</time>{% endif %}
+                    <button type="button" class="read-toggle btn text-xs"
+                            data-chapter-id="{{ chapter.id }}"
+                            data-read="{{ 'true' if chapter.id in read_ids else 'false' }}"
+                            onclick="novelToggleRead(this)">
+                        {{ '✓ Read' if chapter.id in read_ids else 'Mark as read' }}
+                    </button>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </details>
+</section>
+{% endfor %}
+
+<script>
+    (() => {
+        // Opening the dialog is dialogs.js, in <head>.
+        //
+        // The endpoints answer an htmx request with the panel itself plus an
+        // HX-Trigger header on success -- so "did this save?" is the
+        // server's answer, not a guess from the response body. An error
+        // comes back as the same panel with its message and no event.
+        //
+        // Once per document, with the indicator looked up when the event
+        // arrives: <body> outlives a boosted visit and this block runs on
+        // every one, so a listener per visit kept every earlier novel page
+        // alive through the indicator it held.
+        if (window.novelEditSavedBound) return;
+        window.novelEditSavedBound = true;
+        let timer = null;
+        document.body.addEventListener("novel-edit-saved", () => {
+            const indicator = document.getElementById("novel-edit-saved");
+            if (!indicator) return;
+            indicator.classList.remove("hidden");
+            clearTimeout(timer);
+            timer = setTimeout(() => indicator.classList.add("hidden"), 2000);
+        });
+    })();
+</script>
+
+{# Re-applies the saved "Unread only" before paint, the same way the
+   statistics page's "Most recent" filter does. Without it a novel opened
+   with the box remembered rendered every chapter, painted, and then
+   visibly dropped hundreds of rows once the deferred script ran -- on a
+   900-chapter novel that is the whole page moving under you.
+
+   It deliberately does NOT touch which volumes are open: leaving them
+   exactly as the server rendered them is what novel-chapters.js's
+   `desiredOpen` then reads as the baseline, and it is also the behaviour
+   the checkbox is supposed to have. Its answer must match apply()'s. #}
+<script>
+    (() => {
+        // Hand the stylesheet's job back FIRST, and unconditionally. From
+        // here on the classes below are the only thing hiding anything.
+        // Unconditionally because drag mode renders no checkbox at all --
+        // an early return that left the attribute up would leave the
+        // reorder list filtered, which is the one thing that mode must
+        // never be (see novel-chapters.js).
+        // What the SERVER decided, read off the attribute before handing
+        // it back -- not out of storage. One source for "is the filter
+        // on", and the only one that could have been right before paint.
+        const main = document.querySelector("main");
+        const wanted = main.dataset.unreadOnly === "1";
+        delete main.dataset.unreadOnly;
+        try {
+            const unreadOnly = document.getElementById("chapter-unread-only");
+            if (!unreadOnly || !wanted) return;
+            unreadOnly.checked = true;
+
+            for (const row of document.querySelectorAll("[data-chapter-search]")) {
+                const read = row.querySelector(".read-toggle")?.dataset.read === "true";
+                row.classList.toggle("hidden", read);
+            }
+            for (const section of document.querySelectorAll("[data-volume-section]")) {
+                const hits = section.querySelectorAll("[data-chapter-search]:not(.hidden)").length;
+                section.classList.toggle("hidden", hits === 0);
+            }
+            // The filters button's colour, before paint for the reason the
+            // rest of this block exists: the box is behind a click now, so
+            // the icon is the only thing saying the list is narrowed. The
+            // text search does not light it -- it is in the row, in plain
+            // sight, and only the panel's control is hidden. Keep this
+            // rule identical to novel-chapters.js's.
+            const filtersBtn = document.getElementById("filters-btn");
+            if (filtersBtn) {
+                filtersBtn.classList.add("text-indigo-400");
+                filtersBtn.classList.remove("text-neutral-500");
+            }
+        } catch {
+            // localStorage unavailable (private mode etc.) -- the page stays
+            // as the server rendered it and the deferred script still
+            // applies the real state.
+        }
+    })();
+</script>
+
+<script src="{{ asset_url('js/tracker-toggle.js') }}" defer></script>
+<script src="{{ asset_url('js/read-more.js') }}" defer></script>
+<script src="{{ asset_url('js/filters-panel.js') }}" defer></script>
+<script src="{{ asset_url('js/disclosure.js') }}" defer></script>
+<script src="{{ asset_url('js/novel-chapters.js') }}" defer></script>
+<script src="{{ asset_url('js/novel-reader.js') }}" defer></script>
+{# Sortable and reorder.js are in base.html's <head>: shared, and a
+   whole-<body> swap would re-execute them here. This one is the page's
+   own -- which containers, which items, what the endpoint wants. #}
+<script src="{{ asset_url('js/novel-reorder.js') }}" defer></script>
+{% endblock %}

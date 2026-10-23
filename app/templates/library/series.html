@@ -1,0 +1,461 @@
+{% extends "base.html" %}
+{% block title %}{{ series.name }}{% endblock %}
+{# This page's grid holds one series' volumes, not a whole library's
+   covers, so it keeps its own thumbnail size (see base.html's block and
+   thumbnail-size.js). Global to the page, not per series: the size is a
+   display preference, and having to re-set it on every series would make
+   it useless. #}
+{% block thumb_size_key %}thumbnail-size:series{% endblock %}
+{% block header_filters %}
+{% import "_filters_panel.html" as filters %}
+<input autocomplete="off" id="item-search" type="search" placeholder="Search items by title..."
+       class="flex-1 min-w-[140px] bg-neutral-900 border border-neutral-700 rounded px-3 py-2 md:py-1.5 text-sm">
+{# The same panel the home page and a novel carry, with the one thing a
+   SERIES can filter its volumes by. The cards already hold it -- every
+   card renders data-progress-status, which library-events.js compares
+   against to decide whether a live update needs the server -- so this is
+   a show/hide over what is there, exactly like the search beside it.
+
+   "Unread only" and not a four-way select, because that is the question a
+   long series is actually asked ("what is left") and it is the same
+   control, with the same word, that a novel's chapters have. Anything
+   short of `completed` counts as left to read: a volume you are halfway
+   through is not finished.
+
+   Not rendered while dragging, the rule the sort control on this page
+   already follows: a filtered grid has holes, and a drop into one would
+   hand series-reorder.js positions computed from what is visible rather
+   than from what is there. #}
+{% if not series.manual_sort_editing %}
+{% call filters.panel() %}
+<label class="flex items-center gap-3 cursor-pointer text-sm text-neutral-400 hover:text-neutral-100">
+    <span>Unread only</span>
+    <input autocomplete="off" type="checkbox" id="item-unread-only" class="accent-indigo-600">
+</label>
+{% endcall %}
+{% endif %}
+{% include "_thumb_size_control.html" %}
+{% endblock %}
+{% block content %}
+<div id="series-page" data-series-id="{{ series.id }}"></div>
+{% import "library/_controls.html" as ui %}
+{% import "library/_series_headline.html" as headline %}
+{% import "_tracker_icon.html" as tracker_icon %}
+{% import "_status_badges.html" as badges %}
+<div class="border-b border-neutral-800 pb-3 mb-4">
+    {# flex-wrap, so a tight row drops the badges to their own line
+       instead of squeezing the title: with the icons and both
+       badges now on this row, a 390px phone crushed "The Quiet
+       Town" onto three lines while the chips sat beside it. #}
+    <div class="flex items-center gap-2 flex-wrap">
+        <h1 id="series-title" class="text-xl font-semibold">{{ series.name }}</h1>
+        {# The edit affordance is a pencil beside the name rather than
+           a labelled <details> row of its own: it acts ON the name,
+           so that is where it belongs, and it stops a whole line of
+           the page being spent on a label you read once. It opens a
+           dialog (dialogs.js) rather than unfolding a panel into the
+           page, which pushed the grid down by the height of three
+           forms. #}
+        <button type="button" id="edit-toggle" data-dialog-open="series-edit-dialog"
+                aria-haspopup="dialog"
+                title="Edit name and cover" aria-label="Edit name and cover"
+                class="text-neutral-500 hover:text-neutral-100 cursor-pointer flex-shrink-0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+            </svg>
+        </button>
+        {# The tracking affordance: ONE ICON PER SERVICE, beside the
+           pencil. Each opens a dialog for its own service -- a
+           search box while nothing is linked, and what that
+           service holds once something is. It is a click's worth
+           of work when you want it, and nothing at all otherwise:
+           the dialog's contents are FETCHED on the click (see
+           /tracking/{name}/panel), because they include the
+           service's own current numbers and a copy baked into
+           this page would be stale by the time anybody pressed
+           Send. The icons themselves are a macro, because the
+           dialog sends fresh ones back when a link changes what
+           they should say (see _tracker_icon). #}
+        {% for row in trackers %}
+        {{ tracker_icon.icon(row, "series_id", series.id) }}
+        {% endfor %}
+        {# Outside the panel on purpose: it is driven by an event the
+           server sends, so re-rendering the panel must not replace
+           the element mid-fade. #}
+        {# The two bulk actions sit with the other icons that act on
+           this series rather than in the toolbar over the grid: they
+           change every item at once, which is a fact about the SERIES,
+           and as boxed controls they were the widest things on the row
+           after the title. Both keep their wording in title/aria-label.
+
+           hx-target/hx-swap re-render the whole grid from the response
+           -- these change every item's read badge at once, unlike the
+           per-item toggle in _item_card.html which only swaps itself. #}
+        <form method="post" action="/series/{{ series.id }}/mark-all-read"
+              hx-post="/series/{{ series.id }}/mark-all-read" hx-target="#items-grid" hx-swap="outerHTML">
+            <button class="text-neutral-500 hover:text-neutral-100 cursor-pointer flex-shrink-0 flex items-center"
+                    title="Mark all read" aria-label="Mark all read">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 6L9 17l-5-5"></path>
+                </svg>
+            </button>
+        </form>
+        <form method="post" action="/series/{{ series.id }}/mark-all-unread"
+              hx-post="/series/{{ series.id }}/mark-all-unread" hx-target="#items-grid" hx-swap="outerHTML"
+              hx-confirm="Mark every item in “{{ series.name }}” as unread? Where you left off in each will be forgotten, and finished ones will no longer count as finished in your stats.">
+            <button class="text-neutral-500 hover:text-neutral-100 cursor-pointer flex-shrink-0 flex items-center"
+                    title="Mark all unread" aria-label="Mark all unread">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 2v6h6"></path>
+                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L3 8"></path>
+                </svg>
+            </button>
+        </form>
+        {# Sorting and reordering, behind one icon among the others that
+           act on this series: they are used now and then, and took the
+           right of this row -- a line of their own on a phone -- on
+           every visit.
+
+           The icon opens them on a line of their own under this row, not
+           in a popover, for two reasons. Dragging needs "Done" in view
+           the whole time, and a popover shuts on the first click outside
+           it. And this icon's place moves with the title's length in a
+           row that wraps, so a box anchored to it could run off either
+           edge -- why the header's popovers span their row on a phone.
+           See disclosure.js. #}
+        <button type="button" id="series-order-toggle" data-disclosure
+                aria-controls="series-order-panel"
+                aria-expanded="{{ 'true' if series.manual_sort_editing else 'false' }}"
+                title="Sort and reorder" aria-label="Sort and reorder"
+                class="text-neutral-500 hover:text-neutral-100 cursor-pointer flex-shrink-0 flex items-center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M7 4v16"></path><path d="M3 8l4-4 4 4"></path>
+                <path d="M17 20V4"></path><path d="M21 16l-4 4-4-4"></path>
+            </svg>
+        </button>
+        {# The reader's status and the work's, as the BADGES the home
+           grid draws them as rather than two ad-hoc selects in the
+           toolbar. They are the same two facts the cover already
+           wears, so wearing them the same way is what stops a reader
+           having to learn that the chip and the control are one
+           thing. No labels: the colour and the tone say which family
+           each belongs to, which the toolbar's two identical grey
+           selects could not.
+
+           No empty option on the publication one -- every series is
+           `ongoing` until somebody says otherwise (see
+           status_labels.py). #}
+        {{ badges.tracking_select("/series/" ~ series.id ~ "/status",
+                                  current_status, status_labels) }}
+        {{ badges.publication_select("/series/" ~ series.id ~ "/publication-status",
+                                     series.publication_status, publication_labels) }}
+    </div>
+    {# What the icon above opens: closed until it is asked for, except
+       while dragging -- "Done" is how that mode is left, and its label is
+       how you can tell you are in it. #}
+    <div id="series-order-panel"
+         class="flex items-center gap-2 flex-wrap mt-2{{ '' if series.manual_sort_editing else ' hidden' }}">
+        {# Not rendered at all while dragging: reordering by hand edits
+           the manual order, and doing that through a grid shown in some
+           OTHER order would save nonsense. Nor for a single item, where
+           every order is the same one. "Manual order" only appears once
+           the series has one. The options say what they are instead of
+           a label saying "Sort" -- the row has no other labels, and the
+           selected option already reads as one. #}
+        {% if not series.manual_sort_editing and items | length > 1 %}
+        <div id="series-sort-control" class="flex items-center gap-2"
+             data-series-id="{{ series.id }}"
+             data-has-manual="{{ 'true' if series.manual_sort else 'false' }}">
+            {# Only when there is more than one order to choose FROM.
+               "Reading time" is not an order a comic can be put in --
+               a page's reading load is inside the image, so nothing
+               here carries an estimate (see can_sort_by_eta) -- and
+               "Manual order" only exists once the series has one. A
+               comic nobody has dragged into shape is therefore left
+               with "Original order" alone, and a select holding one
+               option is a control that cannot be used, the same
+               reason the sort is skipped altogether for a single item.
+
+               The DIRECTION button stays: reversing the one order
+               there is still answers a real question (start at the
+               newest volume), and it is the only thing left that
+               can. #}
+            {% if series.manual_sort or can_sort_by_eta %}
+            <select autocomplete="off" id="series-sort-select" class="{{ ui.control('px-2') }}"
+                    aria-label="Sort items" title="Sort items">
+                {% if series.manual_sort %}<option value="manual">Manual order</option>{% endif %}
+                <option value="original">Original order</option>
+                {% if can_sort_by_eta %}<option value="eta">Reading time</option>{% endif %}
+            </select>
+            {% endif %}
+            <button type="button" id="series-sort-direction"
+                    class="{{ ui.control('px-2 flex items-center justify-center') }}"
+                    aria-label="Sort direction" title="Sort direction">
+                {# Both arrows drawn, one shown -- toggling a style beats
+                   swapping innerHTML, same as the home page's button. #}
+                <svg id="series-sort-arrow-desc" viewBox="0 0 16 16" width="16" height="16" fill="none"
+                     stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                     stroke-linejoin="round" style="display:none">
+                    <path d="M8 3v10"/><path d="M4 9l4 4 4-4"/>
+                </svg>
+                <svg id="series-sort-arrow-asc" viewBox="0 0 16 16" width="16" height="16" fill="none"
+                     stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                     stroke-linejoin="round" style="display:block">
+                    <path d="M8 13V3"/><path d="M4 7l4-4 4 4"/>
+                </svg>
+            </button>
+        </div>
+        {% endif %}
+        {# Reorder keeps its words: it is a MODE, and its label is how you
+           can tell which one you are in ("Done" while dragging). #}
+        <form method="post" action="/series/{{ series.id }}/manual-sort/toggle">
+            <button class="{{ ui.control('px-3') }}"
+                    title="{{ 'Some series don\'t sort correctly by filename/title -- turn this on to fix the order yourself by dragging.' if not series.manual_sort_editing else '' }}">
+                {{ 'Done' if series.manual_sort_editing else 'Reorder' }}
+            </button>
+        </form>
+        {% if series.manual_sort %}
+        <form method="post" action="/series/{{ series.id }}/manual-sort/reset"
+              onsubmit="return confirm('Discard the manual order and go back to automatic sorting?');">
+            <button class="{{ ui.control('px-3') }}">Reset order</button>
+        </form>
+        {% endif %}
+    </div>
+    {# The folder under the title, quietly: the name used to BE the
+       folder's, so it doubled as "where is this on disk" until
+       renaming made the two independent. Shown as the path relative
+       to the library root, which is what actually locates it -- a
+       nested series' name is only its last component. break-all
+       because a path has no natural wrap point. #}
+    {% if series.folder_path %}
+    <p class="text-xs text-neutral-500 break-all mt-1" title="{{ series.folder_path }}">{{ series.folder_path }}</p>
+    {% endif %}
+    {# Outside the edit panel, which is why it is a macro: the panel
+       reaches it by out-of-band swap when it is saved. #}
+    {{ headline.summary(series) }}
+
+    {# The name and the cover are the two things a scan gets from the files
+       themselves and can get wrong -- a folder named "[Group] Series (2019)",
+       or a first volume whose cover is a plain logo. Both are editable here
+       and both are undoable: the automatic name is recomputed from the
+       folder, and the automatic cover from the first item.
+
+       A native <dialog>, opened by the pencil. The dialog is deliberately
+       NOT what htmx replaces: the endpoints swap #series-edit INSIDE it, so
+       a save leaves it open, and the heading, the ✕ and "Saved" (driven by
+       an event, and mid-fade when the swap lands) survive every save.
+       Rendered `open` -- not modal -- when a refusal came back without
+       htmx, or the redirect would land on a page with the error hidden in
+       a closed box. #}
+    <dialog id="series-edit-dialog" class="app-dialog" aria-labelledby="series-edit-heading"
+            {{ 'open' if edit_error else '' }}>
+        <div class="flex items-center gap-2 mb-3">
+            <h2 id="series-edit-heading" class="text-sm font-semibold text-neutral-200">Edit name and cover</h2>
+            <span id="edit-saved" class="hidden text-xs text-indigo-400">Saved</span>
+            <button type="button" data-dialog-close aria-label="Close"
+                    class="ml-auto cursor-pointer text-neutral-500 hover:text-neutral-100">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 6L6 18"></path><path d="M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+        {% include "library/_series_edit.html" %}
+    </dialog>
+
+    {# Reporting progress to MangaUpdates and MyAnimeList. Below the
+       controls rather than among them: it needs a search box that a
+       toolbar has no room for. The partial is shared with the novel page
+       and is its own swap target -- see _tracker_panel.html.
+
+       Closed unless something asked for it. The WRAPPER is what the icon
+       above toggles and is deliberately not what htmx replaces: every
+       endpoint swaps #tracker-panel INSIDE it, so a search leaves the
+       panel exactly as open as it was -- the same arrangement the edit
+       panel has. It opens by itself when a search or a link brought you
+       back here without htmx, or the redirect would land on a page
+       showing no sign of what just happened. #}
+    {# A native <dialog>, so Escape, the backdrop and the focus trap come
+       from the browser rather than from this app. It starts EMPTY and is
+       filled by whichever icon was clicked -- one target for all of them,
+       since only one can be open. `open` rather than showModal() when a
+       search or a link came back without htmx, or that redirect would
+       land on a page showing no sign of what just happened. #}
+    <dialog id="tracker-dialog" class="tracker-dialog" aria-label="Tracking"
+            {{ 'open' if tracker_open else '' }}>
+        {% if tracker_open %}{% include "_tracker_panel.html" %}{% else %}
+        <div id="tracker-panel"></div>
+        {% endif %}
+    </dialog>
+</div>
+<script>
+    (() => {
+        // Opening the dialog and previewing a chosen cover are dialogs.js
+        // and cover-preview.js, in <head>.
+        //
+        // The endpoints answer an htmx request with the panel itself plus an
+        // HX-Trigger header on success -- so "did this save?" is the server's
+        // answer, not a guess from the response body. An error comes back as
+        // the same panel with its message and no event, and nothing flashes.
+        //
+        // Once per document, with the indicator looked up when the event
+        // arrives: <body> outlives a boosted visit and this block runs on
+        // every one, so a listener per visit kept every earlier series page
+        // alive through the indicator it held.
+        if (window.seriesEditSavedBound) return;
+        window.seriesEditSavedBound = true;
+        let timer = null;
+        document.body.addEventListener("series-edit-saved", () => {
+            const indicator = document.getElementById("edit-saved");
+            if (!indicator) return;
+            indicator.classList.remove("hidden");
+            clearTimeout(timer);
+            timer = setTimeout(() => indicator.classList.add("hidden"), 2000);
+        });
+    })();
+</script>
+{% if series.manual_sort_editing %}
+<p class="text-sm text-neutral-500 mb-3">Drag items to reorder. Changes save automatically.</p>
+{% endif %}
+{% include "library/_items_grid.html" %}
+<!-- Applies the saved search AND the saved sort before the browser paints
+     the grid -- inline and un-deferred on purpose, right after the cards
+     exist, the same pattern the home page uses (see library/index.html).
+     Without it a reload with an active search briefly showed every item,
+     and one with a saved sort briefly showed the server's order, then
+     visibly reshuffled once the deferred scripts ran.
+
+     One block doing both, deliberately: two blocks would each be correct
+     on its own and the pair still wrong, which is the bug the home page's
+     pre-paint comment describes at length. series-search.js and
+     series-sort.js still own the controls, the persistence and the
+     re-application after htmx/SSE swaps; each re-runs the same logic on
+     its own load, on top of what this already did. -->
+<script>
+    (() => {
+        try {
+            const grid = document.getElementById("items-grid");
+            if (!grid) return;
+            const cards = Array.from(grid.querySelectorAll("[data-item-id]"));
+
+            const marker = document.getElementById("series-page");
+            const saved = marker
+                ? (localStorage.getItem(`series-search:${marker.dataset.seriesId}`) || "").trim().toLowerCase()
+                : "";
+            // "Unread only" is restored in the SAME pass as the search, not
+            // in a block of its own: two blocks each hiding by their own
+            // criterion is how the last to run un-hides what the first had
+            // hidden (see the home page's pre-paint comment). One answer,
+            // computed once, and it has to match series-search.js's
+            // applyFilter().
+            const wantUnread = marker
+                && localStorage.getItem(`series-unread-only:${marker.dataset.seriesId}`) === "1";
+            if (wantUnread) {
+                const box = document.getElementById("item-unread-only");
+                if (box) box.checked = true;
+            }
+            // The filters button's colour, before paint for the reason
+            // everything else here is: the control is behind a click now,
+            // so this icon is the only thing saying the grid is narrowed,
+            // and an icon corrected after the first frame is a visible
+            // flip. The search does NOT light it -- the two controls are
+            // independent here, so the icon reports only the panel's.
+            const filtersBtn = document.getElementById("filters-btn");
+            if (filtersBtn) {
+                filtersBtn.classList.add(wantUnread ? "text-indigo-400" : "text-neutral-500");
+                filtersBtn.classList.remove(wantUnread ? "text-neutral-500" : "text-indigo-400");
+            }
+            if (saved || wantUnread) {
+                const input = document.getElementById("item-search");
+                if (input && saved) input.value = saved;
+                for (const card of cards) {
+                    const matches = (!saved || (card.dataset.title || "").includes(saved))
+                        && (!wantUnread || (card.dataset.progressStatus || "") !== "completed");
+                    card.classList.toggle("hidden", !matches);
+                }
+            }
+
+            const control = document.getElementById("series-sort-control");
+            if (!control) return; // drag mode, or a single item -- no sort to apply
+            // The SELECT may be absent while the control is not: a comic
+            // series nobody has dragged into shape has only one order to
+            // be in, so series.html renders no select and keeps only the
+            // direction button. The saved DIRECTION still has to be
+            // applied here, or the deferred script reverses the grid one
+            // frame after it painted.
+            const select = document.getElementById("series-sort-select");
+            // Keyed by series, like the search box above: which order a
+            // series wants is a property of that series (one is a manual
+            // pile, the next is numbered fine), not of the device.
+            const savedSort = localStorage.getItem(`series-item-sort:${control.dataset.seriesId}`);
+            if (!savedSort) return; // server already rendered the default order
+            const [rawField, dir] = savedSort.split("-");
+            if (rawField && select && select.querySelector(`option[value="${rawField}"]`)) {
+                select.value = rawField;
+            }
+            // Read back off the SELECT rather than from the saved string,
+            // which is what makes this the same answer series-sort.js's
+            // currentField() gives: the assignment above only took the
+            // saved field if the select still offers it, so an order the
+            // page can no longer be put in falls back to the select's own
+            // default here and there by the same route. With no select
+            // there is only one order to be in.
+            const raw = select ? select.value : "original";
+            const hasManual = control.dataset.hasManual === "true";
+            const field = raw === "manual" && !hasManual ? "original" : raw;
+            // The sort icon beside the title is lit for any order but the
+            // default, before paint for the same reason as the filters
+            // icon above: the controls are behind it, so it is the only
+            // thing saying the grid was reordered. The same rule as
+            // series-sort.js's renderToggle().
+            const defaultField = hasManual ? "manual" : "original";
+            const lit = field !== defaultField || dir === "desc";
+            const toggle = document.getElementById("series-order-toggle");
+            if (toggle) {
+                toggle.classList.add(lit ? "text-indigo-400" : "text-neutral-500");
+                toggle.classList.remove(lit ? "text-neutral-500" : "text-indigo-400");
+            }
+            const arrows = { asc: document.getElementById("series-sort-arrow-asc"),
+                             desc: document.getElementById("series-sort-arrow-desc") };
+            if (arrows.asc && arrows.desc) {
+                arrows.asc.style.display = dir === "desc" ? "none" : "block";
+                arrows.desc.style.display = dir === "desc" ? "block" : "none";
+            }
+            // Keep this comparator identical to series-sort.js's: it runs
+            // again on load, on top of this, and the two must agree.
+            const key = { manual: "manualOrder", original: "originalOrder", eta: "eta" }[field] || "originalOrder";
+            const sorted = cards.sort((a, b) => {
+                const av = a.dataset[key];
+                const bv = b.dataset[key];
+                if ((av === undefined) !== (bv === undefined)) return av === undefined ? 1 : -1;
+                if (av === undefined) return 0;
+                const cmp = Number(av) < Number(bv) ? -1 : Number(av) > Number(bv) ? 1 : 0;
+                return dir === "desc" ? -cmp : cmp;
+            });
+            for (const card of sorted) grid.appendChild(card);
+        } catch {
+            // localStorage unavailable (private mode etc.) -- nothing pre-applied
+        }
+    })();
+</script>
+
+{% set base_url = "/series/" ~ series.id %}
+
+<script src="{{ asset_url('js/tracker-toggle.js') }}" defer></script>
+<script src="{{ asset_url('js/read-more.js') }}" defer></script>
+<script src="{{ asset_url('js/tooltip.js') }}" defer></script>
+<script src="{{ asset_url('js/filters-panel.js') }}" defer></script>
+<script src="{{ asset_url('js/disclosure.js') }}" defer></script>
+<script src="{{ asset_url('js/series-search.js') }}" defer></script>
+<script src="{{ asset_url('js/series-sort.js') }}" defer></script>
+<script src="{{ asset_url('js/thumbnail-size.js') }}" defer></script>
+{# Sortable and reorder.js are in base.html's <head>: shared, and a
+   whole-<body> swap would re-execute them here. This one is the page's
+   own -- which containers, which items, what the endpoint wants. #}
+<script src="{{ asset_url('js/series-reorder.js') }}" defer></script>
+{% endblock %}

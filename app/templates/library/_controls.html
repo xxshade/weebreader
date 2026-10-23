@@ -1,0 +1,16 @@
+{# One style for every small control on the series page.
+
+   They each used to carry their own ad-hoc classes (buttons
+   bg-neutral-800/px-3/py-1, the select bg-neutral-900 with a border and
+   different padding), so they sat at different heights and read as a pile
+   rather than a toolbar. The frozen app.css (see the Tailwind removal in
+   AGENTS.md) has no @apply and gains no new rules, so "one style" has to
+   mean one place in the templates -- and a macro rather than a {% set %},
+   because _series_edit.html is ALSO rendered on its own by the save
+   endpoints, where a variable set by the page around it would silently be
+   empty. `extra` carries the padding, which differs between an icon button
+   and a labelled one; the shared HEIGHT is `.ctl`, in theme.css --
+   see the comment there for why it cannot be a utility. #}
+{% macro control(extra="") -%}
+ctl bg-neutral-900 border border-neutral-700 rounded text-sm text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100 cursor-pointer {{ extra }}
+{%- endmacro %}

@@ -1,0 +1,28 @@
+<div id="thumb-size-control" class="flex-shrink-0">
+    <button id="thumb-size-btn" type="button"
+            class="flex items-center justify-center w-10 h-10 md:w-7 md:h-7 rounded text-neutral-100 hover:text-white hover:bg-neutral-800"
+            title="Thumbnail size" aria-haspopup="true" aria-expanded="false">
+        <svg width="16" height="16" viewBox="0 0 14 14" fill="none" class="flex-shrink-0">
+            <rect x="1" y="1" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.7"/>
+            <rect x="8" y="1" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.7"/>
+            <rect x="1" y="8" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.7"/>
+            <rect x="8" y="8" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.7"/>
+        </svg>
+    </button>
+    <div id="thumb-size-popover"
+         class="hidden absolute mt-2 bg-neutral-900 border border-neutral-800 rounded-lg shadow-lg px-3 py-2.5 z-20 flex items-center gap-2 whitespace-nowrap">
+        <span class="text-xs text-neutral-500">Small</span>
+        {# The ceiling is the COVER's, not a taste call: thumbnails are
+           generated at 400x600 (THUMBNAIL_MAX_SIZE in covers/thumbnails.py),
+           so 400 css px is exactly 1:1 on an ordinary display and anything
+           past it would be the slider enlarging an image the files cannot
+           back. The old 220 threw away 45% of the stored resolution at its
+           own maximum (measured: a 220px card is 0.55x of a 400px image).
+           On a 2x screen the source runs out at 200 instead -- but a cap of
+           200 would be sizing everyone's grid by the sharpest possible
+           display, and a cover a little soft is a fair trade for a cover
+           you asked to be big. #}
+        <input autocomplete="off" id="thumb-size-slider" type="range" min="110" max="400" step="10" data-range-value="px" class="accent-indigo-600">
+        <span class="text-xs text-neutral-500">Large</span>
+    </div>
+</div>

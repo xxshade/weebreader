@@ -1,0 +1,95 @@
+{# Expects: replacement_rules. The saved text-replacement rules.
+
+   Also rendered standalone as the htmx swap target for adding, editing and
+   removing one (see library/router.py) -- which is why the wrapper is
+   always here even with nothing in it: hx-target has to exist before the
+   first rule does. Everything swaps this whole list rather than one row,
+   because the order depends on the target's name and an edit can move a
+   rule within it.
+
+   Each row carries both a view and an edit form, with the pencil toggling
+   between them -- the same shape as the series page's edit panel. Every
+   form also has method/action, so the endpoints' plain-POST answers still
+   work if htmx never loads; only the pencil needs JS. #}
+<div id="replacement-rules">
+    {# Both the count and the scroll cap live INSIDE the swap target: every
+       add, edit and delete replaces this whole element, so a count in
+       settings.html would go stale the moment a rule was added, and a cap
+       applied out there would not switch on when the list crossed the
+       threshold without a reload.
+
+       Capped rather than truncated behind a "show more": one novel with
+       14 rules is enough to make this section most of the page, but a
+       hidden rule is one you cannot find by eye -- and finding the rule
+       you want to fix IS the job here. Everything stays on screen; it
+       just stops pushing the sections below it out of reach. #}
+    {% if replacement_rules %}
+    <p class="text-xs text-neutral-500 mb-2">
+        {{ replacement_rules|length }} rule{{ 's' if replacement_rules|length != 1 else '' }}
+    </p>
+    {% endif %}
+    <div class="space-y-2{{ ' list-scroll-cap' if replacement_rules|length > 6 else '' }}">
+    {% for rule in replacement_rules %}
+    {# rule.replace_text, not rule.replace: Jinja resolves an attribute with
+       getattr before the mapping, and `str.replace` exists -- `rule.replace`
+       renders a bound method. #}
+    <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2" data-rule-id="{{ rule.id }}">
+        <div class="flex items-center justify-between gap-3" data-rule-view>
+            <span class="min-w-0">
+                <span class="text-sm block truncate">
+                    {{ rule.find_text }} → {{ rule.replace_text or '(nothing)' }}
+                </span>
+                <span class="text-xs text-neutral-500 block truncate">{{ rule.target_name or 'Removed' }}</span>
+            </span>
+            <span class="flex items-center gap-1 flex-shrink-0">
+                <button type="button" data-rule-edit class="btn flex items-center justify-center"
+                        title="Edit" aria-label="Edit this replacement">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 20h9"></path>
+                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+                    </svg>
+                </button>
+                <form method="post" action="/settings/text-replacements/{{ rule.id }}/delete"
+                      hx-post="/settings/text-replacements/{{ rule.id }}/delete"
+                      hx-target="#replacement-rules" hx-swap="outerHTML">
+                    <button class="btn flex items-center justify-center"
+                            title="Remove" aria-label="Remove this replacement">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 6h18"></path>
+                            <path d="M8 6V4h8v2"></path>
+                            <path d="M19 6l-1 14H6L5 6"></path>
+                            <path d="M10 11v6"></path><path d="M14 11v6"></path>
+                        </svg>
+                    </button>
+                </form>
+            </span>
+        </div>
+        {# The target is not editable here: a rule for another series is a
+           different rule, and changing it silently would move a
+           substitution onto a book the reader never asked about. Remove and
+           add is the honest way to do that. #}
+        <form method="post" action="/settings/text-replacements/{{ rule.id }}"
+              hx-post="/settings/text-replacements/{{ rule.id }}"
+              hx-target="#replacement-rules" hx-swap="outerHTML"
+              data-rule-edit-form class="hidden mt-2">
+            {# The target stays on screen while editing: the view row that
+               normally carries it is hidden, and "which book is this
+               about" is the one thing the two text boxes cannot say. #}
+            <p class="text-xs text-neutral-500 mb-2 truncate">{{ rule.target_name or 'Removed' }}</p>
+            <div class="flex flex-col sm:flex-row gap-2">
+                <input autocomplete="off" name="find_text" required value="{{ rule.find_text }}" placeholder="Find this text"
+                       class="flex-1 min-w-0 bg-neutral-950 border border-neutral-700 rounded px-3 py-2 text-sm">
+                <input autocomplete="off" name="replace_text" value="{{ rule.replace_text }}" placeholder="Show this instead"
+                       class="flex-1 min-w-0 bg-neutral-950 border border-neutral-700 rounded px-3 py-2 text-sm">
+                <span class="flex items-center gap-2 flex-shrink-0">
+                    <button class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm font-medium">Save</button>
+                    <button type="button" data-rule-cancel class="btn">Cancel</button>
+                </span>
+            </div>
+        </form>
+    </div>
+    {% endfor %}
+    </div>
+</div>

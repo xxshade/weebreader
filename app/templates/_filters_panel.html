@@ -1,0 +1,38 @@
+{# The shell every page's filters share: one button, one popover.
+
+   It exists as a macro rather than three copies because the geometry is
+   the hard part and it is already solved once -- spanning the header
+   on a phone, anchored to its own button from md up (see
+   #filters-popover in theme.css). The three pages differ only in WHAT is
+   inside, which is what `caller()` is for.
+
+   The ids are fixed, not parameters: filters-panel.js finds the button
+   and the popover by id, and no page carries two of these. #}
+{% macro panel() %}
+<div id="filters-control" class="flex-shrink-0">
+    {# Coloured by whether anything is filtering, so the one thing the
+       visible controls used to say at a glance is not lost behind a click
+       -- the same job, and the same reasoning, as the tracker icon's
+       three colours. Each page's own script owns which of the two classes
+       is on it (through filtersPanel.setActive); its pre-paint block sets
+       it first, since an icon corrected after the first paint is a
+       visible flip. #}
+    <button id="filters-btn" type="button"
+            class="flex items-center justify-center w-10 h-10 md:w-7 md:h-7 rounded text-neutral-500 hover:text-neutral-100 hover:bg-neutral-800"
+            title="Filters" aria-label="Filters" aria-haspopup="true" aria-expanded="false">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+             class="flex-shrink-0" aria-hidden="true">
+            <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/>
+        </svg>
+    </button>
+    {# Every row is `<label><span>name</span> control</label>`, which is
+       what theme.css's label-column rule lines up: without a common width
+       on the names the two selects end at the same right edge and start
+       at different left ones, which is the thing that reads as crooked. #}
+    <div id="filters-popover"
+         class="hidden absolute mt-2 bg-neutral-900 border border-neutral-800 rounded-lg shadow-lg px-3 py-2.5 z-20 flex flex-col gap-2">
+        {{ caller() }}
+    </div>
+</div>
+{% endmacro %}

@@ -1,0 +1,45 @@
+{# The "New library" dialog's form, as its own partial so a refusal can
+   come back as exactly this markup: over htmx the endpoint answers 422 with
+   it, carrying the message and what was typed, and the dialog stays open
+   around it. A success is the ordinary boosted redirect to the home page,
+   which replaces the whole body -- dialog included -- with one listing the
+   new library. Without htmx a refusal is a redirect back here with the
+   message in the query, and the dialog renders open.
+
+   `hx-status:422` names its own target and turns the URL push off: the
+   form is boosted, so by default it swaps the body and pushes its action,
+   which is right for the redirect and wrong for a refusal -- measured,
+   the refusal left /libraries in the address bar, a URL that answers 405
+   to a reload.
+
+   Expects: library_form (error, name, path, media_type). #}
+<form id="new-library-form" method="post" action="/libraries" class="space-y-3"
+      hx-status:422="swap:outerHTML target:#new-library-form push:false">
+    {% if library_form.error %}
+    <p class="text-sm text-red-400">{{ library_form.error }}</p>
+    {% endif %}
+    <label class="block text-xs text-neutral-500">
+        Name
+        <input autocomplete="off" name="name" required data-dialog-focus value="{{ library_form.name or '' }}"
+               class="mt-1 w-full bg-neutral-950 border border-neutral-700 rounded px-2 py-1.5 text-sm text-neutral-200">
+    </label>
+    <label class="block text-xs text-neutral-500">
+        Path inside the container
+        <input autocomplete="off" name="root_path" required placeholder="/library/manga" value="{{ library_form.path or '' }}"
+               class="mt-1 w-full bg-neutral-950 border border-neutral-700 rounded px-2 py-1.5 text-sm text-neutral-200">
+    </label>
+    <label class="block text-xs text-neutral-500">
+        Contents
+        <select autocomplete="off" name="media_type"
+                class="mt-1 w-full bg-neutral-950 border border-neutral-700 rounded px-2 py-1.5 text-sm text-neutral-200">
+            {% for value, label in [("comic", "Comics/Manga"), ("ebook", "E-books"), ("mixed", "Mixed")] %}
+            <option value="{{ value }}" {{ 'selected' if library_form.media_type == value else '' }}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <div class="flex items-center gap-2 mt-4">
+        <button type="button" data-dialog-close
+                class="ml-auto rounded px-3 py-1.5 text-sm text-neutral-400 hover:text-neutral-100 cursor-pointer">Cancel</button>
+        <button class="bg-indigo-600 hover:bg-indigo-500 rounded px-3 py-1.5 text-sm font-medium">Create and scan</button>
+    </div>
+</form>

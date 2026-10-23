@@ -1,0 +1,16 @@
+{
+    "name": "Publication Reader",
+    "short_name": "Reader",
+    "description": "Self-hosted reader for comics, ebooks and web novels.",
+    "start_url": "/",
+    "scope": "/",
+    "display": "fullscreen",
+    "display_override": ["fullscreen", "standalone"],
+    "background_color": "#0a0a0a",
+    "theme_color": "#0a0a0a",
+    "icons": [
+        { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+        { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+        { "src": "/static/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    ]
+}

@@ -1,0 +1,35 @@
+{% import "_clamp.html" as clamp %}
+{# The two things the edit panel changes that are NOT inside it: the
+   heading and the description paragraph. They live here as macros because
+   both places have to render them identically -- the page on load, and the
+   panel's response as an out-of-band swap -- and two copies of the same
+   markup is exactly the kind of pair that drifts.
+
+   The paragraph is rendered even when there is no description, hidden.
+   An out-of-band swap needs something to replace: without it, adding a
+   description to a novel that had none would save and show nothing until
+   the next reload. #}
+{% macro title(novel, oob=False) %}
+<h1 id="novel-title" class="text-xl font-semibold"{% if oob %} hx-swap-oob="true"{% endif %}>{{ novel.title }}</h1>
+{% endmacro %}
+
+{# Clamped to three lines, exactly as the series page's description is
+   and for the same reason: what a source site answers with is often
+   several paragraphs sitting between the title and everything you came
+   here to do. The clamp is CSS (`.clamp-3`), so the short version is what
+   the FIRST frame draws -- a script that cut it down afterwards would
+   show the wall of text and then take it away. read-more.js does the one
+   thing CSS cannot, which is decide whether three lines were enough AT
+   THIS WIDTH and only then reveal the button.
+
+   The id moves to the WRAPPER, which is what the out-of-band swap
+   replaces: text and button have to arrive together, or a description
+   edited while expanded would come back clamped under a button still
+   reading "Show less". #}
+{% macro synopsis(novel, oob=False) %}
+<div id="novel-synopsis" data-clamp class="mb-3 max-w-2xl{{ '' if novel.synopsis else ' hidden' }}"
+     {% if oob %}hx-swap-oob="true"{% endif %}>
+    <p class="clamp-text clamp-3 text-sm text-neutral-400">{{ novel.synopsis or '' }}</p>
+    {{ clamp.toggle(novel.synopsis) }}
+</div>
+{% endmacro %}

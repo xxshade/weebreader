@@ -1,0 +1,85 @@
+{# Expects: reading_items. The home page's "Reading" shortcut -- also
+   rendered standalone as the target of GET /library/reading-grid, which
+   library-events.js re-fetches when an item's reading STATUS changes
+   (something started or finished elsewhere enters/leaves this section,
+   and only the server knows which entries belong here).
+
+   The percentage itself doesn't need that round trip: the data-* hooks
+   and the .progress-* classes below are what let a progress event update
+   the bar and the label in place, with no fetch at all. #}
+{# --cover-blur on the grid itself, as on #series-grid: this element is
+   what a refresh replaces, so the radius has to travel with it. #}
+<div id="reading-grid" class="thumb-grid grid gap-4" style="--cover-blur: {{ user.cover_blur_px }}px">
+    {% for entry in reading_items %}
+    {# The wrapper exists so the clear button below can sit ON the card
+       without being INSIDE the link -- a <button> inside an <a> is invalid
+       HTML and a click would fire both. Same arrangement as
+       library/_item_card.html. #}
+    <div class="relative">
+    {# entry.url IS a reader URL (see the "url" key in library/router.py). #}
+    <a href="{{ entry.url }}" class="block group"
+       {% if entry.kind == 'item' %}data-item-id="{{ entry.id }}"{% if entry.series_id %} data-series-id="{{ entry.series_id }}"{% endif %}{% else %}data-novel-id="{{ entry.id }}" data-chapter-id="{{ entry.chapter_id }}"{% endif %}
+       data-progress-status="reading">
+        <div class="cover">
+            {% if entry.cover_url %}
+            {# Blurred when its series asked to be (see the home grid);
+               data-series-id above is how a change to that reaches here. #}
+            <img loading="lazy" src="{{ entry.cover_url }}" class="w-full h-full object-cover{{ ' cover-blur' if entry.blur_cover else '' }}">
+            {% endif %}
+            <span class="absolute bottom-0 left-0 right-0 h-1 bg-neutral-700">
+                <span class="progress-fill block h-full bg-indigo-500" style="width: {{ entry.progress_percent }}%"></span>
+            </span>
+        </div>
+        <p title="{{ entry.title }}" class="card-title">{{ entry.title }}</p>
+        {# Percentage on one side, estimated time left on the other. For a
+           novel they describe different spans -- the percentage is the
+           CHAPTER the card opens at, the time is the whole VOLUME -- so
+           the label in front names both, and the estimate's tooltip says
+           which one it is counting. data-chapter-id is what tells
+           library-events.js that a chapter boundary was crossed and this
+           line has to be re-rendered.
+
+           data-eta-total carries the PROJECTED TOTAL rather than what is
+           left, so library-events.js can re-derive the estimate for a new
+           percentage arriving over SSE without a round trip -- the same
+           reason the percentage itself travels in the event.
+           data-eta-rest is the part of that estimate the percentage does
+           NOT move: the volume beyond this chapter. Zero for an item,
+           where the total is the whole of it. Absent entirely when there
+           is no basis for an estimate. #}
+        <p class="text-xs text-neutral-500 flex items-center justify-between gap-2">
+            <span class="min-w-0 truncate">{% if entry.chapter_label %}{{ entry.chapter_label }} · {% endif %}<span class="progress-label">{{ entry.progress_percent|round|int }}%</span><span class="progress-remaining">{% if entry.pages_remaining is not none %} · {{ entry.pages_remaining }} page{{ 's' if entry.pages_remaining != 1 else '' }} left{% endif %}</span></span>
+            {% if entry.eta %}
+            <span class="reading-eta flex-shrink-0" data-eta-total="{{ entry.eta.total | round | int }}"
+                  data-eta-rest="{{ entry.eta.rest | round | int }}" data-eta-scope="{{ entry.eta_scope }}"
+                  title="About {{ entry.eta.remaining | duration }} left{% if entry.eta_scope %} in {{ entry.eta_scope }}{% endif %}, going by how fast you read">~{{ entry.eta.remaining | duration }}</span>
+            {% endif %}
+        </p>
+    </a>
+    {# "I opened this to look at it and now it lives on my home page" is
+       the whole reason this exists: without it the way out was to mark the
+       thing read and then unread, which enters it into the "how long one
+       volume takes" average on /stats. hx-swap="none" because the response
+       is not what updates this grid -- the endpoint publishes a status
+       change, and library-events.js re-renders the section from that, the
+       same path a mark-read on another screen already takes.
+
+       hx-confirm rather than onsubmit="return confirm(...)": htmx
+       intercepts the submit event itself, so an inline handler would ask
+       first and htmx would ask again -- two dialogs for one click. This
+       button sits ON a cover you are about to tap to keep reading, and
+       what it throws away is your place in the book. #}
+    <form method="post" action="{{ entry.clear_url }}"
+          hx-post="{{ entry.clear_url }}" hx-swap="none"
+          hx-confirm="{% if entry.kind == 'item' %}Mark “{{ entry.title }}” as unread?{% else %}Clear the reading status of “{{ entry.title }}”?{% endif %} Where you left off will be forgotten, and it leaves this section."
+          class="absolute top-1 left-1">
+        <button type="submit"
+                title="{{ 'Mark as unread' if entry.kind == 'item' else 'Clear reading status' }} — leaves this section"
+                aria-label="{{ 'Mark as unread' if entry.kind == 'item' else 'Clear reading status' }}"
+                class="w-6 h-6 flex items-center justify-center rounded-full bg-black/70 text-xs leading-none hover:bg-black/90">
+            ✕
+        </button>
+    </form>
+    </div>
+    {% endfor %}
+</div>

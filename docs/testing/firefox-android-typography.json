@@ -1,0 +1,82 @@
+{
+  "userAgent": "Mozilla/5.0 (Android 9; Mobile; rv:125.0) Gecko/125.0 Firefox/125.0",
+  "cases": [
+    {
+      "baseline": true,
+      "scale": 100,
+      "short": {
+        "font": "16px",
+        "width": 139.6666717529297,
+        "height": 19
+      },
+      "long": {
+        "font": "16px",
+        "width": 163,
+        "height": 22.5
+      },
+      "heading": {
+        "font": "32px",
+        "width": 279.33331298828125,
+        "height": 38
+      }
+    },
+    {
+      "baseline": true,
+      "scale": 150,
+      "short": {
+        "font": "24px",
+        "width": 209.5,
+        "height": 28.5
+      },
+      "long": {
+        "font": "24px",
+        "width": 209.5,
+        "height": 28.5
+      },
+      "heading": {
+        "font": "48px",
+        "width": 419,
+        "height": 57
+      }
+    },
+    {
+      "baseline": false,
+      "scale": 100,
+      "short": {
+        "font": "16px",
+        "width": 139.6666717529297,
+        "height": 19
+      },
+      "long": {
+        "font": "16px",
+        "width": 139.6666717529297,
+        "height": 19
+      },
+      "heading": {
+        "font": "32px",
+        "width": 279.33331298828125,
+        "height": 38
+      }
+    },
+    {
+      "baseline": false,
+      "scale": 150,
+      "short": {
+        "font": "24px",
+        "width": 209.5,
+        "height": 28.5
+      },
+      "long": {
+        "font": "24px",
+        "width": 209.5,
+        "height": 28.5
+      },
+      "heading": {
+        "font": "48px",
+        "width": 419,
+        "height": 57
+      }
+    }
+  ],
+  "errors": []
+}

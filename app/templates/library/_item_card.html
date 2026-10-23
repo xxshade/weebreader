@@ -1,0 +1,159 @@
+{# Expects: series, item, progress_map, eta_map, original_rank. One item's cover card on
+   the series page -- also rendered standalone as the htmx swap target for
+   the per-item mark-read/unread toggle below, so it must not depend on
+   anything from series.html's own scope besides these four values.
+
+   eta_map is defaulted rather than required: every render site passes it,
+   and the default is only so that a future one which forgets renders a
+   card without the estimate instead of raising. #}
+{% set progress = progress_map.get(item.id) %}
+{% set eta = (eta_map | default({}, true)).get(item.id) %}
+{% set is_read = progress and progress.status == 'completed' %}
+{# data-original-order / data-manual-order / data-eta are what the sort
+   control reorders by (see series-sort.js). The ranks come from the
+   server because "Original" has to stay reachable while a manual order is
+   in force -- the DOM only ever holds ONE of the two orders, so the other
+   cannot be recovered from it. data-manual-order is only meaningful once
+   the series has a manual order at all, which is also when the control
+   offers that option. data-eta is the PROJECTED TOTAL, matching
+   data-eta-total below: sorting by "how long is this" must not reshuffle
+   the grid as you read, which time-left would. #}
+<div class="relative{{ ' cursor-move' if series.manual_sort_editing else '' }}" data-item-id="{{ item.id }}" data-title="{{ item.title|lower }}"
+     data-progress-status="{{ progress.status if progress else '' }}"
+     data-original-order="{{ (original_rank | default({}, true)).get(item.id, 0) }}"
+     {% if series.manual_sort %}data-manual-order="{{ item.manual_order if item.manual_order is not none else 999999 }}"{% endif %}
+     {% if eta %}data-eta="{{ eta.total | round | int }}"{% endif %}
+     {% if series.manual_sort_editing %}draggable="true"{% endif %}>
+    {# draggable="false" -- without it, this link (draggable by browsers
+       by default) would hijack the native drag gesture with its own
+       "drag to bookmark" ghost instead of the outer div's drag, which
+       is what series-reorder.js actually listens on. #}
+    <a href="/reader/{{ item.id }}" class="block group" {% if series.manual_sort_editing %}draggable="false"{% endif %}>
+        <div class="cover">
+            {% if item.cover_path %}
+            <img loading="lazy" src="/covers/{{ item.cover_path }}" class="w-full h-full object-cover">
+            {% endif %}
+            {% if is_read %}
+            <span class="absolute top-1 right-1 bg-green-600 text-xs rounded px-1.5 py-0.5">Read</span>
+            {% elif progress and progress.status == 'reading' %}
+            <span class="absolute bottom-0 left-0 right-0 h-1 bg-neutral-700">
+                <span class="progress-fill block h-full bg-indigo-500" style="width: {{ progress.progress_percent }}%"></span>
+            </span>
+            {% endif %}
+        </div>
+        <p title="{{ item.title }}" class="card-title">{{ item.title }}</p>
+        {# The bar over the cover says "some of the way through"; the number
+           says how far, which is the difference between "I left off near
+           the start" and "one chapter to go". Only while reading: a
+           finished item already says so with its Read badge, and an
+           untouched one has nothing to report. #}
+        {% set show_percent = progress and progress.status == 'reading' %}
+        {% set page_count = item.page_count if item.file_format == 'cbz' else None %}
+        {% set pages_left = (page_count - progress.current_page - 1) if page_count and show_percent and progress.current_page is not none else None %}
+        {# The estimate sits on the OPPOSITE side of the line from the
+           percentage. It is the time left, so on an item not started yet
+           (no percentage at all) it is the whole book -- which is what
+           makes it worth showing on a series page full of unread volumes,
+           where the left-hand side is otherwise empty.
+
+           data-eta-total is the projected time for the whole item, so a
+           percentage arriving over SSE can be turned back into a remaining
+           time in the browser without another request. #}
+        {% if show_percent or page_count or eta %}
+        <p class="text-xs text-neutral-500 flex items-center justify-between gap-2">
+            <span class="min-w-0 truncate">
+                {%- if show_percent %}<span class="progress-label">{{ progress.progress_percent|round|int }}%</span><span class="progress-remaining">{% if pages_left is not none %} · {{ pages_left }} page{{ 's' if pages_left != 1 else '' }} left{% endif %}</span>
+                {%- elif page_count %}{{ page_count }} page{{ 's' if page_count != 1 else '' }}{% endif -%}
+            </span>
+            {% if eta %}
+            <span class="reading-eta flex-shrink-0" data-eta-total="{{ eta.total | round | int }}"
+                  title="About {{ eta.remaining | duration }} left, going by how fast you read">~{{ eta.remaining | duration }}</span>
+            {% endif %}
+        </p>
+        {% endif %}
+    </a>
+    <!-- Outside the <a> on purpose: a <button> inside an <a> is invalid
+         HTML and would make a click fire both handlers (the toggle and
+         the navigation to the reader) at once. Since these forms come
+         AFTER it in the DOM, inside the same "relative" container, they
+         sit on top of the <a> in this area -- clicking here does not
+         navigate.
+         hx-target="closest div[data-item-id]" swaps just this one card
+         (the reader/router.py endpoint re-renders this same partial with
+         the new read state) instead of reloading the whole series page.
+
+         The overlay covers the whole card and lets clicks through
+         (pointer-events: none, back on for the controls in it) so that
+         the "about" bubble below can be positioned against the CARD --
+         an absolutely positioned bubble takes its box from the nearest
+         positioned ancestor, and a row pinned to the corner would have
+         made that a 60px-wide strip. See .card-overlay in theme.css. -->
+    {% set about = item.metadata | embedded_metadata %}
+    <div class="card-overlay">
+    <div class="flex items-center gap-1">
+        {# Three states, and one way back from the two that are not
+           Unread (see GLOSSARY.md): Unread shows ✓, Reading ✓ and ↺, Read
+           ↺. The ↺ is the same action in both, and the same icon as the
+           series' "Mark all unread" -- it deletes the progress row, so the
+           card comes back exactly as it was before it was ever opened.
+
+           It asks first, because what it forgets cannot be put back: on a
+           book being read, the place in it; on a finished one, the finish
+           itself -- marking it read again records a declaration from 0%,
+           which the "how long one volume takes" average on /stats leaves
+           out. hx-confirm, not onsubmit="return confirm(...)": htmx
+           intercepts the submit event itself, so an inline handler would
+           ask first and htmx would ask again -- two dialogs for one click. #}
+        {% if not is_read %}
+        <form method="post" action="/reader/{{ item.id }}/mark-read"
+              hx-post="/reader/{{ item.id }}/mark-read"
+              hx-target="closest div[data-item-id]" hx-swap="outerHTML">
+            <input type="hidden" name="return_to" value="/series/{{ series.id }}">
+            <button type="submit" title="Mark as read" aria-label="Mark as read"
+                    class="w-6 h-6 flex items-center justify-center rounded-full bg-black/70 text-xs leading-none hover:bg-black/90">
+                ✓
+            </button>
+        </form>
+        {% endif %}
+        {% if progress %}
+        <form method="post" action="/reader/{{ item.id }}/mark-unread"
+              hx-post="/reader/{{ item.id }}/mark-unread"
+              hx-confirm="Mark “{{ item.title }}” as unread? {{ 'It will no longer count as finished in your stats.' if is_read else 'Where you left off will be forgotten.' }}"
+              hx-target="closest div[data-item-id]" hx-swap="outerHTML">
+            <input type="hidden" name="return_to" value="/series/{{ series.id }}">
+            <button type="submit" title="Mark as unread" aria-label="Mark as unread"
+                    class="w-6 h-6 flex items-center justify-center rounded-full bg-black/70 text-xs leading-none hover:bg-black/90">
+                ↺
+            </button>
+        </form>
+        {% endif %}
+        {# What the item's own file says about it: its author and the
+           item description -- this volume's or chapter's, not the series
+           summary (see GLOSSARY.md). Shown in a bubble rather than on the
+           card because every volume of a series usually has the same
+           author, and a line repeating it under every cover is noise.
+           The bubble is the settings page's help bubble (_tooltip.html,
+           tooltip.js): hover or focus opens it, and so does a tap on the
+           marker, which is what makes it reachable on a phone -- a
+           `title` attribute never shows on touch, and a tap anywhere
+           else on the card opens the reader. #}
+        {% if about.author or about.description %}
+        <span class="tip">
+            <button type="button" data-tip-toggle aria-expanded="false"
+                    aria-label="About “{{ item.title }}”"
+                    class="w-6 h-6 flex items-center justify-center rounded-full bg-black/70 text-xs leading-none hover:bg-black/90">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+                    <path d="M12 11v6"></path>
+                    <path d="M12 7h.01"></path>
+                </svg>
+            </button>
+            <span class="tip-body item-about" role="tooltip">
+                {%- if about.author %}<span class="block font-semibold text-neutral-100">{{ about.author }}</span>{% endif %}
+                {%- if about.description %}<span class="item-about-text">{{ about.description }}</span>{% endif -%}
+            </span>
+        </span>
+        {% endif %}
+    </div>
+    </div>
+</div>

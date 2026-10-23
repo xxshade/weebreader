@@ -1,0 +1,508 @@
+{% extends "base.html" %}
+{% block title %}Library{% endblock %}
+{% block header_filters %}
+{# name="q" + hx-get: the SERIES half of this box stays client-side (every
+   card is already in the DOM, so filtering is instant and needs no round
+   trip), while matching ITEMS come from the server -- they cannot be
+   filtered client-side because no page renders all of them.
+   "changed delay:250ms" debounces the keystrokes; "search" fires on the
+   native clear (x) button; "load" covers a reload with a saved search
+   restored into the box before paint (see the block at the end of this
+   file), which would otherwise show the series filtered and no items. #}
+<input autocomplete="off" id="series-search" type="search" name="q" placeholder="Search series and items..."
+       hx-get="/library/search-items"
+       hx-trigger="keyup changed delay:250ms, search, load"
+       hx-target="#search-items" hx-swap="innerHTML"
+       class="flex-1 min-w-[140px] bg-neutral-900 border border-neutral-700 rounded px-3 py-2 md:py-1.5 text-sm">
+{% include "library/_filters_control.html" %}
+{% include "_thumb_size_control.html" %}
+{% endblock %}
+{% block content %}
+{% import "library/_icons.html" as ui %}
+{% import "_status_badges.html" as badges %}
+<div>
+    {# Rendered `open` -- not modal -- when a refusal came back without
+       htmx, so the message is on screen rather than in a closed box. #}
+    <dialog id="new-library-dialog" class="app-dialog" aria-labelledby="new-library-heading"
+            {{ 'open' if library_form.error else '' }}>
+        <div class="flex items-center gap-2 mb-3">
+            <h2 id="new-library-heading" class="text-sm font-semibold text-neutral-200">New library</h2>
+            <button type="button" data-dialog-close aria-label="Close"
+                    class="ml-auto cursor-pointer text-neutral-500 hover:text-neutral-100">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 6L6 18"></path><path d="M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+        {% include "library/_new_library_form.html" %}
+    </dialog>
+
+    {# Always rendered, even with nothing to show: an item whose reading
+       starts elsewhere has to have somewhere to appear without a reload
+       (library-events.js swaps this section's grid in place). #}
+    <section id="reading-section" class="mb-8{{ '' if reading_items else ' hidden' }}">
+        <h2 class="text-lg font-semibold mb-3">Reading</h2>
+        {% include "library/_reading_grid.html" %}
+    </section>
+
+    <section>
+        {# Sticks under the header while the grid scrolls past, and
+           stops on its own at the end of this <section> -- that is
+           position:sticky's own behaviour, not something to script. It
+           needs an opaque background (the cards would otherwise show
+           through) and a z below the header's. md: only, like the
+           header it hangs under -- with a static header on a phone it
+           would pin itself to the very top of the viewport instead. #}
+        <div class="md:sticky sticky-under-header z-10 bg-neutral-950 flex flex-wrap items-center justify-between mb-3 gap-3 py-2">
+            <div class="flex flex-wrap items-center gap-3 min-w-0">
+                <h2 class="text-lg font-semibold">Libraries</h2>
+                {# Which library the grid shows, as tabs: an icon each, the
+                   name in `title` and in the accessible name. They were a
+                   sidebar, which cost the grid 13rem of width to list three
+                   or four names -- and they only ever act on THIS grid,
+                   not on the "Reading" strip above it.
+
+                   Entirely client-side (see home.js's library filter
+                   section): every card is always in the DOM and a tab only
+                   toggles which ones are visible, by each card's
+                   data-library, persisted in localStorage.
+
+                   aria-pressed is the state AND the style (.library-tab in
+                   theme.css), so the pre-paint block below, home.js and
+                   the CSS read one attribute. Toggle buttons rather than
+                   role="tab": there is no tab panel per button, only the
+                   one grid being narrowed. #}
+                <nav id="library-filter-nav" class="flex items-center" aria-label="Libraries">
+                    <button type="button" data-library-filter="all" title="All" aria-label="All"
+                            aria-pressed="false" class="library-tab">{{ ui.library_icon("all") }}</button>
+                    {% for library in libraries %}
+                    <button type="button" data-library-filter="{{ library.id }}" title="{{ library.name }}"
+                            aria-label="{{ library.name }}" aria-pressed="false"
+                            class="library-tab">{{ ui.library_icon(library.media_type) }}</button>
+                    {% endfor %}
+                    <button type="button" data-library-filter="novels" title="Web Novels" aria-label="Web Novels"
+                            aria-pressed="false" class="library-tab">{{ ui.library_icon("novels") }}</button>
+                </nav>
+                <div class="flex items-center gap-1">
+                    {# Rescan acts on ONE library, so it is shown for the tab
+                       of one: one form per library, all hidden but the
+                       selected tab's (home.js, and the pre-paint block for
+                       the first frame). "All" and Web Novels have no scan. #}
+                    {% for library in libraries %}
+                    <form method="post" action="/libraries/{{ library.id }}/scan"
+                          data-rescan-for="{{ library.id }}" hidden>
+                        <button title="Rescan {{ library.name }}" aria-label="Rescan {{ library.name }}"
+                                class="library-tab-action">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>
+                            </svg>
+                        </button>
+                    </form>
+                    {% endfor %}
+                    {# A DIALOG rather than a form unfolding in place: the
+                       accent is kept for the submit inside, the thing that
+                       creates something. #}
+                    <button type="button" data-dialog-open="new-library-dialog" aria-haspopup="dialog"
+                            class="library-tab-action" title="New library" aria-label="New library">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 5v14"/><path d="M5 12h14"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            {# Field and direction are separate controls: every field
+               had to be listed twice to cover both directions, which is
+               eight options saying four things. The button carries the
+               direction for whichever field is selected. #}
+            <div class="flex items-center gap-2 flex-shrink-0">
+                <select autocomplete="off" id="sort-select"
+                        class="bg-neutral-900 border border-neutral-700 rounded px-3 py-2 md:py-1.5 text-sm">
+                    <option value="name">Name</option>
+                    <option value="added">Date added</option>
+                    <option value="modified">Date modified</option>
+                    <option value="reading">Last read</option>
+                    {# The value stays "items" -- it is what is already saved in
+                       readers' localStorage, and changing it would silently
+                       reset their sort to Name. The LABEL is what the number
+                       became: the badge counts what is unread, and a control
+                       ordering by a number nothing on screen shows would be
+                       the same drift from the other side. #}
+                    <option value="items">Unread</option>
+                </select>
+                <button type="button" id="sort-direction"
+                        class="bg-neutral-900 border border-neutral-700 rounded px-2 py-2 md:py-1.5 text-neutral-300 hover:text-neutral-100"
+                        aria-label="Sort direction" title="Sort direction">
+                    {# Both arrows are drawn; the JS shows one. Toggling a
+                       class beats swapping innerHTML: no re-parse, and no
+                       icon markup living in a JS string. #}
+                    <svg id="sort-arrow-desc" viewBox="0 0 16 16" width="16" height="16" fill="none"
+                         stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                         stroke-linejoin="round" style="display:block">
+                        <path d="M8 3v10"/><path d="M4 9l4 4 4-4"/>
+                    </svg>
+                    <svg id="sort-arrow-asc" viewBox="0 0 16 16" width="16" height="16" fill="none"
+                         stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                         stroke-linejoin="round" style="display:none">
+                        <path d="M8 13V3"/><path d="M4 7l4-4 4 4"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        {# The blur radius rides on the grid as a CSS variable rather
+           than being applied by a script: a cover somebody asked to
+           blur must never be drawn sharp, and anything read after the
+           first paint is one frame of exactly that. It is one number
+           per reader (users.cover_blur_px, set in /settings), while
+           WHICH covers are blurred is a fact about each series. #}
+        <div id="series-grid" class="thumb-grid grid gap-4"
+             style="--cover-blur: {{ user.cover_blur_px }}px"
+             data-hidden-statuses="{{ hidden_statuses|join(',') }}">
+            {% for card in cards %}
+            {# Hidden statuses are an account setting (see /settings),
+               known server-side -- rendering the "hidden" class here
+               directly means these cards never show up for a frame
+               before home.js's deferred applyFilters() gets around to
+               hiding them, same flash home.js still fixes for
+               search/status-filter changes made after load. #}
+            <a id="library-card-{{ card.kind }}-{{ card.id }}" hx-preload="home-card-press" href="{{ card.detail_url }}" class="series-card block group{{ ' hidden' if card.status in hidden_statuses else '' }}"
+               {% if card.kind == 'series' %}data-series-id="{{ card.id }}"{% else %}data-novel-id="{{ card.id }}"{% endif %}
+               data-name="{{ card.name|lower }}" data-status="{{ card.status or '' }}"
+               data-publication="{{ card.publication_status or '' }}"
+               data-added="{{ card.added_at or '' }}" data-modified="{{ card.modified_at or '' }}"
+               data-last-read="{{ card.last_read_at or '' }}" data-library="{{ card.library_id }}"
+               {# The same number the badge over the cover shows -- rendered
+                  as an attribute as well so the "Unread" sort can read it
+                  without parsing the badge (which is absent at zero). #}
+               data-unread-count="{{ card.unread_count }}">
+                <div class="cover">
+                    {% if card.cover_url %}
+                    {# Blurred on the home page -- here, and on the series'
+                       items in the "Reading" strip and the item search --
+                       because it is in front of whoever happens to be
+                       looking at the screen; the series page and the reader
+                       are places you went to on purpose, so they show the
+                       cover as it is. The class
+                       goes on the IMG and not on .cover, or the badges
+                       over it would smear too and stop being readable. #}
+                    <img loading="lazy" src="{{ card.cover_url }}"
+                         class="w-full h-full object-cover{{ ' cover-blur' if card.blur_cover else '' }}">
+                    {% endif %}
+                    {# The two badges share ONE row rather than being two
+                       absolutely-positioned spans, because absolute
+                       siblings cannot see each other: on a narrow cover
+                       the tracking badge painted straight over the
+                       publication one and "Canceled" rendered as
+                       "Cancel". Wrapping rather than truncating, so a
+                       tight pair drops to a second line with both labels
+                       still whole.
+
+                       Left is the WORK's status, right is the READER's:
+                       one finished publishing, the other finished being
+                       read. Opposite corners and two different chip
+                       styles are what say they are two things. The
+                       labels differ too ("Completed" against
+                       "Finished"), but a reader should not have to know
+                       that to read a cover.
+
+                       A PALE chip with dark text, against the reading
+                       badge's saturated one. Hue alone could not do this:
+                       all six saturated -600 hues in the frozen palette
+                       are already spoken for by the tracking statuses
+                       (indigo, green, red, amber, neutral, blue), so any
+                       fourth set of hues lands within ~20-40 degrees of
+                       one of them. Changing the TONE as well is what makes
+                       the two families unmistakable at a glance, whatever
+                       pair happens to sit on one cover. The four colours
+                       and their variables were added to app.css, which is
+                       the frozen stylesheet's supported way of growing
+                       (see AGENTS.md).
+
+                       The two colour maps live in _status_badges.html,
+                       which is also what a series' and a novel's own
+                       page wears -- one place, and literal class names
+                       in a template so test_css_classes.py can see
+                       them. #}
+                    {% set pub_bg = badges.publication_class(card.publication_status) %}
+                    {% set badge_bg = badges.tracking_class(card.status) %}
+                    {% if card.publication_status or card.status %}
+                    <div class="absolute top-1 left-1 right-1 flex flex-wrap items-start justify-between gap-1">
+                        {# An empty slot when there is no publication
+                           status, so justify-between still puts a lone
+                           tracking badge on the right where it has
+                           always been. #}
+                        {% if card.publication_status %}
+                        <span class="{{ pub_bg }} text-neutral-900 text-xs rounded px-1.5 py-0.5">{{ publication_labels[card.publication_status] }}</span>
+                        {% else %}
+                        <span></span>
+                        {% endif %}
+                        {% if card.status %}
+                        <span class="{{ badge_bg }} text-xs rounded px-1.5 py-0.5">{{ status_labels[card.status] }}</span>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                    {# What is left to read, not what the shelf holds: the
+                       question in front of a cover grid is which of these
+                       still needs reading, and "12" on a series finished
+                       last year answered a different one. Absent at zero,
+                       which is now also how a finished series looks -- the
+                       badge appearing at all means there is something in
+                       it. A comic in progress still counts: unread here is
+                       NOT COMPLETED (see _series_reading), so an item
+                       abandoned at 12% is one the reader still has. #}
+                    {% if card.unread_count %}
+                    <span class="absolute bottom-1 right-1 bg-black/70 text-white text-xs rounded px-1.5 py-0.5">{{ card.unread_count }}</span>
+                    {% endif %}
+                    {# Tracking, in the smallest thing that can say it.
+                       This grid is where you go to find the series that
+                       still needs linking, and opening each one to look
+                       at the icon beside its title is the search this
+                       replaces -- so the dot is drawn for EVERY card,
+                       grey included. A dot only on what is linked would
+                       answer the opposite question, and "no dot" reads
+                       as "nothing to say" rather than "not linked".
+
+                       The same three colours as that icon, through the
+                       same utility classes: `background: currentColor`
+                       in .track-dot means the colour is set by a
+                       text-* class, so there is one vocabulary for
+                       tracking state and not two that can drift.
+
+                       Bottom LEFT, opposite the item count: they are
+                       both corner marks on the same cover, and stacking
+                       them in one corner would make a lone dot look
+                       like part of the number. #}
+                    <span class="track-dot {% if card.tracked_count >= tracker_total %}text-emerald-300{% elif card.tracked_count %}text-sky-300{% else %}text-neutral-500{% endif %}"
+                          title="{% if card.tracked_count %}Tracking: linked to {{ card.tracked_count }} of {{ tracker_total }} services{% else %}Tracking: not linked{% endif %}"></span>
+                </div>
+                <p title="{{ card.name }}" class="card-title">{{ card.name }}</p>
+                {# How long the badge above is worth, in the same words the
+                   "Reading" strip uses for one item -- same `duration`
+                   filter, same leading "~". What it counts is everything
+                   unread: every item of a series, and for a novel what is
+                   left of the chapter in hand plus every chapter not marked
+                   read.
+
+                   Rendered only when there IS a basis for it: a comic
+                   series nobody has read a page of borrows the slow end of
+                   the reader's other series, and with no series read at
+                   all there is nothing to borrow (see stats/estimates.py).
+
+                   NOT .reading-eta: that class is what library-events.js
+                   rewrites from a progress event, using the CHAPTER
+                   percentage in it, and a novel card in this grid carries
+                   the same data-novel-id the strip's card does -- so the
+                   shared name would have had one card's chapter scale the
+                   other card's whole-novel total. This line is replaced
+                   wholesale with the card instead (see refreshCard). #}
+                {% if card.remaining_seconds %}
+                <p class="text-xs text-neutral-500 truncate"
+                   title="About {{ card.remaining_seconds | duration }} of this left to read, going by how fast you read">~{{ card.remaining_seconds | duration }}</p>
+                {% endif %}
+            </a>
+            {% else %}
+            <p class="text-neutral-500 text-sm col-span-full">Nothing here yet — run a scan, or add a novel from Settings.</p>
+            {% endfor %}
+        </div>
+        <!-- Reorders the server-rendered cards (name-ascending) to the
+             saved sort before the browser paints them -- inline and
+             un-deferred on purpose, placed right after the grid so it
+             runs as soon as the cards above exist, same reasoning as
+             the thumbnail-size script in base.html's <head>. Without
+             this, every load briefly showed the server's name order,
+             then visibly reshuffled once home.js (deferred) ran.
+             home.js still owns the select, persistence, and live
+             SSE-insertion logic -- it re-sorts on its own load too,
+             which must produce this exact same order (see the
+             direction-in-comparator note below) since it runs a
+             second time on top of what this script already did. Same
+             reasoning for the library-filter block below it: without
+             pre-applying the saved selection here, every load briefly
+             showed every library's cards (server default is "all"),
+             then visibly narrowed down once home.js's deferred
+             applyFilters()/setLibraryButtonStates() got around to it. -->
+        <script>
+            (() => {
+                try {
+                    const grid = document.getElementById("series-grid");
+                    const sortSelect = document.getElementById("sort-select");
+                    const saved = localStorage.getItem("library-sort");
+                    if (!saved) return; // nothing saved -- server's default (name-asc) is already correct
+                    // Stored as "field-dir" -- unchanged from when the
+                    // select carried both, so a preference saved by the
+                    // old control still restores correctly here and in
+                    // home.js.
+                    const [field, dir] = saved.split("-");
+                    if (sortSelect) sortSelect.value = field;
+                    const arrows = { asc: document.getElementById("sort-arrow-asc"),
+                                     desc: document.getElementById("sort-arrow-desc") };
+                    if (arrows.asc && arrows.desc) {
+                        arrows.asc.style.display = dir === "desc" ? "none" : "block";
+                        arrows.desc.style.display = dir === "desc" ? "block" : "none";
+                    }
+                    const dataKey = { name: "name", added: "added", modified: "modified",
+                                      reading: "lastRead", items: "unreadCount" }[field] || "name";
+                    // A count compares as a NUMBER: as a string "9" sorts
+                    // after "10". Keep this rule identical to home.js's
+                    // applySort(), which re-runs the same sort on top of
+                    // what this script already did.
+                    const numeric = field === "items";
+                    // Direction baked into the comparator, NOT a
+                    // separate .reverse() of the whole array -- see
+                    // home.js's applySort() for why: reverse() also
+                    // flips tied cards (e.g. two series added in the
+                    // same rescan, identical added_at), which isn't
+                    // idempotent, and home.js re-runs this same sort
+                    // on load right after this script already ran it
+                    // once.
+                    const sorted = Array.from(grid.querySelectorAll(".series-card")).sort((a, b) => {
+                        const av = numeric ? Number(a.dataset[dataKey] || 0) : (a.dataset[dataKey] || "");
+                        const bv = numeric ? Number(b.dataset[dataKey] || 0) : (b.dataset[dataKey] || "");
+                        const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+                        return dir === "desc" ? -cmp : cmp;
+                    });
+                    for (const card of sorted) grid.appendChild(card);
+                } catch {
+                    // localStorage unavailable (private mode etc.) -- falls back to server's name-asc order
+                }
+            })();
+            (() => {
+                // Pre-applies EVERY saved filter in one pass, computing
+                // exactly the visibility home.js's applyFilters() will
+                // compute on its own (deferred) run.
+                //
+                // It is one block on purpose. This started as separate
+                // per-filter blocks, and that was a real bug: each one
+                // decided visibility from its own criterion alone, so
+                // whichever ran LAST won. The search block, running
+                // after the library block, removed "hidden" from any
+                // card matching the search -- including cards the
+                // library filter had just hidden -- so a card from
+                // another library flashed in for one frame until
+                // applyFilters() re-hid it. Splitting one decision
+                // across several passes cannot be made order-safe;
+                // making the decision once can.
+                //
+                // Keep this rule identical to applyFilters(): a search
+                // looks through everything the HEADER's filters
+                // would have narrowed -- the tracking status, the
+                // publication status, unread-only and the account's hidden statuses
+                // are all set aside while typing, so a title you can
+                // name is always findable. The library tabs are the
+                // exception and stay in effect: they are a different
+                // control in a different place, and they are what
+                // "search" is scoped BY.
+                try {
+                    const grid = document.getElementById("series-grid");
+                    if (!grid) return;
+                    const query = (localStorage.getItem("library-search") || "").trim().toLowerCase();
+                    // ?library=<id> wins over the saved one, so a link
+                    // INTO this page lands where it says it does -- and
+                    // is written back, so home.js's own read of
+                    // localStorage below reaches the same answer even
+                    // where CSS.escape or the nav lookup it uses would
+                    // not. Ignored unless a button of that name exists:
+                    // a stale link must not filter every card away with
+                    // nothing on screen saying why.
+                    const nav = document.getElementById("library-filter-nav");
+                    const asked = new URLSearchParams(location.search).get("library");
+                    let library = localStorage.getItem("library-selected-filter") || "all";
+                    if (asked && nav
+                        && nav.querySelector(`[data-library-filter="${CSS.escape(asked)}"]`)) {
+                        library = asked;
+                        localStorage.setItem("library-selected-filter", library);
+                    }
+                    let status = localStorage.getItem("library-status-filter") || "all";
+                    const publication = localStorage.getItem("library-publication-filter") || "all";
+                    const showHidden = localStorage.getItem("library-show-hidden") === "1";
+                    const unreadOnly = localStorage.getItem("library-unread-only") === "1";
+                    const hiddenStatuses = new Set(
+                        (grid.dataset.hiddenStatuses || "").split(",").filter(Boolean)
+                    );
+                    // A hidden status cannot stay SELECTED once its
+                    // option goes away again, or the select keeps
+                    // filtering by something that is not on it and
+                    // every card vanishes with nothing saying why.
+                    if (!showHidden && hiddenStatuses.has(status)) status = "all";
+
+                    const searchInput = document.getElementById("series-search");
+                    if (searchInput) searchInput.value = query;
+                    const statusSelect = document.getElementById("status-filter");
+                    if (statusSelect) {
+                        statusSelect.value = status;
+                        for (const option of statusSelect.querySelectorAll("option[data-hidden-status]")) {
+                            option.hidden = !showHidden;
+                        }
+                    }
+                    const showHiddenToggle = document.getElementById("show-hidden-filter");
+                    if (showHiddenToggle) showHiddenToggle.checked = showHidden;
+                    const unreadToggle = document.getElementById("home-unread-only");
+                    if (unreadToggle) unreadToggle.checked = unreadOnly;
+                    const publicationSelect = document.getElementById("publication-filter");
+                    if (publicationSelect) publicationSelect.value = publication;
+
+                    // The filters button's colour, before paint for
+                    // the same reason everything else here is: the
+                    // controls are behind a popover now, so this icon
+                    // is the only thing on screen saying the grid is
+                    // narrowed, and an icon corrected after the first
+                    // frame is a visible flip. Keep this rule
+                    // identical to syncFilterIndicator() in home.js --
+                    // a search sets the filters aside, so it greys out
+                    // even with a status selected.
+                    const filtersBtn = document.getElementById("filters-btn");
+                    if (filtersBtn) {
+                        const narrowing = !query
+                            && (status !== "all" || publication !== "all" || showHidden || unreadOnly);
+                        filtersBtn.classList.add(narrowing ? "text-indigo-400" : "text-neutral-500");
+                        filtersBtn.classList.remove(narrowing ? "text-neutral-500" : "text-indigo-400");
+                    }
+
+                    for (const card of grid.querySelectorAll(".series-card")) {
+                        const cardStatus = card.dataset.status || "";
+                        const matchesLibrary = library === "all" || (card.dataset.library || "") === library;
+                        const matchesSearchOrStatus = query
+                            ? (card.dataset.name || "").includes(query)
+                            : (showHidden || !hiddenStatuses.has(cardStatus))
+                              && (status === "all" || cardStatus === status)
+                              && (publication === "all" || (card.dataset.publication || "") === publication)
+                              && (!unreadOnly || Number(card.dataset.unreadCount || 0) > 0);
+                        card.classList.toggle("hidden", !(matchesLibrary && matchesSearchOrStatus));
+                    }
+
+                    // Keep identical to setLibraryButtonStates() in home.js.
+                    if (nav) {
+                        for (const btn of nav.querySelectorAll("[data-library-filter]")) {
+                            btn.setAttribute("aria-pressed", String(btn.dataset.libraryFilter === library));
+                        }
+                    }
+                    for (const form of document.querySelectorAll("[data-rescan-for]")) {
+                        form.hidden = form.dataset.rescanFor !== library;
+                    }
+                } catch {
+                    // localStorage unavailable (private mode etc.) -- falls
+                    // back to what the server rendered; home.js still
+                    // applies the real state on its deferred run.
+                }
+            })();
+        </script>
+        {# "No series match", not "No results found": matching ITEMS are listed
+   below this, so the generic wording read as a contradiction the
+   moment a query matched a volume but no series (searching "v02"
+   is exactly that case). #}
+        <p id="series-empty-state" class="hidden text-neutral-500 text-sm mt-2">No series match.</p>
+
+        {# Server-backed item results, below the series grid the box
+           already filters. Left empty until something is typed, so the
+           normal state of this page is unchanged -- the endpoint
+           returns no markup at all for an empty query. #}
+        <div id="search-items"></div>
+    </section>
+</div>
+
+<script src="{{ asset_url('js/filters-panel.js') }}" defer></script>
+<script src="{{ asset_url('js/home.js') }}" defer></script>
+<script src="{{ asset_url('js/thumbnail-size.js') }}" defer></script>
+{% endblock %}

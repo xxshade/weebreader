@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Initial setup{% endblock %}
+{% block content %}
+<div class="max-w-sm mx-auto mt-16">
+    <h1 class="text-xl font-semibold mb-4">Create your account</h1>
+    {# hx-boost="false": a plain POST, so a refusal comes back as this page
+       with its reason. Boosted, it came back as a 4xx, which htmx never
+       swaps (base.html's noSwap) -- a wrong password looked like nothing
+       happening at all. On the form rather than as the page's boost block,
+       because a boosted visit (Log out -> /login) keeps the old <body>. #}
+    <form method="post" action="/setup" class="space-y-3" hx-boost="false">
+        <input name="username" placeholder="Username" required
+               class="input">
+        <input name="password" type="password" placeholder="Password" required
+               class="input">
+        <button class="btn-primary">Create account</button>
+    </form>
+</div>
+{% endblock %}

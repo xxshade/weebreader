@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% import "_tooltip.html" as tip %}
+{% block title %}Statistics{% endblock %}
+{% block content %}
+{#
+  Every class here was checked against app/static/src/app.css before being
+  written: it is a hand-maintained stylesheet with no generator, so a class
+  with no rule silently does nothing. The chart rules themselves live in
+  theme.css (.viz*), which is where their colour choices are explained.
+#}
+<div class="viz max-w-3xl mx-auto space-y-8">
+
+    <h1 class="text-xl font-semibold">Statistics</h1>
+
+    {# ---------- Reading habits ---------- #}
+    <section>
+        <h2 class="text-lg font-semibold mb-2">Reading</h2>
+
+        {% if not totals.pages %}
+        <p class="text-sm text-neutral-400">
+            Nothing recorded yet. Reading activity appears here as you read. Time limits
+            is in <a href="/settings" class="text-indigo-400 hover:text-indigo-300">Settings</a>.
+        </p>
+        {% else %}
+        {# A KPI row, not a chart: these are single headline numbers, and a
+           one-bar bar chart of each would say less in more space. #}
+        <div class="grid grid-cols-2 gap-3 mb-4">
+            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <p class="text-xs text-neutral-500">Time read</p>
+                <p class="text-lg font-semibold">{{ totals.seconds | duration }}</p>
+            </div>
+            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2" data-reading-pace="text">
+                <div class="tip-row">
+                    <p class="text-xs text-neutral-500">Estimated text pace</p>
+                    {% call tip.help("How estimated text pace is calculated") %}
+                    Words per minute combines measured EPUB and web novel reading,
+                    including rereading: total sampled words divided by their time.
+                    Appears after 1,000 words, five minutes and three valid samples.
+                    Jumps, layout changes, unfinished passages and passages reaching
+                    their time limit are excluded.
+                    {% if pace.since %}<br>Word measurement since {{ pace.since }}.{% endif %}
+                    {% endcall %}
+                </div>
+                <p class="text-lg font-semibold">{% if pace.wpm is not none %}{{ pace.wpm | round | int }} words/min{% else %}Collecting data{% endif %}</p>
+            </div>
+            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <p class="text-xs text-neutral-500">Text words traversed</p>
+                <p class="text-lg font-semibold">{{ text_words }}</p>
+            </div>
+            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <div class="tip-row">
+                    <p class="text-xs text-neutral-500">Comic pages</p>
+                    {% call tip.help("How comic pages are counted") %}
+                    Includes rereading the same page. This is not a count of
+                    unique pages completed.
+                    {% endcall %}
+                </div>
+                <p class="text-lg font-semibold">{{ comic_visits }}</p>
+            </div>
+            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <p class="text-xs text-neutral-500">Time per comic page</p>
+                <p class="text-lg font-semibold">{% if comic_seconds_per_visit is not none %}{{ comic_seconds_per_visit | duration }}{% else %}—{% endif %}</p>
+            </div>
+            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <p class="text-xs text-neutral-500">Days with reading</p>
+                <p class="text-lg font-semibold">{{ totals.days }}</p>
+            </div>
+        </div>
+        {% endif %}
+    </section>
+
+    {% if totals.pages %}
+    <section>
+        {% include "_daily_activity.html" %}
+    </section>
+
+    {% if recent %}
+    <section>
+        <h2 class="text-lg font-semibold mb-2">Most recent</h2>
+
+        {# Only offered when there is something to choose between -- see the
+           router for why the buckets come from what was actually read. #}
+        {% if recent_kinds | length > 1 %}
+        <nav id="recent-filter-nav" class="flex flex-wrap gap-2 mb-3">
+            <button type="button" data-recent-filter="all" class="px-2 py-1 rounded text-xs">All</button>
+            {% for kind in recent_kinds %}
+            <button type="button" data-recent-filter="{{ kind }}" class="px-2 py-1 rounded text-xs">
+                {{ recent_kind_labels.get(kind, kind) }}
+            </button>
+            {% endfor %}
+        </nav>
+        {% endif %}
+
+        {# One entry per series (a web novel, or an item in no series, is
+           one too) -- see queries.recent_items. The server sends the top
+           `recent_limit` of EVERY kind and hides what the unfiltered view
+           does not show, so switching a filter is a show/hide over entries
+           already here -- no refetch, and the list still fills to
+           `recent_limit` afterwards. The entries are in recency order
+           across all kinds, so "first N still visible" is the same rule for
+           every selection.
+
+           A series opens onto its items with a plain <details>: no script,
+           and the same element in both browsers. #}
+        <ul id="recent-list" class="space-y-2" data-recent-limit="{{ recent_limit }}">
+            {% for entry in recent %}
+            <li data-kind="{{ entry.kind }}"
+                class="bg-neutral-900 border border-neutral-800 rounded{{ ' hidden' if loop.index0 >= recent_limit }}">
+                {% set head %}
+                <span class="flex items-start min-w-0">
+                    {# Drawn only inside a summary (.disclosure); in a card
+                       that does not open it is an empty space of the same
+                       width, so every name starts in the same column. #}
+                    <span class="disclosure-caret text-sm" aria-hidden="true"></span>
+                    <span class="min-w-0">
+                        <span class="text-sm block truncate" title="{{ entry.name }}">{{ entry.name }}</span>
+                        {% if entry.opens %}
+                        <span class="text-xs text-neutral-500 block">
+                            {{ entry['items'] | length }}
+                            {% if entry.kind == 'novel' %}volume{% else %}item{% endif %}{{ 's' if entry['items'] | length != 1 }}
+                        </span>
+                        {% endif %}
+                    </span>
+                </span>
+                <span class="text-xs text-neutral-400 flex-shrink-0 text-right">
+                    {{ entry.seconds | duration }}<br>
+                    <span class="text-neutral-500">{{ entry.pages }} page{{ 's' if entry.pages != 1 }}</span>
+                </span>
+                {% endset %}
+                {% if entry.opens %}
+                <details>
+                    <summary class="disclosure cursor-pointer select-none flex items-center justify-between gap-3 px-3 py-2">{{ head }}</summary>
+                    {# `entry['items']`, not `entry.items`: Jinja tries the
+                       attribute first, and dict.items is a method. #}
+                    <ul class="border-t border-neutral-800 px-3 py-2 space-y-1">
+                        {% for item in entry['items'] %}
+                        <li class="flex items-center justify-between gap-3 text-xs">
+                            <span class="min-w-0 truncate text-neutral-300" title="{{ item.title }}">
+                                {{ item.title }}
+                                {# A removed item (GLOSSARY.md): its file left
+                                   the library. Said, because the same title can
+                                   be here twice -- read, removed, put back and
+                                   read again. #}
+                                {% if item.removed %}<span class="text-neutral-500">removed</span>{% endif %}
+                            </span>
+                            <span class="text-neutral-400 flex-shrink-0 text-right">
+                                {{ item.seconds | duration }}
+                                <span class="text-neutral-500">· {{ item.pages }} page{{ 's' if item.pages != 1 }}</span>
+                            </span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </details>
+                {% else %}
+                <div class="flex items-center justify-between gap-3 px-3 py-2">{{ head }}</div>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+
+        {# Pre-applies the saved selection before paint, for the same reason
+           the home page's filter block does: the server renders the
+           unfiltered view, so without this every load briefly showed the
+           last eight things of every kind and then visibly narrowed down
+           once stats-recent.js (deferred) got around to it. One block
+           computing the final visibility, not one decision per criterion.
+           stats-recent.js re-runs the same rule on load and must produce
+           this exact same result. #}
+        <script>
+            (() => {
+                try {
+                    const list = document.getElementById("recent-list");
+                    const nav = document.getElementById("recent-filter-nav");
+                    if (!list || !nav) return;
+                    const limit = Number(list.dataset.recentLimit) || 0;
+                    const buttons = Array.from(nav.querySelectorAll("[data-recent-filter]"));
+                    let selected = localStorage.getItem("stats-recent-filter") || "all";
+                    if (!buttons.some((btn) => btn.dataset.recentFilter === selected)) selected = "all";
+
+                    let shown = 0;
+                    for (const row of list.querySelectorAll(":scope > [data-kind]")) {
+                        const visible = (selected === "all" || row.dataset.kind === selected) && shown < limit;
+                        if (visible) shown++;
+                        row.classList.toggle("hidden", !visible);
+                    }
+                    const active = ["bg-neutral-800", "text-neutral-100"];
+                    const inactive = ["text-neutral-400", "hover:text-neutral-100", "hover:bg-neutral-900"];
+                    for (const btn of buttons) {
+                        btn.classList.add(...(btn.dataset.recentFilter === selected ? active : inactive));
+                    }
+                } catch {
+                    // localStorage unavailable (private mode etc.) -- falls back
+                    // to what the server rendered; stats-recent.js still applies
+                    // the real state on its deferred run.
+                }
+            })();
+        </script>
+    </section>
+    {% endif %}
+    {% endif %}
+
+    {# ---------- Library composition ---------- #}
+    <section>
+        <h2 class="text-lg font-semibold mb-2">Libraries</h2>
+        {% if libraries or novels.novels %}
+        <ul class="space-y-2 mb-4">
+            {% for lib in libraries %}
+            <li class="flex items-center justify-between gap-3 bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <span class="min-w-0">
+                    <span class="text-sm block truncate">{{ lib.name }}</span>
+                    <span class="text-xs text-neutral-500">{{ media_labels.get(lib.media_type, lib.media_type) }}</span>
+                </span>
+                <span class="text-xs text-neutral-400 flex-shrink-0 text-right">
+                    {{ lib.series_count }} series<br>
+                    <span class="text-neutral-500">{{ lib.item_count }} item{{ 's' if lib.item_count != 1 }}</span>
+                </span>
+            </li>
+            {% endfor %}
+            {# Web novels are not a library, but they are read like one and
+               sit here in the same shape, beside the libraries. #}
+            {% if novels.novels %}
+            <li class="flex items-center justify-between gap-3 bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <span class="min-w-0">
+                    <span class="text-sm block truncate">{{ media_labels.novel }}</span>
+                    <span class="text-xs text-neutral-500">{{ novels.active_novels }} syncing</span>
+                </span>
+                <span class="text-xs text-neutral-400 flex-shrink-0 text-right">
+                    {{ novels.novels }} novel{{ 's' if novels.novels != 1 }}<br>
+                    <span class="text-neutral-500">{{ novels.chapters }} chapter{{ 's' if novels.chapters != 1 }} · {{ novels.downloaded }} downloaded</span>
+                </span>
+            </li>
+            {% endif %}
+        </ul>
+
+        {% for total in media_totals %}
+        {% set label = media_labels.get(total.media_type, total.media_type) %}
+        <div class="mb-4">
+            <h3 class="text-sm font-semibold text-neutral-300 mb-2">{{ label }}</h3>
+
+            {% for section, bucket in [
+                (total.series_noun ~ ', by tracking status', series_status.get(total.media_type)),
+                (total.item_noun ~ ', by reading status', item_status.get(total.media_type))] %}
+            {% if bucket and bucket.total %}
+            <p class="text-xs text-neutral-500 mb-1">{{ section }} — {{ bucket.total }}</p>
+            <div class="viz-stack mb-1">
+                {% for entry in bucket.statuses %}
+                <span class="viz-{{ viz_slot.get(entry.key, 'none') }}"
+                      style="width: {{ (entry.value / bucket.total * 100) | round(2) }}%;"
+                      title="{{ entry.label }}: {{ entry.value }}"></span>
+                {% endfor %}
+            </div>
+            {# The legend is what makes this readable without relying on
+               colour alone, and it carries the counts so the same numbers
+               are available as text. #}
+            <ul class="flex flex-wrap gap-3 mb-3 text-xs text-neutral-400">
+                {% for entry in bucket.statuses %}
+                <li class="flex items-center gap-1.5">
+                    <span class="viz-{{ viz_slot.get(entry.key, 'none') }} rounded flex-shrink-0"
+                          style="width: 0.5rem; height: 0.5rem;"></span>
+                    {{ entry.label }} <span class="text-neutral-500">{{ entry.value }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% endfor %}
+        {% else %}
+        <p class="text-sm text-neutral-500">No libraries yet.</p>
+        {% endif %}
+    </section>
+
+</div>
+
+<script src="{{ asset_url('js/tooltip.js') }}" defer></script>
+<script src="{{ asset_url('js/stats-range.js') }}" defer></script>
+<script src="{{ asset_url('js/stats-recent.js') }}" defer></script>
+<script src="{{ asset_url('js/stats-daily.js') }}" defer></script>
+{% endblock %}

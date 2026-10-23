@@ -1,0 +1,114 @@
+{# The two status badges, and the ONE place their colours are written.
+
+   They were literals inside library/index.html because the home grid was
+   the only thing that drew them. A series' and a novel's own page now wear
+   the same badge -- the point being that a reader should not have to learn
+   that the chip on the cover and the control on the page are the same
+   fact -- so the maps moved here rather than being copied a third time.
+   `library-events.js` still holds its own copy, because a card arriving
+   over SSE is built in JS; tests/test_status_vocabulary.py is what keeps
+   those two honest, and it reads this file now.
+
+   They stay LITERAL class names in a template. A name only ever assembled
+   in Python is invisible to tests/test_css_classes.py, which is what
+   catches a class with no rule in the frozen stylesheet.
+
+   On a page (rather than a cover) the badge is the SAME <span> the cover
+   wears, with a transparent <select> laid over it (.status-chip in
+   theme.css). A select cannot be the chip itself: it sizes to its widest
+   OPTION, so "Reading" rendered as wide as "Stopped reading" and the chip
+   stopped hugging its word -- which is the whole thing being copied.
+   Overlaying keeps the geometry identical to the cover's badge and still
+   opens the platform's own picker, which is a real menu on a phone and
+   needs no script at all. #}
+{% set badge_bg = {
+    'reading': 'bg-indigo-600',
+    'completed': 'bg-green-600',
+    'dropped': 'bg-red-600',
+    'stopped_reading': 'bg-amber-600',
+    'on_hold': 'bg-neutral-600',
+    'plan_to_read': 'bg-blue-600',
+} %}
+{% set pub_bg = {
+    'ongoing': 'bg-teal-300',
+    'completed': 'bg-violet-300',
+    'hiatus': 'bg-yellow-300',
+    'canceled': 'bg-rose-300',
+} %}
+
+{% macro tracking_class(status) -%}
+{{ badge_bg.get(status, 'bg-neutral-600') }}
+{%- endmacro %}
+
+{% macro publication_class(status) -%}
+{{ pub_bg.get(status, 'bg-neutral-300') }}
+{%- endmacro %}
+
+{# The reader's own status. Unset is the ordinary state and gets a quiet
+   chip rather than one of the six colours: a saturated badge saying "No
+   status" would read as a status, and this vocabulary has no such value.
+
+   hx-swap="outerHTML" on the wrapper, not "none": the badge's COLOUR is
+   part of what it says, and a <select> keeps its old class until something
+   replaces it. The server answering with this macro is what keeps the
+   colour map in one place instead of adding a copy in JS for this page. #}
+{% macro tracking_select(action, current, labels, oob=False) %}
+<span id="tracking-status-badge" class="status-chip inline-block"{% if oob %} hx-swap-oob="true"{% endif %}>
+    <form method="post" action="{{ action }}"
+          hx-post="{{ action }}" hx-trigger="change"
+          hx-target="#tracking-status-badge" hx-swap="outerHTML">
+        <span class="text-xs rounded px-1.5 py-0.5
+                     {{ tracking_class(current) if current else 'bg-neutral-800 text-neutral-400' }}">{{ labels[current] if current else 'No status' }}</span>
+        <select autocomplete="off" name="status" aria-label="Your tracking status" title="Your tracking status"
+                class="status-select">
+            <option value="" {{ 'selected' if not current else '' }}>No status</option>
+            {% for value, label in labels.items() %}
+            <option value="{{ value }}" {{ 'selected' if current == value else '' }}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</span>
+{% endmacro %}
+
+{# The work's own status. Dark text on a pale chip, which is the second
+   axis that says which family a badge is from -- all six saturated hues
+   are spoken for by the tracking statuses, so hue alone cannot separate
+   them (see AGENTS.md).
+
+   `empty_label` is what a NULL renders as. A series has none: every series
+   is `ongoing` until somebody says otherwise. A novel does -- NULL there
+   means "follow the source" -- and passes the source's own word. #}
+{% macro publication_select(action, current, labels, empty_label=None,
+                            source_word=None, oob=False) %}
+<span id="publication-status-badge" class="status-chip inline-block"{% if oob %} hx-swap-oob="true"{% endif %}>
+    <form method="post" action="{{ action }}"
+          hx-post="{{ action }}" hx-trigger="change"
+          hx-target="#publication-status-badge" hx-swap="outerHTML">
+        <span class="text-xs rounded px-1.5 py-0.5
+                     {{ (publication_class(current) ~ ' text-neutral-900') if current
+                        else 'bg-neutral-800 text-neutral-400' }}">{{ labels[current] if current else empty_label }}</span>
+        <select autocomplete="off" name="publication_status" aria-label="Publication status" title="Publication status"
+                class="status-select">
+            {% if empty_label is not none %}
+            <option value="" {{ 'selected' if not current else '' }}>{{ empty_label }}</option>
+            {% endif %}
+            {% for value, label in labels.items() %}
+            <option value="{{ value }}" {{ 'selected' if current == value else '' }}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </form>
+    {% if current and source_word %}
+    {# The SOURCE SITE's own wording, and only while an override is hiding
+       it: with no override the badge itself already reads "From the source
+       (Ongoing)", so this beside it was the same word twice.
+
+       Inside the badge rather than next to it, because it is part of what
+       the badge says and the swap has to carry it. Outside, choosing an
+       override left it absent until the next reload -- and choosing "from
+       the source" again left it on screen contradicting the badge. #}
+    <span class="inline-block bg-neutral-800 text-xs rounded px-2 py-0.5 text-neutral-400 ml-2">
+        {{ source_word }} at source
+    </span>
+    {% endif %}
+</span>
+{% endmacro %}

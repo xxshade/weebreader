@@ -1,0 +1,107 @@
+{# The display settings both text readers carry.
+
+   ONE copy, rendered by both, because the two used to be hand-written
+   twins: nine controls each, the only real difference the word inside one
+   <option> ("Book's original" for an EPUB, "Original" for a scraped
+   chapter). reader-text.js reaches every one of them by id, so a control
+   added to one template and forgotten in the other is a feature that
+   exists in one reader and silently does nothing in the other --
+   tests/test_reader_settings.py is what makes that fail loudly.
+
+   It is an OVERLAY anchored under the "Aa" button, not a strip in the
+   reader's flex column. As a strip it was the reading area's neighbour,
+   so opening it made #viewer shorter -- and the paginated page had
+   already been laid out for the taller one, which pushed its last lines
+   under the fold for exactly as long as the panel was open. Nothing about
+   reading the settings should reflow the book behind them.
+
+   Grouped and one control per row for the same reason a phone header
+   keeps its filters behind a button: nine labelled controls wrapped into
+   a 5-line band of chrome, in which the thing you came for was whichever
+   one you could find. #}
+{% macro settings_panel(original_font_label) %}
+<div id="settings-panel" class="reader-settings hidden" role="dialog" aria-label="Display settings">
+    <div class="rs-head">
+        <h2 class="rs-title">Display</h2>
+        <button id="settings-close" type="button" class="rs-close" aria-label="Close display settings">✕</button>
+    </div>
+
+    <section class="rs-group">
+        <h3 class="rs-group-title">Text</h3>
+        {# Buttons rather than a slider: this is the setting reached most
+           often and the one with the least reason to be dragged, and a
+           16px-wide grab handle is the worst target on the panel. #}
+        <div class="rs-row">
+            <span class="rs-name">Text size</span>
+            <div class="rs-stepper">
+                <button id="font-size-dec" type="button" class="rs-step" aria-label="Smaller text">−</button>
+                <span id="font-size-value" class="rs-step-value" aria-live="polite"></span>
+                <button id="font-size-inc" type="button" class="rs-step" aria-label="Larger text">+</button>
+            </div>
+        </div>
+        <div class="rs-row">
+            <label class="rs-name" for="font-select">Font</label>
+            <select autocomplete="off" id="font-select" class="rs-select">
+                <option value="Literata">Literata</option>
+                <option value="Bitter">Bitter</option>
+                <option value="original">{{ original_font_label }}</option>
+            </select>
+        </div>
+        <div class="rs-row">
+            <label class="rs-name" for="theme-select">Theme</label>
+            <select autocomplete="off" id="theme-select" class="rs-select">
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+                <option value="amoled" selected>AMOLED</option>
+            </select>
+        </div>
+    </section>
+
+    <section class="rs-group">
+        <h3 class="rs-group-title">Layout</h3>
+        <div class="rs-row">
+            <label class="rs-name" for="flow-select">Mode</label>
+            <select autocomplete="off" id="flow-select" class="rs-select">
+                <option value="paginated" selected>Paginated</option>
+                <option value="scrolled-doc">Continuous scroll</option>
+            </select>
+        </div>
+        <div class="rs-slider">
+            <label class="rs-name" for="line-height">Line spacing</label>
+            {# range-value.js renders the number as the input's next
+               sibling, so the track is what holds both. #}
+            <div class="rs-track">
+                <input autocomplete="off" id="line-height" type="range" min="1.2" max="2.4" step="0.1" value="1.6" data-range-value="">
+            </div>
+        </div>
+        <div class="rs-slider">
+            <label class="rs-name" for="reader-width">Content width</label>
+            <div class="rs-track">
+                <input autocomplete="off" id="reader-width" type="range" min="440" max="1000" step="20" value="720" data-range-value="px">
+            </div>
+        </div>
+    </section>
+
+    {# Open on demand, like the Firefox reader's own Advanced section:
+       neither of these is touched twice on the same phone, and the bottom
+       gap needs a sentence of explanation to mean anything. #}
+    <details class="rs-group">
+        <summary class="rs-group-title rs-summary">Advanced</summary>
+        <div class="rs-slider">
+            <label class="rs-name" for="bottom-gap">Bottom gap</label>
+            {# Some mobile browsers draw a bar OVER the page instead of
+               shrinking it, so the last line of a page ends up underneath
+               it. The reader detects what it can (see applyBottomGap in
+               reader-text.js) and this is the manual floor for what it
+               cannot -- the page area shrinks by this much, so the text is
+               laid out above the covered strip rather than into it. #}
+            <p class="rs-hint">Keeps the last line clear of a browser bar that overlaps the bottom of the page.</p>
+            <div class="rs-track">
+                <input autocomplete="off" id="bottom-gap" type="range" min="0" max="64" step="2" value="0">
+                <span id="bottom-gap-value" class="rs-step-value"></span>
+            </div>
+        </div>
+        <button id="btn-fullscreen" type="button" class="rs-btn">Fullscreen</button>
+    </details>
+</div>
+{% endmacro %}

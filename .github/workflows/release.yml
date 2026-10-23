@@ -1,0 +1,168 @@
+name: Release
+run-name: ${{ github.event_name == 'push' && 'Automatic stable release' || 'Manual stable release' }}
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Initial release: 8.3.6; otherwise optional stable override without v'
+        required: false
+        type: string
+      migration_notes:
+        description: 'Required for initial release; use "No manual steps required" if applicable'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# One active publisher and the newest pending run. Resolve main only AFTER
+# entering this queue, so dropped/intermediate events cannot lose changes.
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # GitHub exposes draft release journals only to repository push readers.
+      contents: write
+      pull-requests: read
+      packages: read
+    outputs:
+      eligible: ${{ steps.plan.outputs.eligible }}
+      version: ${{ steps.plan.outputs.version }}
+      commit: ${{ steps.plan.outputs.commit }}
+      image: ${{ steps.plan.outputs.image }}
+      reconcile: ${{ steps.plan.outputs.reconcile }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Pin the main commit selected inside the publication queue
+        run: echo "RELEASE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: Calculate the version and collect reviewed upgrade notes
+        id: plan
+        run: python -m scripts.release_publication plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PLAN: ${{ runner.temp }}/release-plan.json
+          MANUAL_VERSION: ${{ inputs.version }}
+          MANUAL_NOTES: ${{ inputs.migration_notes }}
+      - uses: actions/upload-artifact@v7
+        if: steps.plan.outputs.eligible == 'true'
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-plan.json
+          retention-days: 7
+
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}
+      - name: Revalidate the publication plan or recover its original image
+        id: stage
+        run: python -m scripts.release_publication stage
+        env:
+          RELEASE_PLAN: ${{ runner.temp }}/release-plan.json
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and publish the exact version
+        id: build
+        if: steps.stage.outputs.build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.commit }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Complete release and verify all three image aliases
+        run: python -m scripts.release_publication finish
+        env:
+          RELEASE_PLAN: ${{ runner.temp }}/release-plan.json
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest || steps.stage.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+
+  reconcile:
+    name: Verify current stable aliases
+    needs: prepare
+    if: needs.prepare.outputs.reconcile == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Reuse the current stable image without building or versioning
+        run: python -m scripts.release_publication reconcile
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_PLAN: ${{ runner.temp }}/unused-plan.json
+          GH_TOKEN: ${{ github.token }}
+
+  advance:
+    name: Queue changes left after publication or recovery
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - run: python -m scripts.release_publication advance
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_PLAN: ${{ runner.temp }}/unused-plan.json
+          GH_TOKEN: ${{ github.token }}

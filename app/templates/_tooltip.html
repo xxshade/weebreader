@@ -1,0 +1,42 @@
+{# The "?" that replaced this page's walls of explanatory text.
+
+   Every setting used to carry a paragraph above it saying what it does.
+   Read once, that paragraph is useful; read every time you come here to
+   change one number, it is what you scroll past. So the words move behind
+   a marker beside the label and the controls close back up.
+
+   Usage -- the body is a {% call %} block, so it can hold markup (one of
+   them links to /stats):
+
+       {% import "_tooltip.html" as tip %}
+       <div class="tip-row">
+           <h2 ...>Reading time</h2>
+           {% call tip.help("What the page time limit does") %}
+               Time is counted per page ...
+           {% endcall %}
+       </div>
+
+   The bubble is positioned against the ROW, not against the marker: it is
+   `left: 0; right: 0` of a `.tip-row`/`.tip-anchor`, so it spans the
+   column and cannot be pushed off a narrow screen the way a bubble
+   anchored to a marker sitting after a long heading would be. That also
+   puts it exactly where the paragraph used to be.
+
+   `aria-label` rather than text in the button: the glyph is decorative
+   (`aria-hidden`), and "?" read aloud is not a description of anything.
+   The label is what a screen reader announces, so it should say which
+   setting the help is about. #}
+{% macro help(label) %}
+<span class="tip">
+    <button type="button" class="tip-btn" data-tip-toggle
+            aria-expanded="false" aria-label="{{ label }}">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path>
+            <path d="M12 17h.01"></path>
+        </svg>
+    </button>
+    <span class="tip-body" role="tooltip">{{ caller() }}</span>
+</span>
+{% endmacro %}

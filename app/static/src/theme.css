@@ -1,0 +1,1287 @@
+/*
+ * theme.css -- app-wide theme overrides, hand-written.
+ *
+ * Kept OUT of app.css on purpose: that file is the frozen snapshot of the
+ * utility classes the templates use (see its own header), and this is a
+ * small set of deliberate overrides on top of it. Loaded after app.css in
+ * base.html.
+ *
+ * How it works: app.css defines every neutral as a custom property on
+ * `:root, :host` inside `@layer theme`, and each utility reads it back
+ * (`.bg-neutral-950 { background-color: var(--color-neutral-950); }`).
+ * Re-declaring the property under an attribute on <html> therefore
+ * recolours every utility that uses it at once, with no template changes
+ * and no per-element overrides to keep in sync. The rule below is
+ * unlayered, so it wins over app.css's layered `@layer theme` declaration
+ * regardless of specificity.
+ *
+ * Why only --color-neutral-950: measured, rather than guessed. Screenshots
+ * of the real pages at 1200x900 came out 82% (settings), 93% (problem
+ * items), 95% (home) and 99.6% (web novels) `#0a0a0a` -- that ONE variable
+ * is essentially the whole app's surface, and it is exactly the colour a
+ * "true black" theme is supposed to not have. The lighter neutrals are
+ * cards, inputs, buttons and borders (3.5-13% of pixels combined); they are
+ * what makes those elements readable AS elements against the background, so
+ * darkening them would cost legibility for a fraction of a percent of lit
+ * pixels. They stay put.
+ */
+:root[data-app-theme="amoled"] {
+    --color-neutral-950: #000000;
+}
+
+/*
+ * .ctl -- the one thing the series page's toolbar needs that the frozen
+ * app.css cannot express.
+ *
+ * The controls there (a <select>, icon buttons, labelled buttons) share
+ * their colours, border and radius through the `control()` macro in
+ * templates/library/_controls.html, but padding alone cannot make them the
+ * same HEIGHT: a select's internal line box is not the text-sm line-height
+ * a button gets, so identical padding still rendered 32px, 30px and 34px
+ * side by side. app.css has no `h-8`/`h-9` rule (checked, and it gains no
+ * new ones -- it is a frozen snapshot), so the height is stated here once
+ * instead of as an inline style repeated on every control.
+ */
+.ctl {
+    height: 2.125rem;
+}
+
+/*
+ * Sticky chrome on the desktop home page, and its library tabs.
+ *
+ * These are component rules rather than utilities in app.css because they
+ * are about ONE layout: what each piece sticks under, and what a selected
+ * tab looks like. The generic bits (z-30, md:sticky) did go into app.css
+ * beside their neighbours.
+ *
+ * --header-h is what everything sticky hangs off. Enlarged text can wrap
+ * the header, so base.html measures and republishes its height on resize.
+ * The value here is only the pre-paint default, so nothing is mispositioned in the frame
+ * before that script runs.
+ */
+:root {
+    --header-h: 57px;
+}
+
+.sticky-under-header {
+    top: var(--header-h);
+}
+
+/*
+ * The library tabs over the home grid (library/index.html): an icon each,
+ * the name in the tooltip. They were a sidebar, which cost the grid 13rem
+ * to list a handful of names.
+ *
+ * The selection is `aria-pressed`, which the pre-paint block and home.js
+ * set and this reads -- one attribute rather than a class list kept in step
+ * in two scripts. The underline is the tab look: the selected one reads as
+ * the grid's own heading, the rest as ways to change it.
+ */
+.library-tab,
+.library-tab-action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.125rem;
+    color: var(--color-neutral-500);
+    cursor: pointer;
+}
+
+.library-tab {
+    border-bottom: 2px solid transparent;
+}
+
+.library-tab:hover,
+.library-tab-action:hover {
+    color: var(--color-neutral-100);
+}
+
+.library-tab[aria-pressed="true"] {
+    color: var(--color-neutral-100);
+    border-bottom-color: var(--color-indigo-400);
+}
+
+.library-tab:focus-visible,
+.library-tab-action:focus-visible {
+    outline: 2px solid var(--color-indigo-400);
+    outline-offset: -2px;
+    border-radius: 0.25rem;
+}
+
+/*
+ * .thumb-grid -- the cover grids (home, series, reading strip, novels).
+ *
+ * The tracks are exactly --thumb-size, NOT `minmax(--thumb-size, 1fr)`.
+ * With the 1fr the tracks STRETCH to fill the row, so the size the user
+ * picked was never the size rendered, and two different things went wrong
+ * because of it (both measured on a real page at 1400px):
+ *
+ *   slider   expanded     collapsed
+ *     110    112.0 px     114.8 px
+ *     140    148.6 px     147.5 px
+ *     150    176.0 px     170.8 px
+ *     160    176.0 px     170.8 px     <- same as 150: the notch did nothing
+ *     220    272.0 px     245.6 px     <- 52px over what was asked
+ *
+ * Collapsing the old home sidebar widened the container, so every card silently
+ * resized; and a slider notch that did not change the COLUMN COUNT changed
+ * nothing at all, because 1fr absorbed it. The widths were also fractional
+ * (148.6, 214.4, 245.6), which is what made the covers look soft: the
+ * browser resamples a 400px-wide source across a non-integer box.
+ *
+ * So the CARD is pinned to --thumb-size and the tracks are left to divide
+ * the row. The column count is unchanged (auto-fill counts from minmax's
+ * min, i.e. --thumb-size either way); what changes is that the leftover
+ * space now becomes even spacing between cards instead of being poured into
+ * the cards themselves. Pinning the tracks instead would work equally well
+ * for the sizing, but dumps the whole remainder as one dead gutter at the
+ * right edge -- 208px of it at the largest size on a 1136px grid, measured.
+ *
+ * width:100% under the max-width matters for the opposite edge case: in a
+ * container narrower than --thumb-size the card shrinks to fit rather than
+ * overflowing, which a fixed track would not do.
+ */
+.thumb-grid {
+    grid-template-columns: repeat(auto-fill, minmax(var(--thumb-size, 140px), 1fr));
+    justify-items: center;
+}
+
+.thumb-grid > * {
+    width: 100%;
+    max-width: var(--thumb-size, 140px);
+}
+
+/*
+ * .avatar -- the user's picture in the header, in place of their name.
+ *
+ * The size is a variable rather than a utility class because the rule it
+ * has to satisfy is "do not make the header taller", and that is a
+ * measurement, not a preference: the header's height is set by its tallest
+ * child, and every other child there is a line of text. Measured against
+ * the real header at both widths, with the name it replaces as the
+ * baseline:
+ *
+ *              baseline  1.25rem  1.5rem  1.75rem  2rem  2.5rem
+ *   1400px        59       59       59      59      59     65
+ *    390px       101       97      101     105     109    117
+ *
+ * So the binding constraint is MOBILE, not desktop: the wide header has
+ * slack up to 2rem, while the wrapped one grows from 1.75rem on. 1.5rem is
+ * the largest size that leaves both exactly as they were.
+ *
+ * app.css has w-6/h-6 at exactly this size, but they are not used here:
+ * two utilities in the markup would put the constraint in the template,
+ * where nothing explains why that number and not a bigger one.
+ */
+:root {
+    --avatar-size: 1.5rem;
+}
+
+.avatar {
+    width: var(--avatar-size);
+    height: var(--avatar-size);
+}
+
+/*
+ * The settings page's preview, where the point is to see the picture
+ * rather than to fit it into a line of text.
+ */
+.avatar-preview {
+    width: 4rem;
+    height: 4rem;
+}
+
+/*
+ * Statistics page charts.
+ *
+ * Hand-rolled in HTML/CSS rather than with a charting library, for the same
+ * reason the icons are inline SVG: the project vendors everything it ships
+ * and has no build step left, so a library would be a new download to pin,
+ * verify and keep working. Two forms cover the whole page -- a column chart
+ * for the daily series and a stacked bar for part-to-whole -- and both are
+ * simpler as flex boxes than as SVG with its own coordinate maths, and
+ * responsive for free.
+ *
+ * The colours are the validated categorical palette's dark steps, checked
+ * against this app's OWN surface (#0a0a0a) rather than a generic dark:
+ * all six pass the lightness band, the chroma floor, adjacent CVD
+ * separation (worst 8.4 protan), the normal-vision floor (worst 19.3) and
+ * 3:1 contrast. AMOLED only takes the surface to #000, which can only
+ * improve all of those, so one set of values serves both themes.
+ *
+ * Identity is never colour alone: every stacked segment carries a title,
+ * the legend beside it names each colour, and the same numbers appear as
+ * text in the tables.
+ */
+.viz {
+    --series-1: #3987e5;  /* blue */
+    --series-2: #d95926;  /* orange */
+    --series-3: #199e70;  /* aqua */
+    --series-4: #c98500;  /* yellow */
+    --series-5: #d55181;  /* magenta */
+    --series-6: #008300;  /* green */
+    /* "No status" and "Unread" are an ABSENCE, not a category, so they get
+       the de-emphasis grey rather than a hue of their own -- which also
+       keeps the real statuses inside the six validated slots. */
+    --series-none: #52525b;
+}
+
+.viz-1 { background-color: var(--series-1); }
+.viz-2 { background-color: var(--series-2); }
+.viz-3 { background-color: var(--series-3); }
+.viz-4 { background-color: var(--series-4); }
+.viz-5 { background-color: var(--series-5); }
+.viz-6 { background-color: var(--series-6); }
+.viz-none { background-color: var(--series-none); }
+
+/* Part-to-whole. The 2px gap is the surface showing through between
+   segments, which is what keeps two adjacent hues from reading as one
+   band -- it is a required part of the mark spec, not decoration. */
+.viz-stack {
+    display: flex;
+    gap: 2px;
+    height: 0.75rem;
+    border-radius: 0.25rem;
+    overflow: hidden;
+}
+
+.viz-stack > span {
+    display: block;
+    min-width: 2px;
+}
+
+/* Daily columns. align-items:flex-end anchors every bar to the baseline;
+   the rounded top is the 4px data-end, and the baseline end stays square
+   because it is not a data end -- it is the axis. */
+.viz-columns {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 7rem;
+    border-bottom: 1px solid var(--color-neutral-800);
+}
+
+.viz-columns > div {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    align-items: flex-end;
+    height: 100%;
+}
+
+/* A day's column, stacked by kind. The segments are its children in
+   baseline-up order (column-reverse), sized by flex-grow set to each kind's
+   own number, so the split is exact however tall the column is. The 2px
+   gap is the surface between two segments -- the same required spacer the
+   part-to-whole bar has -- and the rounded top is on the COLUMN, clipped,
+   so it is the 4px data end whichever kind happens to be on top. */
+.viz-columns > div > .viz-bar {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 2px;
+    width: 100%;
+    border-radius: 0.25rem 0.25rem 0 0;
+    overflow: hidden;
+    /* A day with reading must never round to invisible: a bar the reader
+       cannot see is indistinguishable from a day off, which is the one
+       thing these charts exist to tell apart. */
+    min-height: 2px;
+}
+
+.viz-bar > span {
+    flex-basis: 0;
+    flex-shrink: 1;
+    /* The same rule one level down: a kind read for a minute on a day of
+       six hours is still on the column, not rounded out of it. */
+    min-height: 2px;
+}
+
+/* The day under the pointer or the keyboard lifts, so the reader sees
+   which column the tooltip is about -- on a quarter of days at 2px each,
+   that is not otherwise obvious. */
+.viz-columns > div {
+    outline: none;
+}
+
+.viz-columns > div[data-active] > .viz-bar,
+.viz-columns > div:focus-visible > .viz-bar {
+    filter: brightness(1.25);
+}
+
+.viz-columns > div:focus-visible {
+    box-shadow: inset 0 -2px 0 var(--color-neutral-100);
+}
+
+/* Legend swatch: a rect, because the mark it keys is a filled segment. */
+.viz-key {
+    display: inline-block;
+    width: 0.625rem;
+    height: 0.625rem;
+    border-radius: 2px;
+}
+
+/*
+ * The daily charts' tooltip (stats-daily.js): one per page, filled with
+ * textContent. Values lead and the kind follows, the legend's order
+ * inverted -- here the reader already has the kind and wants the number.
+ * Each row is keyed by a short STROKE of the kind's colour, not a box: at
+ * tooltip density a filled box is data ink doing a label's job.
+ *
+ * `position: fixed`, placed from the column's own rect, so no ancestor's
+ * overflow or stacking can clip it; pointer-events none so it can never
+ * sit between the pointer and the column it describes.
+ */
+.viz-tip {
+    position: fixed;
+    z-index: 40;
+    pointer-events: none;
+    min-width: 9rem;
+    padding: 0.5rem 0.625rem;
+    border-radius: 0.375rem;
+    background-color: var(--color-neutral-900);
+    border: 1px solid var(--color-neutral-700);
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.5);
+    font-size: 0.75rem;
+    line-height: 1.1rem;
+    color: var(--color-neutral-400);
+}
+
+.viz-tip-day {
+    margin-bottom: 0.25rem;
+    color: var(--color-neutral-500);
+}
+
+.viz-tip-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.viz-tip-row strong {
+    color: var(--color-neutral-100);
+    font-weight: 600;
+}
+
+.viz-tip-key {
+    display: inline-block;
+    width: 0.75rem;
+    height: 2px;
+    border-radius: 1px;
+    flex-shrink: 0;
+}
+
+.viz-tip-total {
+    margin-top: 0.25rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid var(--color-neutral-800);
+}
+
+/* A day with nothing at all -- drawn as a faint tick on the baseline so the
+   axis stays continuous and the gap is legible AS a gap. */
+.viz-columns > div > span.viz-empty {
+    display: block;
+    width: 100%;
+    background-color: var(--color-neutral-800);
+    height: 2px;
+}
+
+/* Magnitude rows (time per page by kind): one hue, length carries the
+   value, so no legend and no second colour. */
+.viz-row {
+    height: 0.5rem;
+    border-radius: 0.25rem;
+    background-color: var(--series-1);
+    min-width: 2px;
+}
+
+/* A window wide enough that a 2px gap eats a third of the chart. The bars
+   themselves keep their 2px minimum -- a day with reading must still be
+   visible -- so it is the gap that gives way, and the chart stops reading
+   as a row of bars and starts reading as a density plot, which is the
+   honest shape for a quarter of days on a phone. */
+.viz-columns.viz-dense {
+    gap: 1px;
+}
+
+/*
+ * Custom date range picker (statistics page).
+ *
+ * Hand-rolled for the same reason as the charts above: no build step, no
+ * vendored library to pin. `<input type="date">` twice would have been
+ * less code, but its calendar is the platform's -- the week starts where
+ * the OS locale says, there is no notion of a RANGE, and the two fields
+ * cannot show which days fall between them, which is the one thing this
+ * control exists to show.
+ *
+ * The week runs Sunday..Saturday, fixed rather than locale-derived: it is
+ * the shape the reader asked for, and a grid that silently reorders itself
+ * on a different machine is worse than one that is simply always the same.
+ */
+.cal-panel {
+    background-color: var(--color-neutral-900);
+    border: 1px solid var(--color-neutral-800);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.cal-months {
+    display: grid;
+    gap: 1rem;
+}
+
+/* Two months side by side as soon as they fit: a range is a span BETWEEN
+   two months far more often than inside one, and a single month makes the
+   reader navigate away from the start to reach the end -- losing sight of
+   what they already picked. */
+@media (min-width: 40rem) {
+    .cal-months {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+.cal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+    min-height: 1.75rem;
+}
+
+.cal-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--color-neutral-200);
+}
+
+.cal-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 0.375rem;
+    color: var(--color-neutral-400);
+    line-height: 1;
+}
+
+.cal-nav:hover {
+    background-color: var(--color-neutral-800);
+    color: var(--color-neutral-100);
+}
+
+.cal-nav[disabled] {
+    opacity: 0.3;
+    pointer-events: none;
+}
+
+/* Row gap only. The columns touch so an in-range run reads as one
+   continuous band rather than seven separate chips a week -- the band IS
+   the answer to "what did I just select". */
+.cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    row-gap: 2px;
+}
+
+.cal-dow {
+    text-align: center;
+    font-size: 0.625rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-neutral-500);
+    padding-bottom: 0.25rem;
+}
+
+/* The cell is the band segment and the button is the day. Splitting them
+   is what lets an endpoint be a rounded pill sitting ON a square band:
+   one element cannot be both square-sided and round at once. */
+.cal-cell {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.cal-cell.is-in-range {
+    background-color: rgba(57, 135, 229, 0.16);
+}
+
+.cal-cell.is-range-start {
+    border-radius: 0.375rem 0 0 0.375rem;
+}
+
+.cal-cell.is-range-end {
+    border-radius: 0 0.375rem 0.375rem 0;
+}
+
+/* A one-day range, and the first click of a two-day one: rounded on both
+   sides, since there is no band for it to continue into yet. */
+.cal-cell.is-range-start.is-range-end {
+    border-radius: 0.375rem;
+}
+
+.cal-day {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+    color: var(--color-neutral-300);
+    line-height: 1;
+}
+
+.cal-day:hover {
+    background-color: var(--color-neutral-800);
+    color: var(--color-neutral-100);
+}
+
+.cal-day.is-endpoint,
+.cal-day.is-endpoint:hover {
+    background-color: var(--series-1);
+    color: #fff;
+    font-weight: 600;
+}
+
+/* Today is marked by an underline dot rather than a fill, so it cannot be
+   confused with a selected endpoint -- the two would otherwise be two
+   blue-ish states of the same cell. */
+.cal-day.is-today::after {
+    content: "";
+    position: absolute;
+    bottom: 0.125rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background-color: currentColor;
+}
+
+.cal-day[disabled] {
+    color: var(--color-neutral-700);
+    pointer-events: none;
+}
+
+.cal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--color-neutral-800);
+}
+
+.cal-footer button[disabled] {
+    opacity: 0.4;
+    pointer-events: none;
+}
+
+/* Restoring the novel page's "Unread only" from the FIRST parsed row.
+   The attribute is rendered on <main> by the SERVER, from the cookie (see
+   the main_state block in novels/detail.html and app/ui_prefs.py) -- on
+   <main> rather than <html> because that is the half a body swap
+   replaces -- and removed by the block at the foot of the same page, which hides the same
+   rows with .hidden; this rule exists only for the window in between,
+   where no script could have reached these rows yet because they were
+   still being parsed. */
+main[data-unread-only] li[data-chapter-search]:has(.read-toggle[data-read="true"]) {
+    display: none;
+}
+
+/* ---- Help bubbles on the settings page (see _tooltip.html) ----------
+   The bubble is absolutely positioned against the ROW (`.tip-row` /
+   `.tip-anchor`), not against the "?" itself, and stretches `left: 0;
+   right: 0`. Anchoring it to the marker would put its left edge wherever
+   the heading happens to end, which on a phone pushes a 20rem bubble off
+   the right of the screen; spanning the row cannot overflow whatever the
+   row already fits in, and lands the text exactly where the paragraph it
+   replaced used to be. */
+.tip-anchor {
+    position: relative;
+}
+
+.tip-row {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 0.375rem;
+}
+
+/* `align-self: stretch` (which beats the container's own align-items)
+   makes the marker's hoverable box reach the row's bottom edge, which is
+   where the bubble starts -- so moving the pointer straight DOWN from the
+   "?" lands inside the bubble with nothing in between (measured: 0px of
+   gap on six of the seven; the seventh sits inside a <label> and keeps
+   that label's own 8px of padding). It is not the whole answer, because
+   the bubble spans the row and a pointer heading for its middle travels
+   diagonally, off the marker; tooltip.js holds the bubble open for a
+   moment to cover that. This is what makes the common case need no
+   JavaScript at all. */
+.tip {
+    display: flex;
+    align-items: center;
+    align-self: stretch;
+}
+
+.tip-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.125rem;
+    border-radius: 9999px;
+    color: var(--color-neutral-500);
+    cursor: pointer;
+}
+
+.tip-btn:hover,
+.tip[data-open="true"] .tip-btn,
+.tip[data-hover="true"] .tip-btn,
+.tip:focus-within .tip-btn {
+    color: var(--color-neutral-300);
+}
+
+.tip-body {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    /* Above the control that follows it, and above the sticky header's
+       own stacking neighbours on this page. */
+    z-index: 30;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--color-neutral-700);
+    border-radius: 0.25rem;
+    background-color: var(--color-neutral-900);
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    font-weight: 400;
+    color: var(--color-neutral-300);
+    text-align: left;
+    /* A heading is the usual trigger's sibling; without this the bubble
+       would inherit its size and weight. */
+    letter-spacing: normal;
+}
+
+/* Statistics cards share the settings help component. Let the bubble use
+   more than a half-width card on phones while keeping it inside the viewport. */
+.viz .tip-body {
+    width: min(24rem, calc(100vw - 3.5rem));
+    left: auto;
+    right: 0;
+}
+
+/* :hover for a mouse, :focus-within for a keyboard, [data-open] for a tap
+   and [data-hover] for the grace period that survives the diagonal --
+   tooltip.js sets the last two. The bubble is a DESCENDANT of .tip, so
+   :hover and :focus-within both stay true once the pointer or the focus
+   is inside the bubble itself. */
+.tip:hover .tip-body,
+.tip:focus-within .tip-body,
+.tip[data-hover="true"] .tip-body,
+.tip[data-open="true"] .tip-body {
+    display: block;
+}
+
+.tip-body a {
+    color: var(--color-indigo-400);
+}
+
+/* The controls over a series page's item card (_item_card.html). The
+   overlay spans the whole card so that it is what the "about" bubble is
+   positioned against; it lets every click through to the link beneath
+   except on the controls themselves. */
+.card-overlay {
+    position: absolute;
+    inset: 0;
+    padding: 0.25rem;
+    pointer-events: none;
+}
+
+.card-overlay form,
+.card-overlay .tip {
+    pointer-events: auto;
+}
+
+/* The item's author and description, over its own card rather than
+   hanging off it: a bubble wider than the card would run off the screen
+   for the cards at either edge of the grid, and one stretched along the
+   grid would cover the neighbours it is not about. It starts at the
+   bottom edge of the marker row (0.25rem of padding + the 1.5rem
+   buttons), so the pointer moves straight down into it.
+
+   Its HEIGHT follows the text, with the card's bottom edge as a ceiling
+   (`max-height`, scrolling past it) -- not the card's height outright.
+   Pinned to both edges (`bottom: 0`), an item with only an author showed
+   one line in a panel the whole height of the cover. The width stays
+   the card's, so every bubble lines up with the cover it belongs to. */
+.card-overlay .item-about {
+    top: 1.75rem;
+    max-height: calc(100% - 1.75rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+/* Paragraphs arrive as blank-line-separated plain text (see
+   parsers/plain_text.py); pre-line keeps those breaks and nothing else. */
+.item-about-text {
+    display: block;
+    white-space: pre-line;
+}
+
+.item-about-text:not(:first-child) {
+    margin-top: 0.375rem;
+}
+
+/* A list allowed to grow without taking the page with it: the saved text
+   replacements once there are more than a handful (one novel with 14
+   rules turned that section into most of the settings page), and a
+   tracker search's results. Capped rather than hidden behind a "show
+   more" -- in both cases finding the right row by eye IS the job, and a
+   row you cannot see is a row you cannot pick. The cap goes on the LIST
+   itself, so whatever labels it stays put while it scrolls. */
+.list-scroll-cap {
+    max-height: 22rem;
+    overflow-y: auto;
+    /* Room for the focus ring on the last row's buttons, which would
+       otherwise be clipped by the scroll container. */
+    padding-right: 0.25rem;
+}
+
+/* A cover the reader asked to blur on the home grid (see the checkbox on
+   the series page). blur() is a filter on the IMG alone -- the badges over
+   it are siblings and stay sharp.
+
+   The overhang is not decoration: a blur samples beyond the element's own
+   edges, so an image blurred inside its own box fades toward the container
+   in a ring around itself and reads as a rendering fault. .cover clips the
+   overflow, so growing the image past its box puts real pixels under the
+   whole frame.
+
+   It is INSET rather than a transform because the radius is now a setting
+   (users.cover_blur_px, published as --cover-blur on the grid). A fixed
+   scale covers a fixed radius on a fixed card: 1.15 was measured for 12px
+   on a 140px thumbnail, and the same 15% is far too little at 40px and
+   more than needed at 4px -- and the card's width is a slider of its own,
+   which CSS cannot read into a scale factor. Negative insets are stated in
+   the radius itself, so the overhang tracks the blur exactly and does not
+   care how wide the card is. Two radii of overhang is what the fade
+   measured out at (see AGENTS.md).
+
+   The size is stated in full rather than left to the insets. An IMG is a
+   replaced element, and `width: auto` on an absolutely positioned replaced
+   element means its INTRINSIC width -- the four insets do not size it the
+   way they would size a div, and the base reset's `img { max-width: 100% }`
+   then pinned it back to exactly the box it was supposed to be growing out
+   of (measured: 140px against the 188px asked for, and unchanged even
+   with !important, which is what ruled the cascade out as the cause).
+   So: two corners, an explicit size, and max-width off. */
+.cover-blur {
+    filter: blur(var(--cover-blur, 12px));
+    position: absolute;
+    top: calc(-2 * var(--cover-blur, 12px));
+    left: calc(-2 * var(--cover-blur, 12px));
+    width: calc(100% + 4 * var(--cover-blur, 12px));
+    height: calc(100% + 4 * var(--cover-blur, 12px));
+    max-width: none;
+}
+
+/* The home page's "show everything" switch, drawn as an eye: open means
+   the account's hidden statuses are suspended, closed means they are being
+   honoured. An icon rather than a checkbox because it sits in a row of
+   filters and reads at a glance -- and because "hidden" is what the
+   control is about, which is the one thing an eye says without a label.
+
+   The checkbox is still THE STATE: it keeps its id, the pre-paint block
+   and home.js still set `.checked`, and everything downstream is
+   unchanged. What is different is only that :checked picks the glyph, in
+   CSS, so the right eye is on screen in the first frame -- a script
+   swapping icons after paint is a visible flip, the same reason every
+   other filter here is restored before paint.
+
+   The input is moved out of sight rather than `display: none`: a control
+   that is not rendered is not focusable, and the switch would stop
+   existing for the keyboard. Same for the label's text, which is the
+   accessible name an eye on its own does not have. */
+/* Positioned so the hidden input and label are taken out of the flow
+   against THIS element and not against whatever happens to be positioned
+   further up -- a 1px box parked at the top of the page can still scroll
+   it when focus lands on it. */
+.eye-toggle {
+    position: relative;
+}
+
+/* Only the INPUT is hidden now. .eye-label used to be hidden with it,
+   because the eye lived in the header's filters row where a word did not
+   fit -- inside the filters popover it does, and a lone eye beside two
+   labelled selects reads as unfinished. The checkbox is still the state
+   and :checked still decides which glyph is drawn; all that changed is
+   that the accessible name is now also the visible one, so there is one
+   label rather than a hidden one and a caption that could drift from
+   it. */
+.eye-toggle .eye-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* The name, now that it is on screen. It sits opposite the eye in a
+   justify-between row, so wrapping "Show everything" onto a second line
+   would pull the glyph out of line with the two selects above it. This is
+   also the rule that keeps the class alive: the frozen stylesheet has no
+   generator, so a class with no rule silently does nothing and
+   tests/test_css_classes.py fails on it -- which is how this was caught. */
+.eye-toggle .eye-label {
+    white-space: nowrap;
+}
+
+.eye-toggle .eye-open {
+    display: none;
+}
+
+.eye-toggle .eye-input:checked ~ .eye-open {
+    display: block;
+}
+
+.eye-toggle .eye-input:checked ~ .eye-closed {
+    display: none;
+}
+
+/* Keyboard focus has to land somewhere visible, and the input it lands on
+   is the invisible one -- so the LABEL wears the ring.
+
+   :focus-visible and not :focus-within: clicking a label focuses the
+   checkbox inside it, so the plain focus rule left a ring sitting on the
+   eye after every mouse click, until something else was clicked
+   (measured). :focus-visible is the browser's own answer to "was this
+   reached by keyboard", which is the case a ring is for. */
+.eye-toggle:has(.eye-input:focus-visible) {
+    color: var(--color-neutral-100, #f5f5f5);
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+    border-radius: 0.25rem;
+}
+
+/* The tracking dot on a home-grid cover: linked to nothing, to one
+   service, or to both. It exists so the ONE screen that shows every cover
+   at once can answer "what still needs linking" without opening each
+   series to look at the icon beside its title.
+
+   The colour comes from `currentColor`, so it is set by the same
+   `text-neutral-500` / `text-sky-300` / `text-emerald-300` utilities that
+   colour that icon -- one vocabulary for tracking state rather than two
+   that can drift. The frozen stylesheet has no size utilities this small
+   (no w-2/h-2 at all), which is the other reason this is a class and not
+   four of them.
+
+   The ring is not decoration: a 8px dot sits on a photograph, and a pale
+   green one on a bright cover is invisible without something dark under
+   its edge. Drawn as a box-shadow rather than a border so the dot's own
+   size stays exactly what it says. */
+.track-dot {
+    position: absolute;
+    bottom: 0.25rem;
+    left: 0.25rem;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 9999px;
+    background: currentColor;
+    box-shadow: 0 0 0 2px rgb(0 0 0 / 0.55);
+}
+
+/* A description cut to three lines, with the rest behind a button (see
+   library/_series_headline.html and read-more.js).
+
+   `-webkit-line-clamp` is the only thing that clamps by LINES rather than
+   by height: a max-height in em guesses the line-height and cuts a fourth
+   line in half, which reads as a rendering fault rather than as a
+   deliberate crop. The `-webkit-` prefix is not legacy here -- it is what
+   every current engine implements. The unprefixed `line-clamp` is NOT
+   written beside it: no engine parses it (measured, `CSS.supports` false in
+   Chrome 141 and Firefox 155), so all it did was put "Unknown property
+   'line-clamp'. Declaration dropped." in Firefox's console on every page
+   load, and nothing on screen.
+
+   `display: -webkit-box` is part of the same mechanism and not a choice;
+   the element still lays out as a block. */
+.clamp-3 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+}
+
+/* An unneeded "Show more" that the SERVER already made room for.
+
+   Whether the button is needed depends on how the text wraps at this
+   width, which only the browser knows -- so it used to be hidden until
+   read-more.js had measured, and appearing after the first paint pushed
+   the items grid down (Chromium reports it: CLS 0.0062 at 1200px, 0.0159
+   at 390px, against 0 where no button appeared). The server now reserves
+   the slot whenever the text is long enough to possibly need one, and
+   this is how the answer "it fits" is given without taking the slot back:
+   `visibility` keeps the box, where `display: none` would collapse it and
+   move everything below by exactly the amount this exists to avoid.
+
+   Only for a RESERVED button. Below the threshold no slot is reserved and
+   the button stays `display: none`, so a one-line description carries no
+   blank row under it. */
+.clamp-toggle[data-reserved].clamp-toggle-unneeded {
+    visibility: hidden;
+}
+
+/* Mobile panels span the header, independently of the compact controls.
+   Desktop panels remain anchored to their own buttons. */
+#thumb-size-control {
+    position: static;
+}
+
+#thumb-size-popover {
+    left: 0;
+    right: 0;
+}
+
+#thumb-size-slider {
+    flex: 1 1 auto;
+    width: auto;
+}
+
+@media (width >= 48rem) {
+    /* Back to the button-anchored popover: on a wide screen the row has
+       room to spare, and a popover spanning it would be a 700px box for a
+       112px slider. */
+    #thumb-size-control {
+        position: relative;
+    }
+
+    #thumb-size-popover {
+        left: auto;
+    }
+
+    #thumb-size-slider {
+        flex: none;
+        width: 7rem;
+    }
+}
+
+#filters-control {
+    position: static;
+}
+
+#filters-popover {
+    left: 0;
+    right: 0;
+}
+
+/* A select row is `<label><span>name</span><select></label>`, and the
+   NAMES are what decide where the selects start. Left to their own widths
+   they differ ("Your status" 89px against "Publication" 88px), so the two
+   selects ended at the same right edge and began at different left ones
+   -- which is what reads as crooked. One width for the name column lines
+   them up.
+
+   Stated once here rather than as a utility on each span: the number has
+   to be the same in every row and on all three pages that call the macro,
+   and a utility repeated six times is what drifts. */
+#filters-popover > label:has(select) > span:first-child {
+    flex: none;
+    width: 5.75rem;
+}
+
+/* ...and the select takes the rest, so the two are identical whatever
+   their option text is. */
+#filters-popover select {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* Every OTHER row -- the eye, and the "Unread only" box the series and
+   web-novel pages carry -- puts its control on the right edge instead of
+   in that column. Two reasons it is not simply the same column: the eye's
+   name is the longest thing in the panel ("Show everything", 135px) and
+   would not fit it, and a panel holding nothing but a checkbox would
+   otherwise park it mid-row with the rest of the width empty. The right
+   edge is where a select ends too, so the two shapes agree. */
+#filters-popover > label:not(:has(select)) {
+    justify-content: space-between;
+}
+
+@media (width >= 48rem) {
+    #filters-control {
+        position: relative;
+    }
+
+    #filters-popover {
+        left: auto;
+        right: 0;
+        /* The name column (5.75rem) plus the widest option a select holds
+           (133px measured) plus the select's own border, padding and
+           arrow. At 17rem the select came out 114px and clipped it. */
+        width: 20rem;
+    }
+}
+
+/* The account name remains visible on desktop unless replaced by an avatar.
+   Mobile uses a fixed-size touch target; the full name lives in its menu. */
+[data-account-identity] {
+    overflow-wrap: anywhere;
+}
+
+[data-account-icon],
+[data-account-identity="mobile"] {
+    display: none;
+}
+
+@media (width < 48rem) {
+    #app-header {
+        position: relative;
+        padding-inline: 0.5rem;
+        gap: 0.25rem;
+    }
+
+    #app-header > a,
+    #user-menu-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.5rem;
+        min-height: 2.5rem;
+    }
+
+    #header-controls {
+        position: static;
+        gap: 0.25rem;
+    }
+
+    #header-controls:has(input[type="search"]) {
+        /* One row at 320px with normal text. Scalable minimums let the
+           outer row wrap when text is enlarged, instead of clipping it. */
+        min-width: min(100%, 11.5rem);
+    }
+
+    #header-controls input[type="search"] {
+        flex: 1 1 6rem;
+        min-width: 6rem;
+        width: 0;
+        height: 2.5rem;
+        padding-inline: 0.5rem;
+    }
+
+    [data-account-name],
+    [data-account-caret] {
+        display: none;
+    }
+
+    [data-account-icon],
+    [data-account-identity="mobile"] {
+        display: block;
+    }
+
+    #app-header #filters-popover,
+    #app-header #thumb-size-popover {
+        top: calc(100% + 0.5rem);
+        margin-top: 0;
+        left: 0.5rem;
+        right: 0.5rem;
+        max-height: calc(100dvh - var(--header-h) - 1rem);
+        overflow: auto;
+    }
+
+    #app-header #filters-popover > label {
+        flex-wrap: wrap;
+    }
+
+    /* Enlarged or fallback text can outgrow a label once the panel needs
+       a vertical scrollbar. Keep the label readable without horizontal scroll. */
+    #app-header #filters-popover .eye-label {
+        white-space: normal;
+    }
+
+    #app-header #filters-popover select {
+        min-width: min(100%, 8rem);
+        max-width: 100%;
+    }
+
+    #thumb-size-slider {
+        min-width: 0;
+    }
+
+    #user-menu-dropdown {
+        max-width: calc(100vw - 1rem);
+    }
+}
+
+/* A status badge that can be changed: the cover's own <span> chip with a
+   transparent <select> laid over it (see _status_badges.html).
+
+   The select cannot BE the chip, because a select sizes to its widest
+   OPTION -- "Reading" then rendered as wide as "Stopped reading" and the
+   chip stopped hugging its word, which is the whole thing being copied
+   from the cover. Overlaid, the chip is the same span with the same
+   utilities, so its geometry is identical to the badge on the grid, and
+   the click still lands on a real select and opens the platform's picker.
+
+   Opacity rather than display:none or visibility:hidden: those take the
+   control out of the accessibility tree and away from the keyboard. Which
+   is also why the CHIP wears the focus ring -- the element that has focus
+   is invisible, the same arrangement the eye toggle uses. */
+.status-chip > form {
+    position: relative;
+    display: inline-block;
+}
+
+/* The chip is a BLOCK inside that box, not the inline span it would
+   otherwise be: on a cover it is a flex item, and an inline box is two
+   pixels shorter than the same padding around the same 12px line (18px
+   against 20px, measured). Same span, same utilities, same height. */
+.status-chip > form > span {
+    display: block;
+    /* The CHIP never breaks its own label: on a phone the title row is
+       tight and "No status" came back on two lines inside its own box,
+       which reads as broken rather than as wrapped. The row wraps
+       instead, carrying the whole chip down -- which is what a cover's
+       badge row does too. Not put on the cover's badge as well: there the
+       chip is as wide as a 110px card allows, and a long label that
+       cannot break would overflow the cover instead of dropping a
+       line. */
+    white-space: nowrap;
+}
+
+.status-select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    /* The native popup inherits this background even though the overlay
+       is invisible. Chromium otherwise paints it white behind light text;
+       color-scheme alone does not override that transparent background. */
+    background-color: var(--color-neutral-950);
+    color-scheme: dark;
+}
+
+.status-chip:has(.status-select:focus-visible) {
+    outline: 2px solid var(--color-neutral-100, #f5f5f5);
+    outline-offset: 2px;
+    border-radius: 0.25rem;
+}
+
+/* Reserve classic-scrollbar width before chapter heights are measured.
+   Otherwise the first tall chapter creates a scrollbar, narrows its iframe
+   and wraps extra lines below the height already assigned to that iframe. */
+#custom-scroll { scrollbar-gutter: stable; }
+
+/* ---- A reader is the page -------------------------------------------
+   The three readers own the viewport and do not scroll: what scrolls in
+   them is always an inner container (#page-scroll, #custom-scroll, the
+   epub viewer), which is the property fullscreen.js is built on top of.
+
+   Keyed off what <body> CONTAINS rather than a class ON it, for the same
+   reason the old sidebar's header column was: #reader-root IS the state, so
+   the shape travels with the markup that needs it. A class on <body> does
+   not travel -- an hx-boost-style navigation replaces <body>'s CHILDREN
+   and leaves its attributes alone -- and the reader does not merely look
+   wrong without it, it renders BLANK: <main class="h-full"> is a
+   percentage height, so against a body left at `min-h-full` (height:auto)
+   it resolves to auto. Measured at 420x800, reached by a boosted swap
+   from the home page: #reader-root 0px tall in the comic reader and 37px
+   in the novel one, against 800px on a full load of the same URL. With
+   this rule both are 800px either way.
+
+   `overflow: hidden` on <body> is what stops the VIEWPORT from scrolling:
+   <html>'s own overflow is `visible`, so the UA propagates the body's.
+   min-height as well as height, because a min-height clamps a height and
+   the body carries `min-h-full` -- without it, 100% of <html> would win
+   over 100dvh wherever the two differ (a phone whose toolbar is out; the
+   two coincide in a fixed headless viewport, so that half is reasoned,
+   not measured).
+
+   The comic reader's black surface moved onto #reader-root itself, which
+   is the element that shows it and is inside the swap. The other two set
+   their own from the reader theme (reader-text.js), and their
+   `bg-neutral-950` was already the base body's.
+
+   A browser with no :has() support gets a scrolling reader, which is
+   worse than a merely misaligned header -- :has() has been in every
+   browser since Firefox 121 (Dec 2023). */
+body:has(#reader-root) {
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+}
+
+/* ---- The tracking dialog ---------------------------------------------
+
+   A native <dialog>, so the backdrop, Escape and the focus trap are the
+   browser's rather than this app's -- the panel it used to be had none of
+   the three, and gained a wall under the title on every visit in exchange.
+   Only what the UA does NOT give it is set here.
+
+   `width` and `max-width` together rather than one of them: a dialog
+   sizes to its content, and this one's content is a search box one visit
+   and a list of ten results with covers the next, so without a fixed
+   width it jumps the moment a search comes back. 34rem is the widest the
+   result rows stay scannable at; the max-width is what keeps it inside a
+   390px phone, where `margin: auto` alone still overflows.
+
+   max-height is 100dvh minus room for the browser's own chrome, since a
+   result list is arbitrarily long, and the scroll is INSIDE so the page
+   behind does not move.
+
+   The backdrop is dimmed by hand: the UA default is nearly transparent
+   over a dark page, so the dialog read as floating on the series it came
+   from rather than over it. */
+/* The plain dialogs (New library, Edit name and cover) share the tracking
+   dialog's frame and backdrop; only the width differs, since theirs hold a
+   short form rather than a list of search results. */
+.tracker-dialog,
+.app-dialog {
+    width: 34rem;
+    max-width: calc(100vw - calc(var(--spacing) * 8));
+    max-height: calc(100dvh - 4rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    margin: auto;
+    padding: calc(var(--spacing) * 4);
+    border-radius: 0.5rem;
+    border-style: solid;
+    border-width: 1px;
+    border-color: var(--color-neutral-700);
+    background-color: var(--color-neutral-900);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.55);
+    color: var(--color-neutral-200);
+}
+
+.app-dialog {
+    width: 26rem;
+}
+
+/* A novel's synopsis is paragraphs, not a line. */
+.app-dialog-wide {
+    width: 40rem;
+}
+
+.tracker-dialog::backdrop,
+.app-dialog::backdrop {
+    background-color: rgb(0 0 0 / 0.6);
+}

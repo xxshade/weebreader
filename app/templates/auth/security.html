@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Security{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto space-y-8">
+
+    <section>
+        <h2 class="text-lg font-semibold mb-2">Two-factor authentication (TOTP)</h2>
+        {% if totp and totp.enabled %}
+        <p class="text-sm text-neutral-400 mb-3">Enabled.</p>
+        <form method="post" action="/settings/totp/disable">
+            <button class="bg-red-900 hover:bg-red-800 rounded px-4 py-2 text-sm">Disable TOTP</button>
+        </form>
+        {% else %}
+        <p class="text-sm text-neutral-400 mb-3">Not enabled.</p>
+        <a href="/settings/totp" class="inline-block bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm">Set up TOTP</a>
+        {% endif %}
+    </section>
+
+    <section>
+        <h2 class="text-lg font-semibold mb-2">Passkeys</h2>
+        <ul class="space-y-2 mb-4">
+            {% for pk in passkeys %}
+            <li class="flex items-center justify-between gap-3 bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
+                <span class="text-sm min-w-0">{{ pk.nickname or "Passkey" }}
+                    <span class="text-neutral-500">— registered on {{ pk.created_at }}</span>
+                </span>
+                <form method="post" action="/settings/passkey/{{ pk.id }}/delete" class="flex-shrink-0">
+                    <button class="text-red-400 hover:text-red-300 text-sm">Remove</button>
+                </form>
+            </li>
+            {% else %}
+            <li class="text-sm text-neutral-500">No passkeys registered.</li>
+            {% endfor %}
+        </ul>
+
+        <form id="form-nickname" class="flex gap-2 max-w-sm">
+            <input autocomplete="off" id="passkey-nickname" placeholder="Device name (e.g. iPhone, YubiKey)"
+                   class="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm">
+            <button id="btn-add-passkey" type="button"
+                    class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm whitespace-nowrap">
+                + Add passkey
+            </button>
+        </form>
+        <p id="passkey-register-error" class="text-sm text-red-400 mt-2 hidden"></p>
+    </section>
+</div>
+
+<script>
+document.getElementById("btn-add-passkey").addEventListener("click", async () => {
+    const errorEl = document.getElementById("passkey-register-error");
+    errorEl.classList.add("hidden");
+    const nickname = document.getElementById("passkey-nickname").value || "Passkey";
+    try {
+        const beginRes = await fetch("/settings/passkey/register/begin", { method: "POST" });
+        if (!beginRes.ok) throw new Error("Failed to start registration");
+        const options = await beginRes.json();
+
+        // Native WebAuthn Level 3 JSON helpers -- do the same base64url<->
+        // ArrayBuffer conversion the (now-deprecated) webauthn-json library
+        // used to do, with no third-party script needed.
+        const publicKey = PublicKeyCredential.parseCreationOptionsFromJSON(options);
+        const credential = (await navigator.credentials.create({ publicKey })).toJSON();
+
+        const form = new FormData();
+        form.append("nickname", nickname);
+        const completeRes = await fetch(
+            "/settings/passkey/register/complete?nickname=" + encodeURIComponent(nickname),
+            { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(credential) }
+        );
+        if (!completeRes.ok) throw new Error("Failed to complete registration");
+        window.location.reload();
+    } catch (err) {
+        errorEl.textContent = err.message || "Could not register the passkey";
+        errorEl.classList.remove("hidden");
+    }
+});
+</script>
+{% endblock %}

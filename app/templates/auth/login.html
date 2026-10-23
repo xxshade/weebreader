@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Login{% endblock %}
+{% block content %}
+<div class="max-w-sm mx-auto mt-16">
+    <h1 class="text-xl font-semibold mb-4">Log in</h1>
+
+    <button id="btn-passkey" class="w-full bg-neutral-800 hover:bg-neutral-700 rounded py-2 font-medium mb-4">
+        Log in with passkey
+    </button>
+    <p id="passkey-error" class="text-sm text-red-400 mb-4 hidden"></p>
+
+    <div class="text-center text-xs text-neutral-500 mb-4">or</div>
+
+    {% if error %}<p class="text-sm text-red-400 mb-4" role="alert">{{ error }}</p>{% endif %}
+    {# hx-boost="false": a plain POST, so a refusal comes back as this page
+       with its reason. Boosted, it came back as a 4xx, which htmx never
+       swaps (base.html's noSwap) -- a wrong password looked like nothing
+       happening at all. On the form rather than as the page's boost block,
+       because a boosted visit (Log out -> /login) keeps the old <body>. #}
+    <form method="post" action="/login" class="space-y-3" hx-boost="false">
+        <input type="hidden" name="next" value="{{ next or '' }}">
+        <input name="username" placeholder="Username" required value="{{ username or '' }}"
+               class="input">
+        <input name="password" type="password" placeholder="Password" required
+               class="input">
+        <input name="totp_code" placeholder="TOTP code (if enabled)"
+               class="input">
+        <button class="btn-primary">Log in</button>
+    </form>
+</div>
+
+<script>
+// Same "return to where you were" behavior as the password form's hidden
+// "next" field, for the passkey path -- the value is already sitting in
+// this page's own URL (put there by the server when it redirected an
+// unauthenticated page load here), so there's no need to round-trip it
+// through the backend. Re-validated the same way as the server's
+// _safe_next_path: only a same-app path is ever used, never a full URL.
+function safeNextPath() {
+    const next = new URLSearchParams(window.location.search).get("next");
+    if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
+    // Resolved the way location.href will resolve it, and kept only if it
+    // stays on this origin: "/\evil.com" passes the checks above and is
+    // https://evil.com/ to both Chromium and Firefox.
+    try {
+        const url = new URL(next, window.location.origin);
+        return url.origin === window.location.origin ? url.pathname + url.search + url.hash : "/";
+    } catch {
+        return "/";
+    }
+}
+
+document.getElementById("btn-passkey").addEventListener("click", async () => {
+    const errorEl = document.getElementById("passkey-error");
+    errorEl.classList.add("hidden");
+    try {
+        const beginRes = await fetch("/login/passkey/begin", { method: "POST" });
+        if (!beginRes.ok) throw new Error((await beginRes.json()).detail || "Failed to start login");
+        const options = await beginRes.json();
+
+        // Native WebAuthn Level 3 JSON helpers -- see security.html's
+        // registration flow for why (replaces the deprecated webauthn-json
+        // library with no third-party script needed).
+        const publicKey = PublicKeyCredential.parseRequestOptionsFromJSON(options);
+        const credential = (await navigator.credentials.get({ publicKey })).toJSON();
+
+        const completeRes = await fetch("/login/passkey/complete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(credential),
+        });
+        if (!completeRes.ok) throw new Error((await completeRes.json()).detail || "Authentication failed");
+        await completeRes.json();
+        window.location.href = safeNextPath();
+    } catch (err) {
+        errorEl.textContent = err.message || "Could not log in with passkey";
+        errorEl.classList.remove("hidden");
+    }
+});
+</script>
+{% endblock %}

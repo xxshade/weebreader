@@ -1,0 +1,50 @@
+{# Volumes/books matching the home page's search box, fetched from the
+   server (see /library/search-items). Empty markup when there is nothing
+   to say, so the section takes no room at all while the box is empty --
+   which is the normal state of the page.
+
+   Every class here was checked against app/static/src/app.css first: it is
+   a hand-maintained stylesheet with no generator, so a class that is not
+   already in it silently does nothing. #}
+{% if query %}
+<div class="border-t border-neutral-800 mt-6">
+    <div class="flex items-center gap-3 mt-4 mb-3">
+        <h2 class="text-sm font-semibold text-neutral-300">
+            Items matching “{{ query }}”
+        </h2>
+        {% if results %}
+        <span class="text-xs text-neutral-500">
+            {{ results|length }}{{ '+' if results|length > limit else '' }} found
+        </span>
+        {% endif %}
+    </div>
+
+    {% if results %}
+    <div class="thumb-grid grid gap-4" style="--cover-blur: {{ user.cover_blur_px }}px">
+        {% for item in results[:limit] %}
+        <a href="/reader/{{ item.id }}" class="block group"{% if item.series_id %} data-series-id="{{ item.series_id }}"{% endif %}>
+            <div class="cover">
+                {% if item.cover_path %}
+                <img src="/covers/{{ item.cover_path }}" class="w-full h-full object-cover{{ ' cover-blur' if item.blur_cover else '' }}">
+                {% endif %}
+            </div>
+            <p title="{{ item.title }}" class="card-title">{{ item.title }}</p>
+            {# The series name is what makes a hit actionable: the whole
+               point of this search is finding a volume when you do NOT
+               already know which series holds it. #}
+            {% if item.series_name %}
+            <p class="text-xs text-neutral-500 truncate" title="{{ item.series_name }}">{{ item.series_name }}</p>
+            {% endif %}
+        </a>
+        {% endfor %}
+    </div>
+    {% if results|length > limit %}
+    <p class="text-xs text-neutral-500 mt-3">
+        Showing the first {{ limit }}. Add another word to narrow it down.
+    </p>
+    {% endif %}
+    {% else %}
+    <p class="text-sm text-neutral-500">No items match.</p>
+    {% endif %}
+</div>
+{% endif %}
