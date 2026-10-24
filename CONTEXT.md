@@ -38,6 +38,13 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Widow line | The last line of a paragraph left alone at the top of the next reading page. |
 | Original typography | The book's intended fonts, relative text sizes, emphasis, and spacing, as distinct from adjustments made by the reader or browser. |
 
+## Comic reading
+
+| Term | Meaning |
+| --- | --- |
+| Continuous comic scroll | Reading comic pages in a vertical strip, moving through the content rather than turning discrete pages. |
+| Keyboard scrolling | Moving the visible portion of a continuous comic strip up or down in small increments, with continued movement while the direction key repeats. It is distinct from a page or chapter turn. |
+
 ## Releases
 
 | Term | Meaning |

@@ -44,6 +44,15 @@ checks that the completed status and cleared resume position survive. It runs
 this ordering at 1280px and a measured 320px viewport in each engine; this is a
 mobile viewport simulation, not native Android execution.
 
+`test_comic_keyboard_browser.py` checks continuous comic scrolling with real
+Up/Down keyboard input in both browsers at desktop and measured 320px widths.
+It covers direct and boosted entry, repeated keydowns, choosing Scroll after a
+paged mode, the real Fullscreen API, focused controls and the end of the strip.
+Keyboard scrolling must move the strip without turning pages or prematurely
+completing the comic. Controls disable scrolling, reverse Up, omit focus transfer
+and intercept control keys; each browser must detect every defect. These Firefox
+checks do not constitute a LibreWolf run.
+
 `provision_webdrivers.py --browser chrome` or `--browser firefox` provisions just
 that desktop target. Omitting the option provisions both, preserving the local
 setup command. The optional native Android provisioning path remains separate.
