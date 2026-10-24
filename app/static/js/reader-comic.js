@@ -1485,7 +1485,12 @@
     });
 
     document.querySelectorAll(".mode-btn").forEach((btn) => {
-        btn.addEventListener("click", () => setMode(btn.dataset.mode));
+        btn.addEventListener("click", () => {
+            setMode(btn.dataset.mode);
+            // setMode hides the toolbar. Do not leave keyboard focus on
+            // its now-invisible button instead of the reading surface.
+            if (mode === "scroll") elScroll.focus({ preventScroll: true });
+        });
     });
 
     document.querySelectorAll(".fit-btn").forEach((btn) => {
@@ -1513,16 +1518,21 @@
 
     bindOutside(document, "keydown", (e) => {
         readerFullscreen.armFromGesture();
-        // Continuous scroll is moved by scrolling, which the arrows and
-        // Space already do natively. Routed to nextPage, they compared
-        // scroll mode's GLOBAL page index with the opened chapter's page
-        // count and handed over mid-chapter -- marking a chapter read at
-        // page 25 of 45 and pushing that to the tracker (both browsers).
-        // The swipe below has always had this guard.
-        if (mode === "scroll") return;
         // A key meant for a control is not a page turn.
         if (e.target instanceof Element
                 && e.target.closest("input, select, textarea, button, [contenteditable]")) return;
+        if (mode === "scroll") {
+            // The body cannot scroll, and native arrows may target it
+            // before the comic has focus (notably in Firefox). Move only
+            // the scroll surface; never route to nextPage/prevPage: their
+            // page-turn semantics can finish a chapter prematurely here.
+            if (e.defaultPrevented || e.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                elScroll.scrollBy({ top: e.key === "ArrowDown" ? 40 : -40, behavior: "instant" });
+            }
+            return;
+        }
         if (e.key === "ArrowRight" || e.key === " ") (rtl ? prevPage() : nextPage());
         if (e.key === "ArrowLeft" || e.key === "Backspace") (rtl ? nextPage() : prevPage());
     });

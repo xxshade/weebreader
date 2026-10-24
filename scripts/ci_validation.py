@@ -11,7 +11,7 @@ import time
 
 BROWSER_SUITES = ('resync', 'audit', 'cache', 'header', 'home_unread',
                   'pagination', 'reading_statistics', 'home_preload',
-                  'lazy_covers', 'tracking')
+                  'lazy_covers', 'tracking', 'comic_keyboard')
 
 
 def verify_checkout(commit):

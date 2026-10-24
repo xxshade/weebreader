@@ -67,6 +67,7 @@ PROBE = """() => {
 
 class AuditChecks(unittest.TestCase):
     viewport_width = 1280
+    probe = PROBE
 
     @classmethod
     def setUpClass(cls):
@@ -120,7 +121,7 @@ class AuditChecks(unittest.TestCase):
             for flag in ('--headless=new', '--no-sandbox', '--disable-dev-shm-usage'):
                 options.add_argument(flag)
             self.driver = webdriver.Chrome(options=options, service=ChromeService(ARGS.chromedriver))
-            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': '(' + PROBE + ')()'})
+            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': '(' + self.probe + ')()'})
         else:
             options = FirefoxOptions()
             options.binary_location = ARGS.firefox_binary
@@ -130,7 +131,7 @@ class AuditChecks(unittest.TestCase):
                 log_output=str(self.fixture.fixture / 'geckodriver.log'),
                 env={**os.environ, 'MOZ_DISABLE_CONTENT_SANDBOX': '1',
                      'XDG_CACHE_HOME': str(self.fixture.fixture / 'cache')}))
-            self.driver.script.add_preload_script(PROBE)
+            self.driver.script.add_preload_script(self.probe)
         self.addCleanup(self.driver.quit)
         self.driver.set_window_size(self.viewport_width, 900)
         if self.viewport_width < 500:
