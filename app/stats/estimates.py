@@ -68,6 +68,7 @@ PRIOR_WORDS = 3000
 
 
 class ReadingEstimator:
+    defer_large_scopes = False
     def __init__(self, *, spent_by_item, rate_by_series, comic_fallback_rate=None,
                  db=None, user_id=None, samples=None):
         self.spent_by_item = spent_by_item
@@ -96,6 +97,12 @@ class ReadingEstimator:
     async def prepare_items(self, items):
         """Parse only requested text items; warm inventory work is cache hits."""
         ids = {item['id'] for item in items if item['file_format'] == 'epub'}
+        if self.defer_large_scopes and len(ids) > 64:
+            completed = await (await self.db.execute(
+                "SELECT item_id FROM reading_progress WHERE user_id=? AND status='completed'",
+                (self.user_id,))).fetchall()
+            self.completed_items.update(row[0] for row in completed)
+            return
         for identity in ids - self.item_estimates.keys():
             self.item_estimates[identity] = None
             rate = self.text_rate('epub', identity)
@@ -146,12 +153,12 @@ class ReadingEstimator:
         query = """FROM chapters LEFT JOIN novel_read_chapters AS marked
                  ON marked.chapter_id=chapters.id AND marked.user_id=?
                 WHERE chapters.novel_id=? AND marked.chapter_id IS NULL""" + scope
-        pending = await (await self.db.execute('SELECT 1 ' + query + ' LIMIT 1', params)).fetchone()
-        if pending is None:
+        pending = await (await self.db.execute('SELECT COUNT(*) ' + query, params)).fetchone()
+        if not pending[0]:
             return
         self.pending_novels.add(key)
-        if rate is None:
-            return  # Do not fetch any source HTML just to show Collecting data.
+        if rate is None or (self.defer_large_scopes and pending[0] > 64):
+            return  # Large scopes load through the isolated estimate endpoint.
         rules = await text_replacements.rules_for(self.db, self.user_id, novel_id=novel_id)
         remaining = 0
         async with self.db.execute('SELECT chapters.id,chapters.content_html ' + query, params) as cursor:
@@ -261,7 +268,7 @@ async def _fetch_all(db, sql, params=()):
     return await (await db.execute(sql, params)).fetchall()
 
 
-async def build_estimator(db, user_id: int) -> ReadingEstimator:
+async def build_estimator(db, user_id: int, *, defer_large_scopes=False) -> ReadingEstimator:
     spent_by_item = {
         r["item_id"]: r["seconds"]
         for r in await _fetch_all(
@@ -345,12 +352,14 @@ async def build_estimator(db, user_id: int) -> ReadingEstimator:
         # attach its own pace to a newly inserted item reusing an old ID.
         samples[('history', None)] = tuple(global_row[i] - sum(v[i] for v in samples.values()) for i in range(3))
 
-    return ReadingEstimator(
+    estimator = ReadingEstimator(
         spent_by_item=spent_by_item, rate_by_series=rate_by_series,
         db=db, user_id=user_id, samples=samples,
         comic_fallback_rate=percentile(list(rate_by_series.values()) + gone_series_rates,
                                        COMIC_FALLBACK_PERCENTILE),
     )
+    estimator.defer_large_scopes = defer_large_scopes
+    return estimator
 
 
 def percentile(values, q: float) -> "float | None":

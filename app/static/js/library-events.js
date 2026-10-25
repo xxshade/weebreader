@@ -1288,6 +1288,8 @@
     const stream = document.getElementById("library-events");
     if (stream && !stream.libraryEventsBound) {
         stream.libraryEventsBound = true;
+        document.addEventListener("htmx:finally:swap", scheduleTextEstimates);
+        scheduleTextEstimates();
         for (const [name, handle] of Object.entries(handlers)) {
             stream.addEventListener(name, (event) => {
                 let data;

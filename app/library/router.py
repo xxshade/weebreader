@@ -18,7 +18,7 @@ from app.auth.dependencies import get_current_user, get_streaming_user
 from app.auth.router import MAX_COVER_BLUR, MIN_COVER_BLUR
 from app.background import run_background as _run_background
 from app.covers.thumbnails import delete_custom_series_cover, save_custom_series_cover
-from app.database import get_db, write_transaction
+from app.database import get_db, write_transaction, get_connection
 from app.http_utils import back_target, is_htmx, json_object, redirect_back
 from app.library import events, job_status
 from app.library.naturalsort import natural_sort_key
@@ -113,7 +113,7 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
     # set of numbers. /library/reading-grid renders this section alone and
     # has none to hand over, so it still builds its own.
     if estimator is None:
-        estimator = await build_estimator(db, user_id)
+        estimator = await build_estimator(db, user_id, defer_large_scopes=True)
 
     await estimator.prepare_items(reading_comics)
     reading_items = []
@@ -353,7 +353,7 @@ async def _load_series_items(db, user_id: int, series):
     # here rather than in each of the four callers below, so every render
     # of _items_grid.html (the page, the SSE refresh, and both mark-all
     # responses) shows the same thing without having to remember to ask.
-    estimator = await build_estimator(db, user_id)
+    estimator = await build_estimator(db, user_id, defer_large_scopes=True)
     await estimator.prepare_items(items)
     eta_map = {}
     for item in items:
@@ -850,7 +850,7 @@ async def series_card(series_id: int, user=Depends(get_current_user), db=Depends
     # rendered, and a second COUNT(*) written out here is exactly how that
     # stops being true.
     reading = await _series_reading(
-        db, user["id"], await build_estimator(db, user["id"]), series_id)
+        db, user["id"], await build_estimator(db, user["id"], defer_large_scopes=True), series_id)
 
     return _series_card(
         s, status=status,
@@ -890,7 +890,7 @@ async def novel_card(novel_id: int, user=Depends(get_current_user), db=Depends(g
             (user["id"], novel_id))
     ).fetchone()
     reading = await _novel_reading(
-        db, user["id"], await build_estimator(db, user["id"]), novel_id)
+        db, user["id"], await build_estimator(db, user["id"], defer_large_scopes=True), novel_id)
 
     return _novel_card(
         row, status=status_row["status"] if status_row else None,
@@ -999,7 +999,7 @@ async def home(request: Request, user=Depends(get_current_user), db=Depends(get_
     # 110 ms for this handler before they existed, 182 ms after, of which
     # 46 ms is the series pass and 24 ms the novel one. The estimator they
     # share is 2 ms of that, and would have been 4 building it twice.
-    estimator = await build_estimator(db, user["id"])
+    estimator = await build_estimator(db, user["id"], defer_large_scopes=True)
     series_reading = await _series_reading(db, user["id"], estimator)
     novel_reading = await _novel_reading(db, user["id"], estimator)
 
@@ -1187,8 +1187,22 @@ async def _problem_item_count(db) -> int:
     )["n"]
 
 
+_estimate_slots = asyncio.Semaphore(1)
+
+
+async def get_estimate_db():
+    # Slow inventory work must never occupy the interactive request pool.
+    async with _estimate_slots:
+        db = await get_connection()
+        try:
+            await db.execute("PRAGMA query_only = ON")
+            yield db
+        finally:
+            await db.close()
+
+
 @router.post("/library/reading-estimates")
-async def reading_estimates(request: Request, user=Depends(get_current_user), db=Depends(get_db)):
+async def reading_estimates(request: Request, user=Depends(get_streaming_user), db=Depends(get_estimate_db)):
     """Authoritative word-based estimates for the text cards currently on screen.
 
     Only numbers are refreshed: covers, focus and client-side ordering survive.
