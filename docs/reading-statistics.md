@@ -122,19 +122,32 @@ before the soft-hyphen correction; new passages use the corrected counting rule.
 
 Library pages and card fragments render before any uncached word inventory is
 prepared, including one-book shelves and small novel volumes. A changed reading
-position may require a new inventory; that work never runs in the HTML request. Their estimates fill through a serialized endpoint with a separate
-database connection, so inventory work cannot occupy the interactive connection
-pool or block login, search and page navigation. Cache quota checks are amortized
+position may require a new inventory; that work never runs in the HTML request.
+Their estimates fill through a serialized endpoint with a separate database
+connection, keeping inventory work out of the interactive connection pool.
+That separation does not isolate CPU work: warm endpoint requests also reuse
+matching word counts instead of competing with navigation to repeat source work. Cache quota checks are amortized
 across writes; the disposable cache can temporarily exceed its target by a small
 write budget plus one inventory.
 
-Successful estimates are retained across reloads in an account-scoped derived
-cache under `data/cache/reading-estimates.sqlite3` (at most 4,096 snapshots).
-The page shows the last valid result while the endpoint refreshes learned pace.
-A content, saved-position or replacement-rule change invalidates it; completed
-content never resurrects an old result. Chapter revisions avoid re-reading source
-bodies to validate a large novel's snapshot. The cache contains only signatures
-and durations and can be removed without affecting reading history.
+Exact remaining and total word counts are retained across reloads in an
+account-scoped derived cache under `data/cache/reading-estimates.sqlite3`
+(at most 4,096 snapshots). Each estimator reads the bounded snapshot index once.
+Both the page and the authoritative endpoint multiply matching counts by the
+current measured pace. A pace change therefore updates durations without
+reopening EPUB inventories or fetching novel bodies. Unchanged visits perform
+no inventory traversals or snapshot writes. Lightweight browser revalidation
+remains enabled because inputs can change while a page is being generated.
+Reading events and committed text replacement changes refresh visible estimates;
+newly inserted card fragments also request their pending predictions.
+
+A content, saved-position or replacement-rule change invalidates the counts;
+completed content never resurrects an old result. Chapter revisions detect even
+same-size content edits without reading novel source bodies. The cache contains
+signatures and counts, not book text, and can be removed without affecting
+reading history. Older duration-only snapshots remain visible while each scope
+is upgraded once to exact counts. That first calculation can use CPU; subsequent
+warm visits reuse its result. No cache deletion or history reset is required.
 
 A series with some unknown estimates shows `~X known · N items without estimate`.
 This is a partial total, not the duration of the entire series. Failed content

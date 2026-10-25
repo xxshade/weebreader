@@ -1,0 +1,73 @@
+# Reading estimate reload performance
+
+The v8.4.3 investigation found that making HTML renders cache-only did not make
+reloads cheap. The browser still requested authoritative estimates after each
+visit; that endpoint reopened anchored EPUB inventories, traversed novel bodies
+and rewrote snapshots even when its inputs had not changed. Its CPU work and
+cache contention delayed simultaneous Home requests.
+
+The regression fixture contains 151 distinct 100,000-word EPUB archives, ten
+saved reading anchors, 26 text series and two novels with 1,817 and 176 distinct
+approximately 1,000-word chapters. Source inventories and final snapshots were
+warmed before the following ASGI measurements. Authentication was overridden;
+these numbers exclude a browser, network/proxy and startup jobs.
+
+| Warm operation | v8.4.3 | Word-count snapshot reuse |
+| --- | ---: | ---: |
+| Unchanged estimate request, wall time | 846–1,134 ms | 101–156 ms |
+| Unchanged estimate request, process CPU | 761–942 ms | 78–109 ms |
+| Home during an estimate request, wall time | 640–776 ms | 165–280 ms |
+| Home alone, wall time | typically 150–185 ms | typically 75–107 ms |
+| Home from series, wall time | typically 164–185 ms | 77–122 ms |
+
+Before the change, every warm estimate request performed ten full EPUB inventory
+lookups, 141 EPUB total lookups, 1,993 novel total lookups and 153 snapshot writes.
+The corrected warm request performs none of those operations. Each estimator
+reads the bounded snapshot index once (typically 0.45–0.7 ms in this local probe),
+checks exact account/scope/content/position/rule signatures and applies current
+pace to the cached word counts. Lightweight browser revalidation remains enabled
+so changes occurring during HTML generation can still be incorporated. CPU measured during overlapping requests includes
+both requests and must not be added together as independent request CPU.
+
+Setting anchors to the beginning reduced the reproduced interference; removing
+only novel targets did not eliminate it. A temporary snapshot-reuse control
+also removed the overlap failure before the implementation was changed. That
+control did not establish invalidation correctness; backend regressions now
+exercise pace, anchors, file changes, replacement rules, chapter edits,
+completion, volume membership and old/corrupt cache recovery.
+
+## Browser regression
+
+`python scripts/test_reload_performance_browser.py` runs the maintained real-HTTP
+regression with the browser flags documented in
+[Desktop browser validation](../testing/browser-checks.md). The required text ETA
+CI suite invokes it automatically. It restarts the real app with the entire
+fixture, authenticates normally, warms all scopes and measures three repeats of:
+
+- ordinary full reload;
+- HTTP-cache-bypassed reload (Chrome CDP and Firefox BiDi);
+- the actual Home link from a series;
+- Home while an independent estimate request runs on the same server.
+
+A script installed before document parsing measures the visible, initialized
+Home page after paint frames; the controls are also checked independently.
+Estimate completion is tracked separately, excluding the permanent SSE stream.
+Every individual usability and server process CPU measurement is emitted as
+JSON. The median usability of each action's three repeats must be at most 500 ms
+on the local runner; server CPU is measured and reported separately. Stable snapshot rows, including
+row IDs, provide a deterministic guard against repeated writes. A control
+restores redundant endpoint calculations and must fail in both browsers.
+
+Both desktop and 320px viewport scenarios are required in Chrome and Firefox.
+Those are simulations, not native LibreWolf or Vivaldi mobile measurements, and
+localhost results do not establish the deployment's network or server latency.
+
+## Cold preparation and upgrades
+
+Cold fixture preparation is reported separately from the warm budget. The first
+conversion of the investigation's already-warm duration snapshots took 1,566 ms
+wall / 1,279 ms CPU and wrote 153 word-count snapshots once. A completely fresh
+synthetic shelf also needs to build its source inventories and takes longer.
+Legacy durations remain visible while their scopes are upgraded. No cache
+removal or history reset is required. Subsequent visits reuse source counts;
+changes to reading pace only require multiplication by the current learned rate.

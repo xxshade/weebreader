@@ -2,9 +2,10 @@
 
 A separate bounded SQLite cache keeps writes off the application's reader pool
 and writer transaction. Signatures invalidate content/position/rule changes;
-pace changes revalidate the displayed last result at the isolated endpoint.
+word counts are multiplied by current pace without reopening source inventories.
 """
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -32,21 +33,57 @@ def _connection():
         yield db
 
 
-def load(scope, fingerprint):
+@dataclass(frozen=True)
+class WordCounts:
+    remaining: int
+    total: int
+
+
+def read():
+    """One bounded read per estimator, shared by its item and novel scopes.
+
+    Only hashed scopes are indexed. Callers still match the complete account
+    identity and source fingerprint; loading rows never grants another scope.
+    """
     try:
         with _connection() as db:
-            row = db.execute('SELECT payload FROM snapshots WHERE scope=? AND signature=?',
-                             (signature(scope), fingerprint)).fetchone()
-        value = json.loads(row[0]) if row else None
+            return {key: (fingerprint, payload) for key, fingerprint, payload in db.execute(
+                'SELECT scope,signature,payload FROM snapshots WHERE length(payload)<=512 LIMIT ?',
+                (MAX_ENTRIES,))}
+    except (OSError, sqlite3.Error):
+        return {}
+
+
+def load(scope, fingerprint, *, rows=None):
+    from app.stats.text_inventory import _CACHE_VERSION
+    try:
+        if rows is None:
+            rows = read()
+        saved = rows.get(signature(scope))
+        if saved is None or saved[0] != fingerprint:
+            return None
+        value = json.loads(saved[1])
+        if (isinstance(value, dict) and value.get('format') == 2
+                and value.get('inventory_version') == _CACHE_VERSION):
+            words = value.get('words')
+            if (isinstance(words, list) and len(words) == 2
+                    and all(type(number) is int for number in words)
+                    and 0 <= words[0] <= words[1] <= 2**63-1):
+                return WordCounts(*words)
+        # Old duration snapshots remain useful to HTML until the endpoint
+        # upgrades this scope once. They cannot be treated as source counts.
         if (isinstance(value, list) and len(value) == 3
                 and all(type(number) in (int, float) and math.isfinite(number) and number >= 0 for number in value)):
             return value
         return None
-    except (OSError, sqlite3.Error, ValueError, OverflowError):
+    except (ValueError, OverflowError):
         return None
 
 
 def save(scope, fingerprint, payload):
+    from app.stats.text_inventory import _CACHE_VERSION
+    payload = {'format': 2, 'inventory_version': _CACHE_VERSION,
+               'words': [payload.remaining, payload.total]}
     try:
         with _connection() as db:
             db.execute('INSERT OR REPLACE INTO snapshots(scope,signature,payload) VALUES(?,?,?)',

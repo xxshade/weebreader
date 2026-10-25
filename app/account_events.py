@@ -24,6 +24,8 @@ class AccountChangeNotifications:
         async def notify(message):
             if message['type'] == 'http.response.start' and 200 <= message['status'] < 400:
                 events.publish({'type': 'account_updated'})
+                if path.startswith('/settings/text-replacements'):
+                    events.publish({'type': 'reading_estimate_updated'})
             await send(message)
 
         await self.app(scope, receive, notify)
