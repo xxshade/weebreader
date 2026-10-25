@@ -37,6 +37,17 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Orphan line | The first line of a paragraph left alone at the bottom of a reading page while the rest continues on the next page. |
 | Widow line | The last line of a paragraph left alone at the top of the next reading page. |
 | Original typography | The book's intended fonts, relative text sizes, emphasis, and spacing, as distinct from adjustments made by the reader or browser. |
+| Visual hyphenation | Displaying a word across lines with a hyphen where the language permits, without inserting characters into the underlying text. |
+| Work language | The language used to interpret one book or web novel, supplied by its metadata or chosen by the reader for that work. |
+| Remaining reading time | An approximate duration for the text still ahead of the saved reading position, based on valid pace evidence. It is distinct from the time already recorded and from a promise about wall-clock completion. |
+
+## Reading statistics
+
+| Term | Meaning |
+| --- | --- |
+| Daily activity window | The inclusive range of calendar days selected for daily reading activity. |
+| Window reading time | The sum of counted reading time across all media within the daily activity window. |
+| Daily activity measure | Either reading time or comic page visits for each day. Each measure has its own scale and shares the selected window. |
 
 ## Comic reading
 

@@ -14,6 +14,7 @@ from app.stats import queries
 from app.stats.recording import record_spans
 from app.stats.activity import claim_session, record_batch
 from app.status_labels import STATUS_LABELS
+from app.library import events
 
 logger = logging.getLogger("stats")
 
@@ -161,6 +162,7 @@ async def _daily_context(db, user_id: int, window: dict) -> dict:
         "daily_kind_slots": DAILY_KIND_SLOTS,
         "daily_kind_labels": RECENT_KIND_LABELS,
         "daily_window": window,
+        "daily_total_seconds": sum(day["seconds"] for day in daily),
         "daily_presets": queries.DAILY_WINDOW_PRESETS,
         "today": date.today(),
         "max_window_days": queries.MAX_WINDOW_DAYS,
@@ -369,6 +371,8 @@ async def save_reading_time(request: Request, user=Depends(get_current_user)):
             async with write_transaction() as db:
                 result = await record_batch(db, user, body['activities'])
                 await db.commit()
+            if result.pop('pace_changed', False):
+                events.publish({"type": "reading_estimate_updated", "user_id": user['id']})
             return result
         except ValueError as error:
             raise HTTPException(400, str(error))

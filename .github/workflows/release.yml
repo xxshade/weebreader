@@ -79,7 +79,7 @@ jobs:
     needs: [prepare, validate]
     if: needs.prepare.outputs.eligible == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: write
       pull-requests: read
@@ -109,14 +109,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Build and publish the exact version
+      - name: Build the exact version without publishing
         id: build
         if: steps.stage.outputs.build == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          push: false
+          outputs: type=oci,dest=${{ runner.temp }}/release-image.tar
           tags: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -124,6 +125,31 @@ jobs:
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Scan the exact image that will be published
+        if: steps.stage.outputs.build == 'true'
+        uses: ./.github/actions/container-scan
+        with:
+          archive: ${{ runner.temp }}/release-image.tar
+          reports: ${{ runner.temp }}/container-security
+      - name: Scan the original immutable image during recovery
+        if: steps.stage.outputs.build != 'true'
+        uses: ./.github/actions/container-scan
+        with:
+          image: ${{ needs.prepare.outputs.image }}@${{ steps.stage.outputs.digest }}
+          reports: ${{ runner.temp }}/container-security
+      - name: Publish the scanned archive without rebuilding or changing its digest
+        if: steps.stage.outputs.build == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
+          python scripts/container_security.py verify-archive \
+            --archive "$RUNNER_TEMP/release-image.tar" \
+            --identity-file "$RUNNER_TEMP/container-security/identity.txt"
+          skopeo copy --all --preserve-digests \
+            --authfile "${DOCKER_CONFIG:-$HOME/.docker}/config.json" \
+            "oci-archive:$RUNNER_TEMP/release-image.tar" "docker://$IMAGE_REFERENCE"
+        env:
+          IMAGE_REFERENCE: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
       - name: Complete release and verify all three image aliases
         run: python -m scripts.release_publication finish
         env:
@@ -131,6 +157,14 @@ jobs:
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest || steps.stage.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
+      - name: Retain vulnerability diagnostics
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: container-security-release-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/container-security/
+          retention-days: 7
+          if-no-files-found: ignore
 
   reconcile:
     name: Verify current stable aliases
@@ -149,12 +183,38 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
+      - name: Resolve the verified immutable stable image before changing aliases
+        id: image
+        run: python -m scripts.release_publication security-target
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_PLAN: ${{ runner.temp }}/unused-plan.json
+          GH_TOKEN: ${{ github.token }}
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Scan the stable image before reconciling aliases
+        uses: ./.github/actions/container-scan
+        with:
+          image: ${{ steps.image.outputs.image }}
+          reports: ${{ runner.temp }}/container-security
       - name: Reuse the current stable image without building or versioning
         run: python -m scripts.release_publication reconcile
         env:
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_PLAN: ${{ runner.temp }}/unused-plan.json
           GH_TOKEN: ${{ github.token }}
+          SCANNED_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+      - name: Retain vulnerability diagnostics
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: container-security-reconcile-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/container-security/
+          retention-days: 7
+          if-no-files-found: ignore
 
   advance:
     name: Queue changes left after publication or recovery

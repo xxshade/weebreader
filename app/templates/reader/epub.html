@@ -18,6 +18,7 @@
 {% block content %}
     <div id="reader-root"
          data-source="epub"
+         data-reader-user-id="{{ user.id if user is defined else '' }}"
          data-item-id="{{ item.id }}"
          data-start-cfi="{{ progress.current_location if progress and progress.current_location else '' }}"
          {# Where the SERVER had this when the page was rendered. It is the

@@ -114,6 +114,9 @@ class _Case(unittest.IsolatedAsyncioTestCase):
                 "INSERT INTO page_reads (user_id, item_id, kind, page_index, started_at,"
                 " seconds, cap_seconds) VALUES (1, ?, 'epub', 0, datetime('now'), 180, 180)",
                 (cursor.lastrowid,))
+        await self.db.execute("""INSERT INTO page_reads
+            (user_id,item_id,kind,started_at,seconds,cap_seconds,visit_id,pace_words,pace_seconds,pace_samples)
+            VALUES(1,?,'epub',datetime('now'),0,0,'valid-word-history',1200,360,3)""", (cursor.lastrowid,))
         await self.db.commit()
 
     async def _html(self, series_id):

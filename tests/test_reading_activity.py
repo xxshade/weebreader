@@ -1,9 +1,18 @@
 """Reading measurements through the actual database and content boundary."""
 import copy
+import json
+import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
+from unittest.mock import patch
+
+from starlette.requests import Request
 
 from app.stats.activity import claim_session, record_activity, passage_words
 from app.stats import queries
+from app.stats.router import save_reading_time
+from app.config import settings
+from app.database import close_pool
 from tests.test_stats import StatsCase
 
 SESSION = 'session-a-000000000000'
@@ -145,3 +154,40 @@ class ReadingActivity(StatsCase):
         self.assertEqual([d['seconds'] for d in days],[10,40])
         totals = await queries.reading_totals(self.db,1)
         self.assertEqual((totals['seconds'],totals['pages'],totals['days']),(50,1,2))
+
+    async def test_only_committed_new_pace_evidence_refreshes_estimates(self):
+        self.addAsyncCleanup(close_pool)
+        await self.db.commit()
+        user = {'id': 1, 'page_time_cap_seconds': 180, 'text_time_cap_seconds': 180}
+        published = []
+
+        def publish(event):
+            # A separate connection can see the evidence only after commit.
+            with closing(sqlite3.connect(settings.db_path)) as connection:
+                words = connection.execute('SELECT SUM(pace_words) FROM page_reads').fetchone()[0]
+            self.assertGreater(words or 0, 0, 'Estimate refresh must follow the committed pace evidence')
+            published.append(event)
+
+        async def send(value):
+            async def receive():
+                return {'type': 'http.request', 'body': json.dumps({'activities': [value]}).encode()}
+            request = Request({'type': 'http', 'method': 'POST', 'path': '/reading-time',
+                               'headers': [], 'query_string': b''}, receive)
+            result = await save_reading_time(request, user=user)
+            self.assertNotIn('pace_changed', result)
+            self.assertEqual(result['rejected'], [])
+
+        with patch('app.stats.router.events.publish', side_effect=publish):
+            value = self.visit(seconds=20)
+            await send(value)
+            self.assertEqual(published, [])
+            value.update(revision=2, intervals=[[1000,1060]], closed=True, completed=True)
+            await send(value)
+            self.assertEqual(published, [{'type': 'reading_estimate_updated', 'user_id': 1}])
+            await send(value)
+            value['revision'] = 3
+            await send(value)
+            capped = self.visit('visit-capped-event-0000', start=1100, seconds=240)
+            capped.update(closed=True, completed=True)
+            await send(capped)
+            self.assertEqual(len(published), 1, 'Retries and capped passages must not refresh the learned pace')

@@ -667,9 +667,72 @@
     // the same way here and in _reading_grid.html, for the same reason
     // formatDuration matches the server's filter: a card must not change
     // its wording the first time it updates live.
+    // Text ETA counts the actual words after a saved anchor. New samples may
+    // also change the learned pace, so neither number can be reconstructed
+    // from the progress percentage retained by an already-open card.
+    let textEstimatesBusy = false, textEstimatesDirty = false, textEstimatesGeneration = 0;
+    function textEstimateKey(target) {
+        return `${target.kind}:${target.id}:${target.volume_id || ""}`;
+    }
+    function scheduleTextEstimates() {
+        textEstimatesGeneration++;
+        textEstimatesDirty = true;
+        scheduleRefresh("text-estimates", refreshTextEstimates);
+    }
+    async function refreshTextEstimates() {
+        if (textEstimatesBusy) return;
+        textEstimatesBusy = true;
+        textEstimatesDirty = false;
+        const generation = textEstimatesGeneration;
+        const nodes = [...document.querySelectorAll("[data-text-eta-kind]")];
+        const targets = new Map();
+        for (const node of nodes) {
+            const target = {kind: node.dataset.textEtaKind, id: Number(node.dataset.textEtaId)};
+            if (node.dataset.textEtaVolume) target.volume_id = Number(node.dataset.textEtaVolume);
+            targets.set(textEstimateKey(target), target);
+        }
+        try {
+            const selected = [...targets.values()];
+            for (let start = 0; start < selected.length; start += 100) {
+                const response = await fetch("/library/reading-estimates", {
+                    method: "POST", headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({targets: selected.slice(start, start + 100)}),
+                });
+                if (!response.ok) return false;
+                const data = await response.json();
+                // A newer progress/sample event invalidates this response even
+                // if it arrives before the replacement request can start.
+                if (generation !== textEstimatesGeneration) return false;
+                const results = new Map((data.estimates || []).map(value => [value.key, value]));
+                for (const node of nodes) {
+                    if (!node.isConnected) continue;
+                    const key = textEstimateKey({kind: node.dataset.textEtaKind,
+                        id: Number(node.dataset.textEtaId), volume_id: Number(node.dataset.textEtaVolume) || undefined});
+                    const value = results.get(key);
+                    if (!value) continue;
+                    node.hidden = value.remaining === null && !value.collecting;
+                    const scope = node.dataset.etaScope ? ` in ${node.dataset.etaScope}` : "";
+                    node.textContent = value.remaining === null ? "Collecting data" : `~${formatDuration(value.remaining)}`;
+                    node.title = value.remaining === null ? "Collecting valid reading samples"
+                        : `About ${formatDuration(value.remaining)} left${scope}, based on measured reading pace`;
+                    const card = node.closest("[data-item-id]");
+                    if (card) {
+                        if (value.total === null) delete card.dataset.eta;
+                        else card.dataset.eta = String(Math.round(value.total));
+                    }
+                }
+            }
+            return true;
+        } catch { return false; }
+        finally {
+            textEstimatesBusy = false;
+            if (textEstimatesDirty) scheduleRefresh("text-estimates", refreshTextEstimates);
+        }
+    }
+
     function applyEta(el, percent) {
         const eta = el.querySelector(".reading-eta");
-        if (!eta) return;
+        if (!eta || eta.dataset.textEtaKind) return;
         const total = parseFloat(eta.dataset.etaTotal) || 0;
         const rest = parseFloat(eta.dataset.etaRest) || 0;
         if (!(total > 0) && !(rest > 0)) return;
@@ -767,6 +830,7 @@
     }
 
     function handleProgressUpdated(data) {
+        scheduleTextEstimates();
         const selector = itemSelector(data.item_id);
         let statusChanged = false;
         document.querySelectorAll(selector).forEach((el) => {
@@ -850,6 +914,7 @@
     // so there is never a status change to chase -- only the number, and
     // the first save, which is what puts the novel in the section.
     function handleNovelProgressUpdated(data) {
+        scheduleTextEstimates();
         const selector = `[data-novel-id="${data.novel_id}"]`;
         const cards = document.querySelectorAll(selector);
         // The percentage in the event is of the CHAPTER, so a card still
@@ -860,7 +925,7 @@
         // refetch only when it isn't.
         let chapterChanged = false;
         cards.forEach((el) => {
-            if (data.chapter_id !== undefined && el.dataset.chapterId !== String(data.chapter_id)) {
+            if (el.dataset.chapterId !== undefined && data.chapter_id !== undefined && el.dataset.chapterId !== String(data.chapter_id)) {
                 chapterChanged = true;
             } else {
                 applyProgress(el, data.percent, null);
@@ -1040,12 +1105,17 @@
         // carries -- that is the hook applyEta rewrites from a progress
         // event, using the CHAPTER percentage in it, and a novel is in both
         // grids under the same data-novel-id.
-        if (card.remaining_seconds) {
+        if (card.remaining_seconds || card.text_eta) {
             const eta = document.createElement("p");
             eta.className = "text-xs text-neutral-500 truncate";
             const left = formatDuration(card.remaining_seconds);
-            eta.textContent = `~${left}`;
-            eta.title = `About ${left} of this left to read, going by how fast you read`;
+            eta.textContent = card.remaining_seconds === null ? "Collecting data" : `~${left}`;
+            eta.title = card.remaining_seconds === null ? "Collecting valid reading samples"
+                : `About ${left} of this left to read, going by how fast you read`;
+            if (card.text_eta) {
+                eta.dataset.textEtaKind = card.kind;
+                eta.dataset.textEtaId = String(card.id);
+            }
             a.appendChild(eta);
         }
         return a;
@@ -1187,6 +1257,7 @@
         },
         series_updated: (data) => handleSeriesUpdated(data.series_id),
         item_updated: (data) => handleItemUpdated(data.series_id),
+        reading_estimate_updated: () => scheduleTextEstimates(),
         progress_updated: handleProgressUpdated,
         novel_progress_updated: handleNovelProgressUpdated,
         series_progress_updated: (data) => handleSeriesProgressUpdated(data.series_id),

@@ -163,7 +163,12 @@ backup also restores its older reading progress and downloaded content.
   from `.env.example` and an exactly matching registered redirect URI.
 - **Reading statistics:** time spent reading, daily activity, estimated words
   per minute for EPUBs and web novels, and separate comic page visits. Existing
-  remaining-time estimates remain available. See [how measurements work](docs/reading-statistics.md).
+  remaining-time estimates use valid word/time evidence. Daily charts share tabs
+  and show the selected period's total time. Text readers offer per-work visual
+  hyphenation with language selection. See [how measurements work](docs/reading-statistics.md).
+- **Container vulnerability checks:** CI scans OS and Python packages with a
+  checksum-pinned Trivy release and blocks critical CVEs before accepting an
+  image or publishing it. See [scan policy and reports](docs/security-scanning.md).
 - **Authentication:** password hashing with Argon2id, TOTP and WebAuthn
   passkeys.
 

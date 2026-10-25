@@ -310,7 +310,11 @@ AVIF cost 2x decode on a phone).
   an adapter per `data-source`. Text positions are `elidx:N:OFFSET` (UTF-16
   offset in the Nth block); legacy `elidx:N` means offset zero. Web novels
   store the same offset in `character_offset`. Both modes share the anchor.
-  Reading terminology is in `CONTEXT.md`.
+  Reading terminology is in `CONTEXT.md`. Visual hyphenation preserves these
+  offsets and original text. Its override/language are per work and browser;
+  no language means no automatic hyphenation. Native dictionaries are browser
+  dependent. Exercise glyph continuity and resume in both browsers when changing
+  hyphenation, paragraph fragmentation or source-language propagation.
 - **A block is `reader-blocks.js`, for both modes** — never a selector of the
   engine's own. The body is walked: p/h*/pre/table/figure/hr are one block
   whatever they hold, a container holding blocks is descended into, loose text
@@ -401,8 +405,8 @@ AVIF cost 2x decode on a phone).
   modern visits use server-anchored visible intervals and account session claims
   (`stats/activity.py`). Checkpoints append only accounting deltas under the
   same `visit_id`; count distinct visits, not checkpoint rows. Caps survive
-  checkpoints/retries. Word totals and valid pace samples are separate; the
-  existing remaining-time estimator still uses its original algorithm.
+  checkpoints/retries. Word totals and valid pace samples are separate; text estimates use only
+  matched valid word/time evidence, while historical durations remain intact.
   A boosted reader upgrades the shared recorder from the current body asset
   URL when its retained head has an older bundle; keep the same document.
   An implausible legacy duration is clamped, an implausible `ago` rejected.
@@ -419,29 +423,31 @@ AVIF cost 2x decode on a phone).
   reused rowid; series matched by `library_id` + `folder_path`). It counts in
   "Most recent", start-to-finish and the rate, never in the Libraries counts
   (docs/adr/0001).
-- Estimates (`stats/estimates.py`): the item's own pace first, else a learned
-  rate times the item's size.
-  - **A book is bytes of text** (`items.text_size`) against a library-wide rate
-    per format — never `file_size` (a 1382x-inverted proxy).
-  - **A comic is pages** against a rate learned in its **own series**
-    (lettering density varies by more than 10x). A series with no rate borrows
-    the **95th percentile of the per-series rates** (one sample per series; the
-    slow end, because running out early is the worse error).
-  - **A web novel's rate is per chapter** (a chapter's seconds against that
-    chapter's bytes), learned separately from ebooks.
-  - What the rate is spent on is a stretch the CALLER picks (`for_novel`): the
-    strip hands it a volume, the grid the whole novel; "ahead" means not marked
-    read; the chapter in hand needs its own read check; an undownloaded chapter
-    is sized by the stretch's average; `Estimate.rest` is the part a chapter
-    percentage may not scale.
-  - The rate counts size actually READ; floors `MIN_SAMPLE_FRACTION` 0.05 and
-    `MIN_SAMPLE_SECONDS` 60; no data → `None`, never a guess.
-    `can_estimate` answers "could this ever carry one" (what the sort control
-    asks, so it does not come and go as the series is read).
-- A home card's badge is what is UNREAD and the line under it how long that
-  takes, built in one pass so they cannot disagree. The estimate must not carry
-  `.reading-eta` (that hook rescales by a CHAPTER percentage). Refreshed by
-  whole-item events only.
+- Text estimates (`stats/estimates.py`) count words ahead of the saved source
+  section/block/UTF-16 offset, independently of the displayed byte-weighted
+  percentage. EPUBs and web novels share valid pace evidence; legacy durations
+  never supply a word rate. The evidence floor matches Statistics (1,000 words,
+  300 seconds, three samples); own-work samples gradually replace a prior worth
+  at most 3,000 words from other works. Missing evidence/content/anchors show
+  `Collecting data`. Novel scope is explicit: Reading volume versus whole novel.
+  `prepare_items` / `prepare_novel` lazily load only requested word inventories.
+  Caches contain offsets/counts, not source text; source/rules/version invalidate
+  them. Account/work pace totals use an append-only ledger trigger and a once-only
+  backfill receipt. Removed content retains account evidence; per-work totals
+  cascade so reused IDs inherit none. See `docs/reading-statistics.md`.
+- Comic estimates retain pages/series rates, with the 95th percentile of
+  per-series rates for an unread series. Own-item evidence requires at least
+  5% progress and 60 counted seconds.
+- Text cards refresh authoritative estimates on progress or new committed valid
+  pace evidence (`reading_estimate_updated`); percent-only arithmetic is for
+  comics. Preserve the document, card and cover on these numeric updates.
+- Container publication scans the exact OCI archive before upload; recovery
+  scans the original immutable digest. Preserve that ordering, archive identity
+  and the fail-closed CRITICAL policy in `docs/security-scanning.md` when changing
+  Docker checks, release publication, recovery or reconciliation.
+- A home card's badge and estimate cover the same unread scope. Text estimates
+  carry their explicit item/series/novel scope; chapter percentages cannot scale
+  a whole volume or novel estimate.
 - **Marking read is a declaration.** `completed_from_percent` (and the novel's
   `read_from_percent`) records how far the reader had really got; the rate uses
   it instead of 1.0 (one book ticked off at 12% made every card 8x too fast),
@@ -450,7 +456,9 @@ AVIF cost 2x decode on a phone).
 - Clearing a status DELETES the `reading_progress` row (the row is what puts a
   card in "Reading"); `page_reads` stay. It asks via `hx-confirm`, never an
   inline `onsubmit` (two dialogs).
-- `/stats`: the daily window is the one server-side control — links to
+- `/stats`: daily measures share an accessible tab area; date swaps retain the
+  selected tab. Window time sums the same daily rows as the time chart. The
+  three headline indicators retain full-history scope. The daily window is the one server-side control — links to
   `/stats?days=N` swapped into `#daily-activity`, both built from
   `_daily_context`; an unparseable date is a 400. Daily time stacks by
   `page_reads.kind`; the visit chart counts comics only. Fixed

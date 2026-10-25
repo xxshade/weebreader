@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts.release import Release
-from scripts.release_publication import PublicationClient, stage, finish, journal, completed_release, reconcile, queue_pending, select_plan
+from scripts.release_publication import PublicationClient, stage, finish, journal, completed_release, reconcile, queue_pending, select_plan, stable_image
 
 COMMIT = 'a' * 40
 PLAN = {'version': '8.2.0', 'commit': COMMIT, 'previous_tag': 'v8.1.0',
@@ -432,7 +432,14 @@ class PublicationHTTP(unittest.TestCase):
         self.manifests[stable_commit[:7]] = b'{"schemaVersion":2,"old":true}'
         repo = Release('1.0.0', 'owner/Reader', latest_commit, 'refs/heads/main')
         with contextlib.chdir(fixture.root), contextlib.redirect_stdout(io.StringIO()):
-            reconcile(self.client, repo)
+            before = list(self.writes)
+            resolved, image = stable_image(self.client, repo)
+            self.assertEqual((resolved.commit, image[0]), (stable_commit, digest))
+            self.assertEqual(self.writes, before, 'Resolving a security target must not change aliases')
+            with self.assertRaisesRegex(ValueError, 'after its vulnerability scan'):
+                reconcile(self.client, repo, expected_digest='sha256:' + '0' * 64)
+            self.assertEqual(self.writes, before, 'A digest changed after scanning must not be promoted')
+            reconcile(self.client, repo, expected_digest=digest)
             self.assertEqual(self.manifests['latest'], original)
             self.assertEqual(self.manifests[stable_commit], original)
             self.assertEqual(self.manifests[stable_commit[:7]], b'{"schemaVersion":2,"old":true}')

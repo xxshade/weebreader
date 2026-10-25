@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException
 
 from app.config import settings
 from app.stats.recording import rebuild_read_totals
+from app.stats.pace_totals import PACE_TRIGGER, ensure_pace_totals
 
 _write_lock = asyncio.Lock()
 _schema_path = Path(__file__).parent / "schema.sql"
@@ -62,6 +63,8 @@ async def init_db() -> None:
         # 0.27 ms on a database that already has all of it.
         await db.executescript(_schema_path.read_text())
         await db.executescript(AFTER_MIGRATIONS)
+        await db.executescript(PACE_TRIGGER)
+        await ensure_pace_totals(db)
         await db.commit()
 
 

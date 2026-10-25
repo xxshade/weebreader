@@ -6,9 +6,8 @@
    Nothing outside it needs updating when the window changes, which is what
    keeps a swap from leaving the page half-describing the old range.
 
-   Two measures on two separate charts rather than one with two scales:
-   minutes and pages do not share an axis, and overlaying them would invite
-   reading a crossing as meaning something. #}
+   The two measures share an area through tabs. Their scales stay separate:
+   minutes and pages never share an axis. #}
 <div id="daily-activity"
      data-window-start="{{ daily_window.start }}"
      data-window-end="{{ daily_window.end }}"
@@ -79,10 +78,16 @@
 
        Keyboard: one column per chart is in the tab order (the latest
        day); the arrow keys, Home and End walk the rest. #}
+    <div class="stats-chart-tabs mb-3" role="tablist" aria-label="Daily activity measure">
+        <button type="button" role="tab" id="daily-tab-seconds" data-chart-tab="seconds"
+                aria-controls="daily-panel-seconds" aria-selected="true" tabindex="0">Time read per day</button>
+        <button type="button" role="tab" id="daily-tab-comic_visits" data-chart-tab="comic_visits"
+                aria-controls="daily-panel-comic_visits" aria-selected="false" tabindex="-1">Comic pages per day</button>
+    </div>
+
     {% macro stacked(caption, measure, peak, peak_text, kinds) %}
-    <p class="text-xs text-neutral-500 mb-1" id="daily-{{ measure }}-caption">{{ caption }}</p>
     <div class="viz-columns {{ 'viz-dense' if daily | length > 45 }} mb-1"
-         role="group" aria-labelledby="daily-{{ measure }}-caption" data-daily-chart>
+         role="group" aria-label="{{ caption }}" data-daily-chart>
         {% for day in daily %}
         {# A namespace, because a plain `set` inside the loop below would
            be scoped to that loop and leave this list empty. #}
@@ -110,9 +115,12 @@
         </div>
         {% endfor %}
     </div>
-    <div class="flex items-center justify-between text-xs text-neutral-500">
+    <div class="stats-chart-summary text-xs text-neutral-500">
         <span>{{ daily[0].day }}</span>
-        <span>peak {{ peak_text }}</span>
+        <span class="stats-chart-numbers">
+            {% if measure == 'seconds' %}<span data-window-time>Time read {{ daily_total_seconds | duration }}</span>{% endif %}
+            <span>peak {{ peak_text }}</span>
+        </span>
         <span>{{ daily[-1].day }}</span>
     </div>
     {% endmacro %}
@@ -122,6 +130,7 @@
        Only with two or more kinds in the window -- a single one is named
        by the tooltip, and a legend box of one says nothing. A rect, as
        the mark it keys is a filled segment. #}
+    <div id="daily-panel-seconds" role="tabpanel" aria-labelledby="daily-tab-seconds" data-chart-panel="seconds">
     {% if daily_kinds | length > 1 %}
     <ul class="flex flex-wrap items-center gap-3 text-xs text-neutral-400 mb-3" aria-label="Legend">
         {% for kind in daily_kinds %}
@@ -134,6 +143,8 @@
     {% endif %}
 
     {% call(value) stacked("Time read per day", "seconds", daily_max_seconds, daily_max_seconds | duration, daily_kinds) %}{{ value | duration }}{% endcall %}
-    <div class="mb-4"></div>
+    </div>
+    <div id="daily-panel-comic_visits" role="tabpanel" aria-labelledby="daily-tab-comic_visits" data-chart-panel="comic_visits" hidden>
     {% call(value) stacked("Comic pages per day", "comic_visits", daily_max_pages, daily_max_pages, ["cbz"]) %}{{ value }} page{{ 's' if value != 1 }}{% endcall %}
+    </div>
 </div>

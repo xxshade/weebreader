@@ -251,6 +251,58 @@
     min-width: 2px;
 }
 
+/* Reading indicators remain one compact row, including narrow screens. */
+.stats-kpis {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+}
+.stats-kpis > div {
+    min-width: 0;
+    padding: 0.625rem 0.5rem;
+}
+.stats-kpis .stats-value {
+    font-size: 1rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+}
+.stats-kpis .tip-row { gap: 0.25rem; position: static; }
+.stats-kpis .tip-row > p { min-width: 0; }
+.viz .stats-kpis .tip-body {
+    left: 0;
+    right: auto;
+    width: min(24rem, 100%);
+}
+.stats-chart-tabs {
+    display: flex;
+    gap: 1rem;
+    border-bottom: 1px solid var(--color-neutral-800);
+}
+.stats-chart-tabs > button {
+    padding: 0.5rem 0;
+    font-size: 0.75rem;
+    color: var(--color-neutral-400);
+    border-bottom: 2px solid transparent;
+}
+.stats-chart-tabs > button[aria-selected="true"] {
+    color: var(--color-neutral-100);
+    border-bottom-color: var(--color-indigo-400);
+}
+.stats-chart-summary {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.25rem 0.5rem;
+}
+.stats-chart-numbers {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.25rem 0.75rem;
+}
+
 /* Daily columns. align-items:flex-end anchors every bar to the baseline;
    the rounded top is the 4px data-end, and the baseline end stays square
    because it is not a data end -- it is the axis. */

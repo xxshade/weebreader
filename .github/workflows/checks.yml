@@ -190,7 +190,7 @@ jobs:
     name: Docker build
     if: inputs.build_image
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       DOCKER_BUILD_RECORD_UPLOAD: 'false'
     steps:
@@ -212,8 +212,22 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          outputs: type=oci,dest=${{ runner.temp }}/ci-image.tar
           cache-from: type=gha,scope=ci
           cache-to: type=gha,scope=ci,mode=min
+      - name: Scan the built runtime image before accepting validation
+        uses: ./.github/actions/container-scan
+        with:
+          archive: ${{ runner.temp }}/ci-image.tar
+          reports: ${{ runner.temp }}/container-security
+      - name: Retain vulnerability diagnostics
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: container-security-pr-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/container-security/
+          retention-days: 7
+          if-no-files-found: ignore
 
   passed:
     name: Validation passed

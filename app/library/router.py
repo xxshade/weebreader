@@ -19,7 +19,7 @@ from app.auth.router import MAX_COVER_BLUR, MIN_COVER_BLUR
 from app.background import run_background as _run_background
 from app.covers.thumbnails import delete_custom_series_cover, save_custom_series_cover
 from app.database import get_db, write_transaction
-from app.http_utils import back_target, is_htmx, redirect_back
+from app.http_utils import back_target, is_htmx, json_object, redirect_back
 from app.library import events, job_status
 from app.library.naturalsort import natural_sort_key
 from app.library.scanner import _recompute_series_cover, automatic_series_name, backfill_number_in_series, scan_library
@@ -85,63 +85,23 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
         """
         SELECT novels.id, novels.title, novels.cover_image_content_type, novels.cover_image_hash,
                novel_reading_progress.chapter_percent, novel_reading_progress.updated_at,
-               chapters.id AS chapter_id, chapters.number AS chapter_number,
-               chapters.title AS chapter_title,
-               chapters.content_size AS chapter_size,
+               chapters.id AS chapter_id, chapters.volume_id, chapters.number AS chapter_number,
                volumes.number AS volume_number,
-               volume.mean_size AS volume_mean_size,
-               volume.ahead_bytes AS volume_ahead_bytes,
-               volume.ahead_unsized AS volume_ahead_unsized,
-               here.chapter_id IS NOT NULL AS chapter_is_read
-        FROM novel_reading_progress
-        JOIN novels ON novels.id = novel_reading_progress.novel_id
-        JOIN chapters ON chapters.id = novel_reading_progress.chapter_id
-        JOIN volumes ON volumes.id = chapters.volume_id
-        LEFT JOIN novel_status ON novel_status.user_id = novel_reading_progress.user_id
-            AND novel_status.novel_id = novel_reading_progress.novel_id
-        -- Whether the chapter the card opens at has itself been ticked
-        -- off. It is excluded from the volume's remaining sum below by ID,
-        -- so without this it would be counted in full even once the whole
-        -- volume was marked read -- a card saying "about 30m left in
-        -- volume 3" with nothing in volume 3 left to read.
-        LEFT JOIN novel_read_chapters AS here
-            ON here.chapter_id = novel_reading_progress.chapter_id
-            AND here.user_id = novel_reading_progress.user_id
-        -- What is left of the VOLUME beyond the chapter the card opens at,
-        -- which is what the estimate beside it is about. Scoped to the
-        -- volumes this user is actually positioned in -- driven from
-        -- novel_reading_progress rather than grouping every volume in the
-        -- library -- so it costs one small group per card on the strip.
-        --
-        -- "Ahead" means NOT MARKED READ, not "later in the volume": a
-        -- chapter skipped past is still a chapter this volume needs before
-        -- it is done, and "mark all as read" is how a reader says
-        -- otherwise. The chapter in hand is excluded from both sums
-        -- because the percentage on the card already measures it.
-        LEFT JOIN (
-            SELECT chapters.volume_id AS volume_id,
-                   AVG(CASE WHEN chapters.content_size > 0
-                            THEN chapters.content_size END) AS mean_size,
-                   SUM(CASE WHEN marked.chapter_id IS NULL
-                             AND chapters.id <> position.chapter_id
-                             AND chapters.content_size > 0
-                            THEN chapters.content_size ELSE 0 END) AS ahead_bytes,
-                   SUM(CASE WHEN marked.chapter_id IS NULL
-                             AND chapters.id <> position.chapter_id
-                             AND COALESCE(chapters.content_size, 0) = 0
-                            THEN 1 ELSE 0 END) AS ahead_unsized
-              FROM novel_reading_progress AS position
-              JOIN chapters AS open_at ON open_at.id = position.chapter_id
-              JOIN chapters ON chapters.volume_id = open_at.volume_id
-         LEFT JOIN novel_read_chapters AS marked
-                ON marked.chapter_id = chapters.id AND marked.user_id = position.user_id
-             WHERE position.user_id = ?
-          GROUP BY chapters.volume_id
-        ) AS volume ON volume.volume_id = volumes.id
-        WHERE novel_reading_progress.user_id = ?
-            AND (novel_status.status IS NULL OR novel_status.status = 'reading')
-        """,
-        (user_id, user_id),
+               EXISTS (
+                   SELECT 1 FROM chapters AS pending
+                   LEFT JOIN novel_read_chapters AS marked
+                     ON marked.chapter_id=pending.id AND marked.user_id=novel_reading_progress.user_id
+                   WHERE pending.volume_id=chapters.volume_id AND marked.chapter_id IS NULL
+               ) AS volume_has_unread
+          FROM novel_reading_progress
+          JOIN novels ON novels.id=novel_reading_progress.novel_id
+          JOIN chapters ON chapters.id=novel_reading_progress.chapter_id
+          JOIN volumes ON volumes.id=chapters.volume_id
+          LEFT JOIN novel_status ON novel_status.user_id=novel_reading_progress.user_id
+                                AND novel_status.novel_id=novel_reading_progress.novel_id
+         WHERE novel_reading_progress.user_id=?
+           AND (novel_status.status IS NULL OR novel_status.status='reading')
+        """, (user_id,),
     )
     reading_novels = await cursor.fetchall()
 
@@ -155,6 +115,7 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
     if estimator is None:
         estimator = await build_estimator(db, user_id)
 
+    await estimator.prepare_items(reading_comics)
     reading_items = []
     for it in reading_comics:
         # page_count is already known for every item since scan time (just
@@ -180,6 +141,7 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
             # joins items to reading_progress, so it carries the format and
             # size on one side and the status and percentage on the other.
             "eta": estimator.for_item(it, it),
+            "text_eta": it["file_format"] == "epub",
             # The estimate is about the item the card already names, so
             # there is nothing further to say (see the novel branch).
             "eta_scope": "",
@@ -191,22 +153,9 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
         })
     for nv in reading_novels:
         chnum = format_chapter_number(nv["chapter_number"])
-        # A chapter whose body has not been downloaded yet has no length to
-        # measure, so it counts as the average of the ones in the same
-        # volume that do. Leaving it out instead would understate the time
-        # by exactly that chapter and look no different from a right
-        # answer; within one volume the lengths are close enough that the
-        # average is a bounded guess rather than an invented one.
-        #
-        # The chapter in hand gets the same treatment, for the same reason
-        # and so the two halves of the estimate are sized by one rule.
-        mean_size = nv["volume_mean_size"] or 0
-        rest_bytes = (nv["volume_ahead_bytes"] or 0) + (nv["volume_ahead_unsized"] or 0) * mean_size
-        # A chapter already ticked off has nothing left in it whatever
-        # position happens to be saved inside it, so it contributes no
-        # time -- and a volume where that is the last of it drops its
-        # estimate entirely rather than counting a chapter twice.
-        chapter_size = 0 if nv["chapter_is_read"] else (nv["chapter_size"] or mean_size)
+        # The estimator counts actual words in this volume, anchored to the
+        # current chapter/block/character position, independently of percent.
+        await estimator.prepare_novel(nv["id"], nv["volume_id"])
         # A novel's card is about the VOLUME for the time left and the
         # CHAPTER for everything else, and the two are labelled so neither
         # can be read as the other. The percentage and the bar stay on the
@@ -238,8 +187,9 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
             # The stretch handed over is ONE VOLUME -- rest_bytes above is
             # grouped by volume_id. The same call on the home grid's novel
             # card hands over the whole novel (see _novel_reading).
-            "eta": estimator.for_novel(
-                nv["chapter_id"], chapter_size, nv["chapter_percent"], rest_bytes),
+            "eta": estimator.for_novel(nv["id"], nv["volume_id"]),
+            "text_eta": bool(nv["volume_has_unread"]),
+            "eta_volume_id": nv["volume_id"],
             "last_read_at": nv["updated_at"],
             "clear_url": f"/novels/{nv['id']}/clear-status",
         })
@@ -257,14 +207,14 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
 # A namedtuple rather than a dict for the reason Estimate is one: Jinja
 # resolves attribute access with getattr BEFORE the mapping, so a dict key
 # named `items` or `keys` silently becomes the method (see AGENTS.md).
-ShelfReading = namedtuple("ShelfReading", "unread remaining")
+ShelfReading = namedtuple("ShelfReading", "unread remaining text_eta", defaults=(False,))
 
 # The same pair for a novel, plus the one thing the card needs that comes
 # out of the very same grouping of `chapters`: when its newest chapter
 # turned up, which is a novel's `modified_at` (a novel row itself never
 # changes after creation). Riding along rather than being its own GROUP BY
 # over the same table for the same rows.
-NovelShelf = namedtuple("NovelShelf", "unread remaining newest")
+NovelShelf = namedtuple("NovelShelf", "unread remaining newest text_eta", defaults=(False,))
 
 # What a card with nothing on that side of it shows: no badge (the template
 # hides it at zero) and no time. A series whose every item is missing lands
@@ -318,100 +268,43 @@ async def _series_reading(db, user_id: int, estimator, series_id: int | None = N
            {scope}
     """, params)).fetchall()
 
+    await estimator.prepare_items(rows)
     by_series: dict[int, list] = {}
     for row in rows:
         by_series.setdefault(row["series_id"], []).append(row)
     return {
-        sid: ShelfReading(unread=len(items), remaining=estimator.total_remaining(items))
+        sid: ShelfReading(unread=len(items), remaining=estimator.total_remaining(items),
+                          text_eta=any(item["file_format"] == "epub" for item in items))
         for sid, items in by_series.items()
     }
 
 
 async def _novel_reading(db, user_id: int, estimator, novel_id: int | None = None):
-    """The novel twin, keyed by novel id.
+    """Home-card scope: every unmarked chapter of the novel, across volumes.
 
-    A novel's items are its CHAPTERS, and the chapter a reader is in is
-    part-read rather than unread -- so unlike a series this cannot simply
-    be counted and summed. It is the same shape the "Reading" strip builds
-    per volume (see _reading_items), at the scale of the whole novel: what
-    is left of the chapter in hand, plus every chapter not marked read.
-
-    "Unread" is NOT MARKED READ, not "after the saved position": a chapter
-    skipped past still stands between the reader and the end of the novel,
-    and "mark all as read" is how they say otherwise. The chapter in hand
-    counts as unread -- there is still some of it left -- but its BYTES are
-    kept out of `ahead_bytes` and handed to the estimator separately,
-    because the percentage is what says how much of it is left.
-
-    A chapter whose body has not been downloaded has no `content_size` and
-    is sized by the mean of the ones that do, here the whole novel's rather
-    than one volume's. Leaving it out would understate the time by exactly
-    that chapter and look identical to a right answer.
-
-    The bare `position` and `marked` columns are wrapped in MAX() although
-    every row of a group carries the same value: SQLite would allow them
-    bare and pick a row arbitrarily, and a query that is only correct
-    because of that is one a later GROUP BY change breaks silently.
-
-    Nothing is marshalled per chapter here -- it answers one row per novel
-    -- so unlike the series half this is the aggregate itself: 24 ms over
-    27,000 chapters. It also replaces the COUNT(*)/MAX(discovered_at)
-    grouping this page already ran over the same table, which is why
-    `newest` comes back with it.
+    The inventory estimator owns word counts and the exact saved text anchor.
+    This lightweight grouping shares the same unread definition for the badge
+    and leaves unknown chapter content unknown rather than estimating from bytes.
     """
-    scope = "WHERE chapters.novel_id = ?" if novel_id is not None else ""
-    params = (user_id, user_id, novel_id) if novel_id is not None else (user_id, user_id)
+    scope = "WHERE chapters.novel_id=?" if novel_id is not None else ""
+    params = (user_id, novel_id) if novel_id is not None else (user_id,)
     rows = await (await db.execute(f"""
-        SELECT chapters.novel_id AS novel_id,
-               MAX(chapters.discovered_at) AS newest,
-               SUM(CASE WHEN marked.chapter_id IS NULL THEN 1 ELSE 0 END) AS unread,
-               AVG(CASE WHEN chapters.content_size > 0
-                        THEN chapters.content_size END) AS mean_size,
-               SUM(CASE WHEN marked.chapter_id IS NULL
-                         AND chapters.id <> COALESCE(position.chapter_id, 0)
-                         AND chapters.content_size > 0
-                        THEN chapters.content_size ELSE 0 END) AS ahead_bytes,
-               SUM(CASE WHEN marked.chapter_id IS NULL
-                         AND chapters.id <> COALESCE(position.chapter_id, 0)
-                         AND COALESCE(chapters.content_size, 0) = 0
-                        THEN 1 ELSE 0 END) AS ahead_unsized,
-               MAX(position.chapter_id) AS here_id,
-               MAX(position.chapter_percent) AS here_percent,
-               MAX(CASE WHEN chapters.id = position.chapter_id
-                        THEN COALESCE(chapters.content_size, 0) ELSE 0 END) AS here_size,
-               MAX(CASE WHEN chapters.id = position.chapter_id
-                         AND marked.chapter_id IS NOT NULL
-                        THEN 1 ELSE 0 END) AS here_is_read
+        SELECT chapters.novel_id AS novel_id, MAX(chapters.discovered_at) AS newest,
+               SUM(CASE WHEN marked.chapter_id IS NULL THEN 1 ELSE 0 END) AS unread
           FROM chapters
-     LEFT JOIN novel_read_chapters AS marked
-            ON marked.chapter_id = chapters.id AND marked.user_id = ?
-     LEFT JOIN novel_reading_progress AS position
-            ON position.novel_id = chapters.novel_id AND position.user_id = ?
+          LEFT JOIN novel_read_chapters AS marked
+            ON marked.chapter_id=chapters.id AND marked.user_id=?
         {scope}
-      GROUP BY chapters.novel_id
+         GROUP BY chapters.novel_id
     """, params)).fetchall()
-
     shelf = {}
     for row in rows:
-        mean_size = row["mean_size"] or 0
-        rest_bytes = (row["ahead_bytes"] or 0) + (row["ahead_unsized"] or 0) * mean_size
-        if row["here_id"] is None:
-            # Never opened: there is no chapter in hand, and every unread
-            # chapter is already in rest_bytes above. Sizing a chapter that
-            # does not exist by the mean would invent one.
-            here_size, percent = 0, 0
-        else:
-            # A chapter already ticked off has nothing left in it whatever
-            # position is saved inside it, so it contributes no time -- and
-            # a zero here is also what tells the estimator to skip the
-            # own-pace path (see for_novel).
-            here_size = 0 if row["here_is_read"] else (row["here_size"] or mean_size)
-            percent = row["here_percent"]
-        estimate = estimator.for_novel(row["here_id"], here_size, percent, rest_bytes)
+        await estimator.prepare_novel(row["novel_id"])
+        estimate = estimator.for_novel(row["novel_id"])
         shelf[row["novel_id"]] = NovelShelf(
             unread=row["unread"] or 0,
             remaining=estimate.remaining if estimate else None,
-            newest=row["newest"],
+            newest=row["newest"], text_eta=bool(row["unread"]),
         )
     return shelf
 
@@ -461,6 +354,7 @@ async def _load_series_items(db, user_id: int, series):
     # of _items_grid.html (the page, the SSE refresh, and both mark-all
     # responses) shows the same thing without having to remember to ask.
     estimator = await build_estimator(db, user_id)
+    await estimator.prepare_items(items)
     eta_map = {}
     for item in items:
         estimate = estimator.for_item(item, progress_map.get(item["id"]))
@@ -865,6 +759,7 @@ def _series_card(row, *, status, last_read_at, reading, tracked_count, tracker_t
         # template renders as nothing at all; see total_remaining.
         "unread_count": reading.unread,
         "remaining_seconds": reading.remaining,
+        "text_eta": reading.text_eta,
         # The tracking dot, and what "linked to all of them" means for it.
         "tracked_count": tracked_count,
         "tracker_total": tracker_total,
@@ -913,6 +808,7 @@ def _novel_card(row, *, status, last_read_at, reading,
         # which is not finished. See _novel_reading.
         "unread_count": reading.unread,
         "remaining_seconds": reading.remaining,
+        "text_eta": reading.text_eta,
         "tracked_count": tracked_count,
         "tracker_total": tracker_total,
         "library_id": "novels",
@@ -1289,6 +1185,68 @@ async def _problem_item_count(db) -> int:
     return (
         await (await db.execute("SELECT COUNT(*) AS n FROM scan_events WHERE event_type = 'error'")).fetchone()
     )["n"]
+
+
+@router.post("/library/reading-estimates")
+async def reading_estimates(request: Request, user=Depends(get_current_user), db=Depends(get_db)):
+    """Authoritative word-based estimates for the text cards currently on screen.
+
+    Only numbers are refreshed: covers, focus and client-side ordering survive.
+    Each requested scope is bounded and resolved against this account's saved
+    positions; callers never submit percentages or a pace to extrapolate.
+    """
+    try:
+        body = json_object(await request.json())
+    except ValueError:
+        raise HTTPException(400, "Expected a JSON body")
+    targets = body.get("targets")
+    if not isinstance(targets, list) or not 1 <= len(targets) <= 100:
+        raise HTTPException(400, "Expected 1 to 100 reading estimate targets")
+    parsed = {}
+    for target in targets:
+        if not isinstance(target, dict):
+            raise HTTPException(400, "Invalid reading estimate target")
+        kind, identity, volume = target.get("kind"), target.get("id"), target.get("volume_id")
+        if (kind not in ("item", "novel", "series") or type(identity) is not int or identity < 1
+                or (volume is not None and (kind != "novel" or type(volume) is not int or volume < 1))):
+            raise HTTPException(400, "Invalid reading estimate target")
+        key = f"{kind}:{identity}:{volume or ''}"
+        parsed[key] = (kind, identity, volume)
+    estimator = await build_estimator(db, user["id"])
+    results = []
+    for key, (kind, identity, volume) in parsed.items():
+        estimate, collecting = None, False
+        if kind == "item":
+            item = await (await db.execute("SELECT * FROM items WHERE id=? AND file_format='epub'",
+                                          (identity,))).fetchone()
+            if item is not None:
+                progress = await (await db.execute(
+                    "SELECT * FROM reading_progress WHERE user_id=? AND item_id=?",
+                    (user["id"], identity))).fetchone()
+                await estimator.prepare_items([item])
+                estimate = estimator.for_item(item, progress)
+                collecting = estimate is None and (progress is None or progress["status"] != "completed")
+        elif kind == "novel":
+            scope = "AND chapters.volume_id=?" if volume is not None else ""
+            parameters = (user["id"], identity, volume) if volume is not None else (user["id"], identity)
+            unread = await (await db.execute(f"""SELECT COUNT(*) AS n FROM chapters
+                LEFT JOIN novel_read_chapters AS marked
+                  ON marked.chapter_id=chapters.id AND marked.user_id=?
+                WHERE chapters.novel_id=? AND marked.chapter_id IS NULL {scope}""", parameters)).fetchone()
+            if unread["n"]:
+                await estimator.prepare_novel(identity, volume)
+                estimate = estimator.for_novel(identity, volume)
+                collecting = estimate is None
+        else:
+            reading = (await _series_reading(db, user["id"], estimator, identity)).get(identity, NOTHING_LEFT)
+            if reading.remaining is not None:
+                # Aggregates need no projected total: the server owns their scope.
+                results.append({"key": key, "remaining": reading.remaining, "total": None, "collecting": False})
+                continue
+            collecting = reading.text_eta and bool(reading.unread)
+        results.append({"key": key, "remaining": estimate.remaining if estimate else None,
+                        "total": estimate.total if estimate else None, "collecting": collecting})
+    return {"estimates": results}
 
 
 @router.get("/library/reading-grid", response_class=HTMLResponse)

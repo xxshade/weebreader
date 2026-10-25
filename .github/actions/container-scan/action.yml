@@ -1,0 +1,40 @@
+name: Scan runtime image
+description: Verify Trivy, scan all runtime packages and block critical CVEs
+inputs:
+  archive:
+    description: Local Docker or OCI image archive (mutually exclusive with image)
+    default: ''
+  image:
+    description: Existing immutable registry image@sha256 reference
+    default: ''
+  reports:
+    description: Report directory
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install checksum-pinned Trivy
+      shell: bash
+      run: |
+        install_dir="$RUNNER_TEMP/trivy-0.76.1"
+        mkdir -p "$install_dir"
+        curl --fail --location --retry 3 \
+          https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz \
+          --output "$install_dir/trivy.tar.gz"
+        printf '%s  %s\n' \
+          c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0 \
+          "$install_dir/trivy.tar.gz" | sha256sum --check --strict
+        tar -xzf "$install_dir/trivy.tar.gz" -C "$install_dir" trivy
+        echo "$install_dir" >> "$GITHUB_PATH"
+    - name: Scan OS and Python runtime packages
+      shell: bash
+      run: |
+        arguments=()
+        if [ -n "$IMAGE_ARCHIVE" ]; then arguments+=(--archive "$IMAGE_ARCHIVE"); fi
+        if [ -n "$IMAGE_REFERENCE" ]; then arguments+=(--image "$IMAGE_REFERENCE"); fi
+        python scripts/container_security.py "${arguments[@]}" \
+          --report-directory "$REPORT_DIRECTORY" --cache-directory "$RUNNER_TEMP/trivy-cache"
+      env:
+        IMAGE_ARCHIVE: ${{ inputs.archive }}
+        IMAGE_REFERENCE: ${{ inputs.image }}
+        REPORT_DIRECTORY: ${{ inputs.reports }}

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -248,7 +249,9 @@ async def epub_manifest(item_id: int, user=Depends(get_current_user), db=Depends
     spine = await asyncio.to_thread(list_spine_resources, item["file_path"])
     # The reader appends this to every resource URL it builds, which is what
     # lets those answer `immutable` honestly. See epub_resource.
-    return JSONResponse({"title": item["title"], "spine": spine, "version": item["file_hash"]})
+    metadata = json.loads(item["metadata"] or "{}")
+    return JSONResponse({"title": item["title"], "spine": spine, "version": item["file_hash"],
+                         "language": metadata.get("language") or ""})
 
 
 @router.get("/{item_id}/resource/{resource_path:path}")
@@ -479,6 +482,7 @@ async def _render_item_card(request: Request, db, user_id: int, item_id: int):
     # an item read makes the estimate go away, which is the point: there is
     # nothing left to estimate.
     estimator = await build_estimator(db, user_id)
+    await estimator.prepare_items([item])
     eta = estimator.for_item(item, progress)
     return templates.TemplateResponse(
         request, "library/_item_card.html",

@@ -868,3 +868,25 @@ CREATE INDEX IF NOT EXISTS idx_text_replacements_series
     ON text_replacements(user_id, series_id);
 CREATE INDEX IF NOT EXISTS idx_text_replacements_novel
     ON text_replacements(user_id, novel_id);
+
+-- Valid text evidence is independent of lifetime recorded time. Global totals
+-- survive removed content; per-work totals cascade so reused IDs inherit none.
+CREATE TABLE IF NOT EXISTS account_pace_totals (
+ user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+ words INTEGER NOT NULL, seconds REAL NOT NULL, samples INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS item_pace_totals (
+ user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+ words INTEGER NOT NULL, seconds REAL NOT NULL, samples INTEGER NOT NULL,
+ PRIMARY KEY(user_id,item_id)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS novel_pace_totals (
+ user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ novel_id INTEGER NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+ words INTEGER NOT NULL, seconds REAL NOT NULL, samples INTEGER NOT NULL,
+ PRIMARY KEY(user_id,novel_id)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS derived_stats_state (
+ name TEXT PRIMARY KEY, version INTEGER NOT NULL
+) WITHOUT ROWID;
