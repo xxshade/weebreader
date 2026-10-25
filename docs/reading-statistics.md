@@ -141,6 +141,12 @@ remains enabled because inputs can change while a page is being generated.
 Reading events and committed text replacement changes refresh visible estimates;
 newly inserted card fragments also request their pending predictions.
 
+Replacement rules are read once per series or novel within an estimator,
+including empty rule sets. Books in the same series and volumes of the same
+novel reuse those rules during that request. Each request builds a new estimator
+for its account, so rule additions, edits and deletions remain visible on the
+next request; rules are never shared between accounts or retained across visits.
+
 A content, saved-position or replacement-rule change invalidates the counts;
 completed content never resurrects an old result. Chapter revisions detect even
 same-size content edits without reading novel source bodies. The cache contains

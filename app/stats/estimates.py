@@ -103,6 +103,7 @@ class ReadingEstimator:
         self.db, self.user_id = db, user_id
         self.cache_account = user_id
         self._snapshot_rows = None
+        self._replacement_rules = {}
         self.samples = samples or {}
         self.item_estimates, self.novel_estimates = {}, {}
         self.completed_items, self.pending_novels = set(), set()
@@ -132,6 +133,16 @@ class ReadingEstimator:
         if self.cached_only and counts is not None:
             return Estimate(*counts)  # Legacy duration; revalidated by the endpoint.
         return None
+
+    async def _rules_for(self, *, series_id=None, novel_id=None):
+        # An estimator belongs to one account and one request. Reuse even
+        # empty rules across books/volumes, without keeping them for a later
+        # request that must observe edits or deletions.
+        key = (series_id, novel_id)
+        if key not in self._replacement_rules:
+            self._replacement_rules[key] = await text_replacements.rules_for(
+                self.db, self.user_id, series_id=series_id, novel_id=novel_id)
+        return self._replacement_rules[key]
 
     async def prepare_items(self, items):
         """Parse only requested text items; warm inventory work is cache hits."""
@@ -171,7 +182,7 @@ class ReadingEstimator:
             elif row['progress_percent']:
                 self.item_states[identity] = 'position_unavailable'
                 continue  # Old percentages cannot identify remaining words.
-            rules = await text_replacements.rules_for(self.db, self.user_id, series_id=row['series_id'])
+            rules = await self._rules_for(series_id=row['series_id'])
             scope = (self.cache_account, 'item', identity)
             try:
                 stat = await asyncio.to_thread(Path(row['file_path']).stat)
@@ -223,7 +234,7 @@ class ReadingEstimator:
         self.novel_states[key] = 'collecting' if rate is None else 'calculating'
         if rate is None:
             return
-        rules = await text_replacements.rules_for(self.db, self.user_id, novel_id=novel_id)
+        rules = await self._rules_for(novel_id=novel_id)
         revision = await (await self.db.execute(
             'SELECT revision FROM novel_content_revisions WHERE novel_id=?', (novel_id,))).fetchone()
         identities = await (await self.db.execute('SELECT chapters.id ' + query + ' ORDER BY chapters.id', params)).fetchall()
