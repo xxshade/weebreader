@@ -4,6 +4,7 @@ from pathlib import Path
 from tests.test_word_estimates import WordEstimates as _Fixtures
 from tests.test_estimates import EstimateCase
 from app.stats.estimates import build_estimator
+from app.main import app
 
 
 class EstimateAvailability(EstimateCase):
@@ -17,7 +18,7 @@ class EstimateAvailability(EstimateCase):
         expected = cold.for_item(item, None)
         # Different instances, as on a full reload. Force the large-scope path.
         items = [dict(item, id=identity) for identity in range(1, 66)]
-        warm = await build_estimator(self.db, 1, defer_large_scopes=True)
+        warm = await build_estimator(self.db, 1, cached_only=True)
         with patch('app.stats.estimates.inventory_epub_total', side_effect=AssertionError('Render parsed content')):
             await warm.prepare_items(items)
         self.assertEqual(warm.for_item(item, None), expected,
@@ -53,7 +54,7 @@ class EstimateAvailability(EstimateCase):
         self.assertIsNotNone(original.for_item(item, None))
         # Deferred rendering may read snapshots but must not parse the EPUB.
         async def rendered():
-            estimator = await build_estimator(self.db, 1, defer_large_scopes=True)
+            estimator = await build_estimator(self.db, 1, cached_only=True)
             await estimator.prepare_items([dict(item, id=i) for i in range(1,66)])
             return estimator
         await self.db.execute("UPDATE items SET file_hash='changed' WHERE id=1")
@@ -69,7 +70,7 @@ class EstimateAvailability(EstimateCase):
         await self.db.execute("""INSERT INTO page_reads(user_id,kind,started_at,seconds,cap_seconds,
             visit_id,pace_words,pace_seconds,pace_samples)
             VALUES(2,'epub',datetime('now'),300,300,'other-evidence',1000,300,3)""")
-        other = await build_estimator(self.db, 2, defer_large_scopes=True)
+        other = await build_estimator(self.db, 2, cached_only=True)
         await other.prepare_items([dict(item, id=i) for i in range(1,66)])
         self.assertIsNone(other.for_item(item, None), 'Another account must never receive the snapshot')
 
@@ -81,16 +82,16 @@ class EstimateAvailability(EstimateCase):
         cold = await self.estimator()
         await cold.prepare_novel(1)
         expected = cold.for_novel(1)
-        warm = await build_estimator(self.db, 1, defer_large_scopes=True)
+        warm = await build_estimator(self.db, 1, cached_only=True)
         with patch('app.stats.estimates.inventory_html_total', side_effect=AssertionError('Render parsed chapter')):
             await warm.prepare_novel(1)
         self.assertEqual(warm.for_novel(1), expected, 'Novel reload must keep its last result')
         await self.db.execute("UPDATE chapters SET content_html='<p>one-two</p>' WHERE id=1")
-        changed = await build_estimator(self.db, 1, defer_large_scopes=True)
+        changed = await build_estimator(self.db, 1, cached_only=True)
         await changed.prepare_novel(1)
         self.assertIsNone(changed.for_novel(1), 'Same-size chapter edits must invalidate the result')
         await self.db.execute('INSERT INTO novel_read_chapters(user_id,chapter_id) SELECT 1,id FROM chapters')
-        done = await build_estimator(self.db, 1, defer_large_scopes=True)
+        done = await build_estimator(self.db, 1, cached_only=True)
         await done.prepare_novel(1)
         self.assertIsNone(done.for_novel(1), 'Completed novel must not resurrect a snapshot')
         self.assertEqual(done.novel_states[(1,None)], 'complete')
@@ -120,6 +121,35 @@ class EstimateAvailability(EstimateCase):
         self.assertEqual(repaired.item_states[1], 'available')
         after = tuple(await self.row('SELECT * FROM reading_progress'))
         self.assertEqual(before, after, 'Estimation must not change reading status or progress')
+
+    async def test_home_after_saved_progress_never_waits_for_a_small_scope_inventory(self):
+        import asyncio
+        import httpx
+        from app.auth.dependencies import get_current_user
+        from app.database import close_pool
+        item = await self.book()
+        await self.db.execute("INSERT INTO series(id,library_id,name,sort_name,folder_path) VALUES(1,1,'Series','series','/series')")
+        await self.db.execute('UPDATE items SET series_id=1')
+        await self.evidence()
+        first = await self.estimator()
+        await first.prepare_items([item])
+        await self.progress(1, 'reading', 10)
+        await self.db.execute("UPDATE reading_progress SET current_page=0,current_location='elidx:0:4',last_read_at=datetime('now') WHERE item_id=1")
+        await self.db.commit()
+        user = {'id':1,'username':'u','avatar_path':None,'cover_blur_px':0,
+                'page_time_cap_seconds':180,'text_time_cap_seconds':180}
+        saved = dict(app.dependency_overrides)
+        app.dependency_overrides[get_current_user] = lambda: user
+        self.addAsyncCleanup(close_pool)
+        try:
+            with patch('app.stats.estimates.inventory_epub', side_effect=AssertionError('Home waited for an inventory after reading')):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+                    response = await asyncio.wait_for(client.get('/'), 2)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn('Calculating', response.text)
+        finally:
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(saved)
 
 
 del _Fixtures

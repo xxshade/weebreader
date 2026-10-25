@@ -113,7 +113,7 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
     # set of numbers. /library/reading-grid renders this section alone and
     # has none to hand over, so it still builds its own.
     if estimator is None:
-        estimator = await build_estimator(db, user_id, defer_large_scopes=True)
+        estimator = await build_estimator(db, user_id, cached_only=True)
 
     await estimator.prepare_items(reading_comics)
     reading_items = []
@@ -357,7 +357,7 @@ async def _load_series_items(db, user_id: int, series):
     # here rather than in each of the four callers below, so every render
     # of _items_grid.html (the page, the SSE refresh, and both mark-all
     # responses) shows the same thing without having to remember to ask.
-    estimator = await build_estimator(db, user_id, defer_large_scopes=True)
+    estimator = await build_estimator(db, user_id, cached_only=True)
     await estimator.prepare_items(items)
     items = [dict(item, estimate_state=estimator.item_states.get(item["id"], "complete")) for item in items]
     eta_map = {}
@@ -857,7 +857,7 @@ async def series_card(series_id: int, user=Depends(get_current_user), db=Depends
     # rendered, and a second COUNT(*) written out here is exactly how that
     # stops being true.
     reading = await _series_reading(
-        db, user["id"], await build_estimator(db, user["id"], defer_large_scopes=True), series_id)
+        db, user["id"], await build_estimator(db, user["id"], cached_only=True), series_id)
 
     return _series_card(
         s, status=status,
@@ -897,7 +897,7 @@ async def novel_card(novel_id: int, user=Depends(get_current_user), db=Depends(g
             (user["id"], novel_id))
     ).fetchone()
     reading = await _novel_reading(
-        db, user["id"], await build_estimator(db, user["id"], defer_large_scopes=True), novel_id)
+        db, user["id"], await build_estimator(db, user["id"], cached_only=True), novel_id)
 
     return _novel_card(
         row, status=status_row["status"] if status_row else None,
@@ -1006,7 +1006,7 @@ async def home(request: Request, user=Depends(get_current_user), db=Depends(get_
     # 110 ms for this handler before they existed, 182 ms after, of which
     # 46 ms is the series pass and 24 ms the novel one. The estimator they
     # share is 2 ms of that, and would have been 4 building it twice.
-    estimator = await build_estimator(db, user["id"], defer_large_scopes=True)
+    estimator = await build_estimator(db, user["id"], cached_only=True)
     series_reading = await _series_reading(db, user["id"], estimator)
     novel_reading = await _novel_reading(db, user["id"], estimator)
 

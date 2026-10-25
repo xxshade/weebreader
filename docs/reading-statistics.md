@@ -120,8 +120,9 @@ the remaining-time estimate uses words, so the two need not decrease at the
 same rate. Existing measurements are preserved, including word counts recorded
 before the soft-hyphen correction; new passages use the corrected counting rule.
 
-Large shelves and novel scopes render before their cold word inventories are
-prepared. Their estimates fill through a serialized endpoint with a separate
+Library pages and card fragments render before any uncached word inventory is
+prepared, including one-book shelves and small novel volumes. A changed reading
+position may require a new inventory; that work never runs in the HTML request. Their estimates fill through a serialized endpoint with a separate
 database connection, so inventory work cannot occupy the interactive connection
 pool or block login, search and page navigation. Cache quota checks are amortized
 across writes; the disposable cache can temporarily exceed its target by a small

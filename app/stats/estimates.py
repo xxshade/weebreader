@@ -94,7 +94,7 @@ STATE_DETAILS = {
 
 
 class ReadingEstimator:
-    defer_large_scopes = False
+    cached_only = False
     def __init__(self, *, spent_by_item, rate_by_series, comic_fallback_rate=None,
                  db=None, user_id=None, samples=None):
         self.spent_by_item = spent_by_item
@@ -125,7 +125,6 @@ class ReadingEstimator:
     async def prepare_items(self, items):
         """Parse only requested text items; warm inventory work is cache hits."""
         ids = {item['id'] for item in items if item['file_format'] == 'epub'}
-        deferred = self.defer_large_scopes and len(ids) > 64
         requested = list(ids - self.item_estimates.keys())
         rows = {}
         for start in range(0, len(requested), 500):
@@ -167,14 +166,13 @@ class ReadingEstimator:
                 stat = await asyncio.to_thread(Path(row['file_path']).stat)
                 fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
                     stat.st_mtime_ns, section, block, offset, rules, 1))
-                if self.defer_large_scopes:
+                if self.cached_only:
                     saved = await asyncio.to_thread(snapshots.load, scope, fingerprint)
                     if saved is not None:
                         self.item_estimates[identity] = Estimate(*saved)
                         self.item_states[identity] = 'available'
                         continue
-                if deferred:
-                    continue
+                    continue  # HTML renders never wait for a cold inventory.
                 if section == block == offset == 0:
                     total = remaining = await asyncio.to_thread(inventory_epub_total, row['file_path'], row['file_hash'], rules)
                 else:
@@ -221,14 +219,13 @@ class ReadingEstimator:
         scope_key = (self.cache_account, 'novel', novel_id, volume_id)
         fingerprint = snapshots.signature((revision[0] if revision else 0,
             [row[0] for row in identities], tuple(position) if position else None, rules, 1))
-        if self.defer_large_scopes:
+        if self.cached_only:
             saved = await asyncio.to_thread(snapshots.load, scope_key, fingerprint)
             if saved is not None:
                 self.novel_estimates[key] = Estimate(*saved)
                 self.novel_states[key] = 'available'
                 return
-            if pending[0] > 64:
-                return
+            return  # Small scopes can also contain expensive chapter text.
         remaining = 0
         async with self.db.execute('SELECT chapters.id,chapters.content_html ' + query, params) as cursor:
             while batch := await cursor.fetchmany(16):
@@ -353,7 +350,7 @@ async def _fetch_all(db, sql, params=()):
     return await (await db.execute(sql, params)).fetchall()
 
 
-async def build_estimator(db, user_id: int, *, defer_large_scopes=False) -> ReadingEstimator:
+async def build_estimator(db, user_id: int, *, cached_only=False) -> ReadingEstimator:
     spent_by_item = {
         r["item_id"]: r["seconds"]
         for r in await _fetch_all(
@@ -445,7 +442,7 @@ async def build_estimator(db, user_id: int, *, defer_large_scopes=False) -> Read
     )
     account = await (await db.execute('SELECT password_hash,created_at FROM users WHERE id=?', (user_id,))).fetchone()
     estimator.cache_account = (user_id, snapshots.signature(tuple(account) if account else None))
-    estimator.defer_large_scopes = defer_large_scopes
+    estimator.cached_only = cached_only
     return estimator
 
 

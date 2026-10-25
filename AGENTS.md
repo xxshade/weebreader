@@ -437,7 +437,8 @@ AVIF cost 2x decode on a phone).
   bounded derived SQLite cache (no main writer/pool slot); source/position/rules
   invalidate them while pace refreshes asynchronously. Chapter content revisions
   must change even on same-size edits. Series totals retain known time and count
-  missing estimates explicitly. Account/work pace totals use an append-only ledger trigger and a once-only
+  missing estimates explicitly. Every HTML render is cache-only, even for one
+  EPUB or chapter: saving a new anchor can require a full inventory. Account/work pace totals use an append-only ledger trigger and a once-only
   backfill receipt. Removed content retains account evidence; per-work totals
   cascade so reused IDs inherit none. See `docs/reading-statistics.md`.
 - Comic estimates retain pages/series rates, with the 95th percentile of
