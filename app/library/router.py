@@ -142,6 +142,7 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
             # size on one side and the status and percentage on the other.
             "eta": estimator.for_item(it, it),
             "text_eta": it["file_format"] == "epub",
+            "eta_state": estimator.item_states.get(it["id"], "complete"),
             # The estimate is about the item the card already names, so
             # there is nothing further to say (see the novel branch).
             "eta_scope": "",
@@ -189,6 +190,7 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
             # card hands over the whole novel (see _novel_reading).
             "eta": estimator.for_novel(nv["id"], nv["volume_id"]),
             "text_eta": bool(nv["volume_has_unread"]),
+            "eta_state": estimator.novel_states.get((nv["id"], nv["volume_id"]), "complete"),
             "eta_volume_id": nv["volume_id"],
             "last_read_at": nv["updated_at"],
             "clear_url": f"/novels/{nv['id']}/clear-status",
@@ -207,14 +209,14 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
 # A namedtuple rather than a dict for the reason Estimate is one: Jinja
 # resolves attribute access with getattr BEFORE the mapping, so a dict key
 # named `items` or `keys` silently becomes the method (see AGENTS.md).
-ShelfReading = namedtuple("ShelfReading", "unread remaining text_eta", defaults=(False,))
+ShelfReading = namedtuple("ShelfReading", "unread remaining text_eta missing state", defaults=(False, 0, "complete"))
 
 # The same pair for a novel, plus the one thing the card needs that comes
 # out of the very same grouping of `chapters`: when its newest chapter
 # turned up, which is a novel's `modified_at` (a novel row itself never
 # changes after creation). Riding along rather than being its own GROUP BY
 # over the same table for the same rows.
-NovelShelf = namedtuple("NovelShelf", "unread remaining newest text_eta", defaults=(False,))
+NovelShelf = namedtuple("NovelShelf", "unread remaining newest text_eta missing state", defaults=(False, 0, "complete"))
 
 # What a card with nothing on that side of it shows: no badge (the template
 # hides it at zero) and no time. A series whose every item is missing lands
@@ -274,7 +276,8 @@ async def _series_reading(db, user_id: int, estimator, series_id: int | None = N
         by_series.setdefault(row["series_id"], []).append(row)
     return {
         sid: ShelfReading(unread=len(items), remaining=estimator.total_remaining(items),
-                          text_eta=any(item["file_format"] == "epub" for item in items))
+                          text_eta=any(item["file_format"] == "epub" for item in items),
+                          missing=estimator.missing_items(items), state=estimator.series_state(items))
         for sid, items in by_series.items()
     }
 
@@ -305,6 +308,7 @@ async def _novel_reading(db, user_id: int, estimator, novel_id: int | None = Non
             unread=row["unread"] or 0,
             remaining=estimate.remaining if estimate else None,
             newest=row["newest"], text_eta=bool(row["unread"]),
+            state=estimator.novel_states.get((row["novel_id"], None), "complete"),
         )
     return shelf
 
@@ -355,6 +359,7 @@ async def _load_series_items(db, user_id: int, series):
     # responses) shows the same thing without having to remember to ask.
     estimator = await build_estimator(db, user_id, defer_large_scopes=True)
     await estimator.prepare_items(items)
+    items = [dict(item, estimate_state=estimator.item_states.get(item["id"], "complete")) for item in items]
     eta_map = {}
     for item in items:
         estimate = estimator.for_item(item, progress_map.get(item["id"]))
@@ -760,6 +765,7 @@ def _series_card(row, *, status, last_read_at, reading, tracked_count, tracker_t
         "unread_count": reading.unread,
         "remaining_seconds": reading.remaining,
         "text_eta": reading.text_eta,
+        "eta_missing": reading.missing, "eta_state": reading.state,
         # The tracking dot, and what "linked to all of them" means for it.
         "tracked_count": tracked_count,
         "tracker_total": tracker_total,
@@ -809,6 +815,7 @@ def _novel_card(row, *, status, last_read_at, reading,
         "unread_count": reading.unread,
         "remaining_seconds": reading.remaining,
         "text_eta": reading.text_eta,
+        "eta_missing": reading.missing, "eta_state": reading.state,
         "tracked_count": tracked_count,
         "tracker_total": tracker_total,
         "library_id": "novels",
@@ -1229,7 +1236,7 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
     estimator = await build_estimator(db, user["id"])
     results = []
     for key, (kind, identity, volume) in parsed.items():
-        estimate, collecting = None, False
+        estimate, state, missing = None, "complete", 0
         if kind == "item":
             item = await (await db.execute("SELECT * FROM items WHERE id=? AND file_format='epub'",
                                           (identity,))).fetchone()
@@ -1239,7 +1246,7 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
                     (user["id"], identity))).fetchone()
                 await estimator.prepare_items([item])
                 estimate = estimator.for_item(item, progress)
-                collecting = estimate is None and (progress is None or progress["status"] != "completed")
+                state = estimator.item_states.get(identity, "content_unavailable")
         elif kind == "novel":
             scope = "AND chapters.volume_id=?" if volume is not None else ""
             parameters = (user["id"], identity, volume) if volume is not None else (user["id"], identity)
@@ -1250,16 +1257,16 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
             if unread["n"]:
                 await estimator.prepare_novel(identity, volume)
                 estimate = estimator.for_novel(identity, volume)
-                collecting = estimate is None
+                state = estimator.novel_states.get((identity, volume), "content_unavailable")
         else:
             reading = (await _series_reading(db, user["id"], estimator, identity)).get(identity, NOTHING_LEFT)
-            if reading.remaining is not None:
-                # Aggregates need no projected total: the server owns their scope.
-                results.append({"key": key, "remaining": reading.remaining, "total": None, "collecting": False})
-                continue
-            collecting = reading.text_eta and bool(reading.unread)
+            state, missing = reading.state, reading.missing
+            results.append({"key": key, "remaining": reading.remaining, "total": None,
+                            "collecting": state == "collecting", "state": state, "missing": missing})
+            continue
         results.append({"key": key, "remaining": estimate.remaining if estimate else None,
-                        "total": estimate.total if estimate else None, "collecting": collecting})
+                        "total": estimate.total if estimate else None, "collecting": state == "collecting",
+                        "state": state, "missing": missing})
     return {"estimates": results}
 
 

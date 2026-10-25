@@ -41,6 +41,11 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Work language | The language used to interpret one book or web novel, supplied by its metadata or chosen by the reader for that work. |
 | Remaining reading time | An approximate duration for the text still ahead of the saved reading position, based on valid pace evidence. It is distinct from the time already recorded and from a promise about wall-clock completion. |
 
+| Last valid estimate | The most recent successful reading-time prediction for the same account, content, reading position and text replacements. It remains useful while reading pace is refreshed. |
+| Partial remaining time | The sum of known remaining times in a series, explicitly accompanied by the count of unfinished items without estimates. It is not a prediction for the entire series. |
+| Calculating estimate | A requested prediction that has not yet produced a result. It is distinct from insufficient reading pace evidence or unavailable content. |
+| Unavailable estimate | A prediction prevented by unreadable or missing content, an incompatible saved position, or a failed request. Its cause is distinct from insufficient pace evidence. |
+
 ## Reading statistics
 
 | Term | Meaning |

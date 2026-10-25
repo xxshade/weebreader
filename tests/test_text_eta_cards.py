@@ -89,10 +89,10 @@ function formatDuration(seconds){ return String(seconds); }
 function makeNode(kind,id,volume){
     const card={dataset:{eta:'old'},cover:{identity:'same'}};
     return {dataset:{textEtaKind:kind,textEtaId:String(id),...(volume?{textEtaVolume:String(volume)}:{})},
-        isConnected:true,textContent:'old',closest:()=>card,card};
+        isConnected:true,textContent:'old',closest:()=>card,card,setAttribute(){},removeAttribute(){}};
 }
 let nodes=[];
-const document={querySelectorAll:()=>nodes};
+const document={querySelectorAll:()=>nodes,addEventListener(){}};
 '''
         result=subprocess.run(['node','-'],input=harness+functions+'\n(async()=>{\n'+test+'\n})().catch(error=>{ console.error(error); process.exitCode=1; });',
                               text=True,capture_output=True,check=False,cwd=ROOT)
@@ -110,9 +110,9 @@ global.fetch=async(url,request)=>{
     assert.equal(url,'/library/reading-estimates');
     submitted=JSON.parse(request.body).targets;
     return {ok:true,json:async()=>({estimates:[
-        {key:'item:7:',remaining:12600,total:20000,collecting:false},
-        {key:'novel:2:',remaining:800,total:800,collecting:false},
-        {key:'novel:2:20',remaining:null,total:null,collecting:true}]})};
+        {key:'item:7:',remaining:12600,total:20000,collecting:false,state:'available'},
+        {key:'novel:2:',remaining:800,total:800,collecting:false,state:'available'},
+        {key:'novel:2:20',remaining:null,total:null,collecting:true,state:'collecting'}]})};
 };
 await refreshTextEstimates();
 assert.equal(submitted.length,3);
@@ -130,11 +130,11 @@ let release;
 global.fetch=()=>new Promise(resolve=>{release=resolve;});
 const pending=refreshTextEstimates();
 scheduleTextEstimates();
-release({ok:true,json:async()=>({estimates:[{key:'item:7:',remaining:999,total:999,collecting:false}]})});
+release({ok:true,json:async()=>({estimates:[{key:'item:7:',remaining:999,total:999,collecting:false,state:'available'}]})});
 await pending;
 assert.equal(node.textContent,'old','older request must not overwrite later progress');
 assert.equal(typeof queued,'function');
-global.fetch=async()=>({ok:true,json:async()=>({estimates:[{key:'item:7:',remaining:100,total:200,collecting:false}]})});
+global.fetch=async()=>({ok:true,json:async()=>({estimates:[{key:'item:7:',remaining:100,total:200,collecting:false,state:'available'}]})});
 await queued();
 assert.equal(node.textContent,'~100');
 ''')
@@ -145,7 +145,7 @@ const a=makeNode('item',7),b=makeNode('item',7); nodes=[a,b];
 b.isConnected=false;
 global.fetch=async(url,request)=>{
     assert.equal(JSON.parse(request.body).targets.length,1);
-    return {ok:true,json:async()=>({estimates:[{key:'item:7:',remaining:50,total:100,collecting:false}]})};
+    return {ok:true,json:async()=>({estimates:[{key:'item:7:',remaining:50,total:100,collecting:false,state:'available'}]})};
 };
 await refreshTextEstimates();
 assert.equal(a.textContent,'~50'); assert.equal(b.textContent,'old');

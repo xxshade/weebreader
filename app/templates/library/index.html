@@ -281,8 +281,8 @@
                 {# Home text scopes are independently refreshed; no chapter
                    percentage may scale an entire novel or series. #}
                 {% if card.text_eta %}
-                <p class="text-xs text-neutral-500 truncate" data-text-eta-kind="{{ card.kind }}" data-text-eta-id="{{ card.id }}"
-                   title="{% if card.remaining_seconds is not none %}About {{ card.remaining_seconds | duration }} left, based on measured reading pace{% else %}Collecting valid reading samples{% endif %}">{% if card.remaining_seconds is not none %}~{{ card.remaining_seconds | duration }}{% else %}Collecting data{% endif %}</p>
+                <p class="text-xs text-neutral-500" data-text-eta-kind="{{ card.kind }}" data-text-eta-id="{{ card.id }}" data-estimate-state="{{ card.eta_state }}"
+                   title="{% if card.remaining_seconds is not none %}About {{ card.remaining_seconds | duration }} left, based on measured reading pace{% else %}{{ estimate_details.get(card.eta_state, "") }}{% endif %}">{% if card.remaining_seconds is not none %}~{{ card.remaining_seconds | duration }}{% if card.eta_missing %} known · {{ card.eta_missing }} item{{ "s" if card.eta_missing != 1 else "" }} without estimate{% endif %}{% else %}{{ estimate_labels.get(card.eta_state, "Calculating…") }}{% endif %}</p>
                 {% elif card.remaining_seconds %}
                 <p class="text-xs text-neutral-500 truncate"
                    title="About {{ card.remaining_seconds | duration }} of this left to read, going by how fast you read">~{{ card.remaining_seconds | duration }}</p>

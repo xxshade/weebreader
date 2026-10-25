@@ -487,7 +487,7 @@ async def _render_item_card(request: Request, db, user_id: int, item_id: int):
     return templates.TemplateResponse(
         request, "library/_item_card.html",
         {
-            "series": series, "item": item,
+            "series": series, "item": dict(item, estimate_state=estimator.item_states.get(item_id, "complete")),
             "progress_map": {item_id: progress} if progress else {},
             "eta_map": {item_id: eta} if eta is not None else {},
             # The card carries its position in the automatic order (see

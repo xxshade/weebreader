@@ -679,6 +679,33 @@
         textEstimatesDirty = true;
         scheduleRefresh("text-estimates", refreshTextEstimates);
     }
+    function renderTextEstimate(node, value) {
+        node.hidden = value.remaining === null && value.state === "complete";
+        const scope = node.dataset.etaScope ? ` in ${node.dataset.etaScope}` : "";
+        const labels = {collecting: "Collecting data", calculating: "Calculating…",
+            position_unavailable: "Position unavailable", content_unavailable: "Content unavailable · retry",
+            temporary_failure: "Estimate failed · retry"};
+        const details = {collecting: "Not enough valid reading samples yet (1,000 words, 5 minutes, 3 samples).",
+            calculating: "The estimate is being calculated.",
+            position_unavailable: "The saved position cannot be matched to the text. Resume reading and save a new position.",
+            content_unavailable: "The content could not be read. Check the file or chapter download, then retry.",
+            temporary_failure: "The estimate request failed. Activate to retry."};
+        const partial = value.missing ? ` known · ${value.missing} item${value.missing === 1 ? "" : "s"} without estimate` : "";
+        node.dataset.estimateState = value.state;
+        node.textContent = value.remaining === null ? (labels[value.state] || "Estimate unavailable")
+            : `~${formatDuration(value.remaining)}${partial}`;
+        node.title = value.remaining === null ? (details[value.state] || "Estimate unavailable")
+            : `About ${formatDuration(value.remaining)}${partial} left${scope}, based on measured reading pace`
+                + (value.missing && details[value.state] ? ". " + details[value.state] : "");
+        node.setAttribute("aria-label", node.textContent + ". " + node.title);
+        if (["content_unavailable", "temporary_failure"].includes(value.state)) {
+            node.setAttribute("role", "button");
+            node.tabIndex = 0;
+        } else {
+            node.removeAttribute("role");
+            node.removeAttribute("tabindex");
+        }
+    }
     async function refreshTextEstimates() {
         if (textEstimatesBusy) return;
         textEstimatesBusy = true;
@@ -697,8 +724,9 @@
                 const response = await fetch("/library/reading-estimates", {
                     method: "POST", headers: {"Content-Type": "application/json"},
                     body: JSON.stringify({targets: selected.slice(start, start + 100)}),
+                    signal: AbortSignal.timeout(60000),
                 });
-                if (!response.ok) return false;
+                if (!response.ok) throw new Error("Estimate request failed");
                 const data = await response.json();
                 // A newer progress/sample event invalidates this response even
                 // if it arrives before the replacement request can start.
@@ -710,11 +738,7 @@
                         id: Number(node.dataset.textEtaId), volume_id: Number(node.dataset.textEtaVolume) || undefined});
                     const value = results.get(key);
                     if (!value) continue;
-                    node.hidden = value.remaining === null && !value.collecting;
-                    const scope = node.dataset.etaScope ? ` in ${node.dataset.etaScope}` : "";
-                    node.textContent = value.remaining === null ? "Collecting data" : `~${formatDuration(value.remaining)}`;
-                    node.title = value.remaining === null ? "Collecting valid reading samples"
-                        : `About ${formatDuration(value.remaining)} left${scope}, based on measured reading pace`;
+                    renderTextEstimate(node, value);
                     const card = node.closest("[data-item-id]");
                     if (card) {
                         if (value.total === null) delete card.dataset.eta;
@@ -723,12 +747,37 @@
                 }
             }
             return true;
-        } catch { return false; }
+        } catch {
+            if (generation !== textEstimatesGeneration) return false;
+            for (const node of nodes) {
+                if (!node.isConnected) continue;
+                node.hidden = false;
+                // Preserve a useful last result through a transport failure.
+                if (!node.textContent.startsWith("~")) node.textContent = "Estimate failed · retry";
+                node.dataset.estimateState = "temporary_failure";
+                node.title = "The estimate request failed. Activate to retry.";
+                node.setAttribute("aria-label", node.textContent + ". " + node.title);
+                node.setAttribute("role", "button");
+                node.tabIndex = 0;
+            }
+            return false;
+        }
         finally {
             textEstimatesBusy = false;
             if (textEstimatesDirty) scheduleRefresh("text-estimates", refreshTextEstimates);
         }
     }
+
+    function retryEstimate(event) {
+        const node = event.target.closest?.("[data-text-eta-kind]");
+        if (!node || !["content_unavailable", "temporary_failure"].includes(node.dataset.estimateState)) return;
+        if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        scheduleTextEstimates();
+    }
+    document.addEventListener("click", retryEstimate, true);
+    document.addEventListener("keydown", retryEstimate, true);
 
     function applyEta(el, percent) {
         const eta = el.querySelector(".reading-eta");
@@ -1107,14 +1156,16 @@
         // grids under the same data-novel-id.
         if (card.remaining_seconds || card.text_eta) {
             const eta = document.createElement("p");
-            eta.className = "text-xs text-neutral-500 truncate";
+            eta.className = "text-xs text-neutral-500";
             const left = formatDuration(card.remaining_seconds);
-            eta.textContent = card.remaining_seconds === null ? "Collecting data" : `~${left}`;
-            eta.title = card.remaining_seconds === null ? "Collecting valid reading samples"
-                : `About ${left} of this left to read, going by how fast you read`;
             if (card.text_eta) {
                 eta.dataset.textEtaKind = card.kind;
                 eta.dataset.textEtaId = String(card.id);
+                renderTextEstimate(eta, {remaining: card.remaining_seconds, state: card.eta_state,
+                    missing: card.eta_missing});
+            } else {
+                eta.textContent = `~${left}`;
+                eta.title = `About ${left} of this left to read, going by how fast you read`;
             }
             a.appendChild(eta);
         }

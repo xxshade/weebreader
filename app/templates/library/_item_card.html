@@ -66,8 +66,9 @@
                 {%- elif page_count %}{{ page_count }} page{{ 's' if page_count != 1 else '' }}{% endif -%}
             </span>
             {% if text_eta %}
-            <span class="reading-eta flex-shrink-0" data-text-eta-kind="item" data-text-eta-id="{{ item.id }}"
-                  title="{% if eta %}About {{ eta.remaining | duration }} left, based on measured reading pace{% else %}Collecting valid reading samples{% endif %}">{% if eta %}~{{ eta.remaining | duration }}{% else %}Collecting data{% endif %}</span>
+            {% set state = item.estimate_state | default("calculating") %}
+            <span class="reading-eta flex-shrink-0" data-text-eta-kind="item" data-text-eta-id="{{ item.id }}" data-estimate-state="{{ state }}"
+                  title="{% if eta %}About {{ eta.remaining | duration }} left, based on measured reading pace{% else %}{{ estimate_details.get(state, "") }}{% endif %}">{% if eta %}~{{ eta.remaining | duration }}{% else %}{{ estimate_labels.get(state, "Calculating…") }}{% endif %}</span>
             {% elif eta %}
             <span class="reading-eta flex-shrink-0" data-eta-total="{{ eta.total | round | int }}"
                   title="About {{ eta.remaining | duration }} left, going by how fast you read">~{{ eta.remaining | duration }}</span>

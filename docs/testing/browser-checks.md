@@ -28,6 +28,11 @@ and an out-of-bounds help bubble; both engines must reject them.
 `test_text_eta_browser.py` exercises the real HTTP/SSE path from insufficient
 evidence to a measured prediction, exact saved positions, distinct volume and
 whole-novel scopes, and updates that retain the document, cards and covers.
+It also holds the real refresh request across a reload to check the first
+render and every observed update, exercises partial series totals and retries
+repaired unread content by keyboard, and retains a known value on HTTP failure.
+Controls disable snapshot reuse, hide partial identification and erase a known
+result on failure; both engines must reject each defect.
 The backend estimator and inventory tests cover source offsets, gradual rate
 adaptation, legacy history, content removal, cache invalidation and backfill.
 

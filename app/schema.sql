@@ -890,3 +890,23 @@ CREATE TABLE IF NOT EXISTS novel_pace_totals (
 CREATE TABLE IF NOT EXISTS derived_stats_state (
  name TEXT PRIMARY KEY, version INTEGER NOT NULL
 ) WITHOUT ROWID;
+
+-- Revision tokens avoid reading chapter bodies just to validate an ETA snapshot.
+CREATE TABLE IF NOT EXISTS novel_content_revisions (
+    novel_id INTEGER PRIMARY KEY REFERENCES novels(id) ON DELETE CASCADE,
+    revision TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS estimate_chapter_insert AFTER INSERT ON chapters BEGIN
+    INSERT INTO novel_content_revisions VALUES(NEW.novel_id,lower(hex(randomblob(16))))
+    ON CONFLICT(novel_id) DO UPDATE SET revision=lower(hex(randomblob(16)));
+END;
+CREATE TRIGGER IF NOT EXISTS estimate_chapter_delete AFTER DELETE ON chapters BEGIN
+    INSERT INTO novel_content_revisions SELECT OLD.novel_id,lower(hex(randomblob(16))) WHERE EXISTS(SELECT 1 FROM novels WHERE id=OLD.novel_id)
+    ON CONFLICT(novel_id) DO UPDATE SET revision=lower(hex(randomblob(16)));
+END;
+CREATE TRIGGER IF NOT EXISTS estimate_chapter_update
+AFTER UPDATE OF content_html,volume_id,order_index,novel_id ON chapters BEGIN
+    INSERT INTO novel_content_revisions VALUES(NEW.novel_id,lower(hex(randomblob(16))))
+    ON CONFLICT(novel_id) DO UPDATE SET revision=lower(hex(randomblob(16)));
+    UPDATE novel_content_revisions SET revision=lower(hex(randomblob(16))) WHERE novel_id=OLD.novel_id AND OLD.novel_id<>NEW.novel_id;
+END;
