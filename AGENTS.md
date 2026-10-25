@@ -433,12 +433,16 @@ AVIF cost 2x decode on a phone).
   are distinct states. Novel scope is explicit: Reading volume versus whole novel.
   `prepare_items` / `prepare_novel` lazily load only requested word inventories.
   Inventory caches contain offsets/counts, not source text; source/rules/version
-  invalidate them. Account-scoped last-valid duration snapshots live in a separate
+  invalidate them. Account-scoped remaining/total word snapshots live in a separate
   bounded derived SQLite cache (no main writer/pool slot); source/position/rules
-  invalidate them while pace refreshes asynchronously. Chapter content revisions
+  invalidate them. Both HTML and the authoritative endpoint apply current pace
+  to these counts: unchanged requests read the index once, traverse no source
+  inventories and rewrite no snapshots. Old duration snapshots upgrade once.
+  Chapter content revisions
   must change even on same-size edits. Series totals retain known time and count
   missing estimates explicitly. Every HTML render is cache-only, even for one
-  EPUB or chapter: saving a new anchor can require a full inventory. Account/work pace totals use an append-only ledger trigger and a once-only
+  EPUB or chapter: saving a new anchor can require a full inventory.
+  Account/work pace totals use an append-only ledger trigger and a once-only
   backfill receipt. Removed content retains account evidence; per-work totals
   cascade so reused IDs inherit none. See `docs/reading-statistics.md`.
 - Comic estimates retain pages/series rates, with the 95th percentile of

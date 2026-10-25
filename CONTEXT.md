@@ -11,6 +11,7 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Anticipated navigation | Preparing a destination before the user completes activation of its link. This does not itself open the destination or start reading. |
 | Destination viewport | The portion of a destination visible immediately after opening, with saved display and listing preferences applied. |
 | Visible cover readiness | The point when the destination viewport's covers can be displayed. It is distinct from the arrival of the destination's HTML and from loading all covers in a work. |
+| Page usability | The point when the destination is visible and its relevant controls respond. It is distinct from completion of estimate updates and from completion of every network request. |
 | “Unread only” filter | A view restricted to content that has not been completed, including both unread and partially read content. A grouped work qualifies when at least one item or listed chapter remains unfinished. It is distinct from the individual Unread status. |
 
 ## Text reading
@@ -40,8 +41,8 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Visual hyphenation | Displaying a word across lines with a hyphen where the language permits, without inserting characters into the underlying text. |
 | Work language | The language used to interpret one book or web novel, supplied by its metadata or chosen by the reader for that work. |
 | Remaining reading time | An approximate duration for the text still ahead of the saved reading position, based on valid pace evidence. It is distinct from the time already recorded and from a promise about wall-clock completion. |
-
 | Last valid estimate | The most recent successful reading-time prediction for the same account, content, reading position and text replacements. It remains useful while reading pace is refreshed. |
+| Estimate freshness | Whether a prediction reflects the current content, saved reading position, text replacements and measured reading pace for its account and scope. A last valid estimate may remain useful while a change in pace is incorporated. |
 | Partial remaining time | The sum of known remaining times in a series, explicitly accompanied by the count of unfinished items without estimates. It is not a prediction for the entire series. |
 | Calculating estimate | A requested prediction that has not yet produced a result. It is distinct from insufficient reading pace evidence or unavailable content. |
 | Unavailable estimate | A prediction prevented by unreadable or missing content, an incompatible saved position, or a failed request. Its cause is distinct from insufficient pace evidence. |

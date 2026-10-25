@@ -43,6 +43,21 @@ class AccountUpdates(ProgressCase):
         self.assertEqual(response.status_code, 204)
         self.assertEqual(committed, [({'type': 'account_updated'}, 240)])
 
+    async def test_text_replacement_commit_refreshes_open_estimates(self):
+        from app.library.router import router as library_router
+        self.app.include_router(library_router)
+        committed = []
+        def published(event):
+            with closing(sqlite3.connect(self._tmp.name + '/library.db')) as db:
+                committed.append((event['type'], db.execute(
+                    "SELECT replace_text FROM text_replacements WHERE user_id=1").fetchone()[0]))
+        with patch('app.account_events.events.publish', side_effect=published):
+            response = await self.client.post('/settings/text-replacements', data={
+                'target':'novel:1', 'find_text':'one', 'replace_text':'two words'}, headers={'HX-Request':'true'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(committed, [('account_updated','two words'),('reading_estimate_updated','two words')],
+                         'Replacement changes must refresh estimates after the rule commits')
+
     async def test_confirmed_reading_time_notifies_after_commit(self):
         committed = []
         def published(event):

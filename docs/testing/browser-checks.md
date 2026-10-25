@@ -8,7 +8,8 @@ The reusable Checks workflow runs every desktop suite on standard
 fail-fast disabled. Versions are selected once per workflow and retained for
 all jobs; missing, skipped or failed coverage blocks the aggregate validation
 check. `scripts/ci_validation.py` lists the suites and preserves each runner's
-exit status. Android and performance-measurement tools remain optional.
+exit status. Native Android and standalone comparison tools remain optional. Warm reload
+performance checks are required as part of the text ETA suite.
 
 PRs run this workflow plus a Docker build without registry publication. Release
 runs on pushes to `main` and manual dispatches validate the exact planned source
@@ -33,6 +34,21 @@ render and every observed update, exercises partial series totals and retries
 repaired unread content by keyboard, and retains a known value on HTTP failure.
 Controls disable snapshot reuse, hide partial identification and erase a known
 result on failure; both engines must reject each defect.
+The suite also runs `test_reload_performance_browser.py` against a real HTTP
+server started with 151 distinct 100,000-word EPUBs, ten saved reading anchors
+and novels with 1,817 and 176 distinct chapter bodies. It warms all scopes,
+then repeats ordinary reload, HTTP-cache bypass, the actual Home link and Home
+during a simultaneous estimate request three times at desktop and 320px widths. A preload probe records visible, initialized
+page usability separately from automatic ETA completion; persistent SSE is
+excluded from completion. Server process CPU and every individual measurement
+are printed. Median usability per action has a 500 ms local-runner budget; CPU
+is reported separately. Unchanged snapshot rows must remain byte-for-byte stable
+including row identity, and backend guards forbid source traversal and rewrites.
+A control restores redundant endpoint inventory work and must fail in each
+browser. Cold preparation is reported separately. These are desktop viewport
+simulations, not native LibreWolf or Vivaldi mobile measurements.
+See [the reload investigation](../performance/reading-estimate-reloads.md).
+
 The backend estimator and inventory tests cover source offsets, gradual rate
 adaptation, legacy history, content removal, cache invalidation and backfill.
 

@@ -487,7 +487,9 @@
             .then((r) => (r.ok ? r.json() : null))
             .then((card) => {
                 if (!card) return false;
-                return homeGrid()?.replaceCard(kind, id, buildCardElement(card)) || false;
+                const replaced = homeGrid()?.replaceCard(kind, id, buildCardElement(card)) || false;
+                if (replaced) scheduleTextEstimates();
+                return replaced;
             })
             .catch(() => false);
     }
@@ -818,6 +820,7 @@
     // the fallback works; it just works the slow way.
     function wireHtmx(el) {
         if (el && window.htmx) window.htmx.process(el);
+        scheduleTextEstimates();
     }
 
     function refreshReadingGrid() {

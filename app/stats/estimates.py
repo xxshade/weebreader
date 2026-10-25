@@ -102,6 +102,7 @@ class ReadingEstimator:
         self.comic_fallback_rate = comic_fallback_rate
         self.db, self.user_id = db, user_id
         self.cache_account = user_id
+        self._snapshot_rows = None
         self.samples = samples or {}
         self.item_estimates, self.novel_estimates = {}, {}
         self.completed_items, self.pending_novels = set(), set()
@@ -121,6 +122,16 @@ class ReadingEstimator:
             return seconds / words
         prior = min(PRIOR_WORDS, other_words)
         return (seconds + prior * other_seconds / other_words) / (words + prior)
+
+    async def _cached_estimate(self, scope, fingerprint, rate):
+        if self._snapshot_rows is None:
+            self._snapshot_rows = await asyncio.to_thread(snapshots.read)
+        counts = snapshots.load(scope, fingerprint, rows=self._snapshot_rows)
+        if isinstance(counts, snapshots.WordCounts):
+            return Estimate(counts.remaining * rate, counts.total * rate, 0)
+        if self.cached_only and counts is not None:
+            return Estimate(*counts)  # Legacy duration; revalidated by the endpoint.
+        return None
 
     async def prepare_items(self, items):
         """Parse only requested text items; warm inventory work is cache hits."""
@@ -166,12 +177,12 @@ class ReadingEstimator:
                 stat = await asyncio.to_thread(Path(row['file_path']).stat)
                 fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
                     stat.st_mtime_ns, section, block, offset, rules, 1))
+                saved = await self._cached_estimate(scope, fingerprint, rate)
+                if saved is not None:
+                    self.item_estimates[identity] = saved
+                    self.item_states[identity] = 'available'
+                    continue
                 if self.cached_only:
-                    saved = await asyncio.to_thread(snapshots.load, scope, fingerprint)
-                    if saved is not None:
-                        self.item_estimates[identity] = Estimate(*saved)
-                        self.item_states[identity] = 'available'
-                        continue
                     continue  # HTML renders never wait for a cold inventory.
                 if section == block == offset == 0:
                     total = remaining = await asyncio.to_thread(inventory_epub_total, row['file_path'], row['file_hash'], rules)
@@ -186,7 +197,7 @@ class ReadingEstimator:
             if remaining is not None:
                 self.item_estimates[identity] = Estimate(remaining * rate, total * rate, 0)
                 self.item_states[identity] = 'available'
-                await asyncio.to_thread(snapshots.save, scope, fingerprint, self.item_estimates[identity])
+                await asyncio.to_thread(snapshots.save, scope, fingerprint, snapshots.WordCounts(remaining, total))
             else:
                 self.item_states[identity] = 'position_unavailable'
 
@@ -219,12 +230,12 @@ class ReadingEstimator:
         scope_key = (self.cache_account, 'novel', novel_id, volume_id)
         fingerprint = snapshots.signature((revision[0] if revision else 0,
             [row[0] for row in identities], tuple(position) if position else None, rules, 1))
+        saved = await self._cached_estimate(scope_key, fingerprint, rate)
+        if saved is not None:
+            self.novel_estimates[key] = saved
+            self.novel_states[key] = 'available'
+            return
         if self.cached_only:
-            saved = await asyncio.to_thread(snapshots.load, scope_key, fingerprint)
-            if saved is not None:
-                self.novel_estimates[key] = Estimate(*saved)
-                self.novel_states[key] = 'available'
-                return
             return  # Small scopes can also contain expensive chapter text.
         remaining = 0
         async with self.db.execute('SELECT chapters.id,chapters.content_html ' + query, params) as cursor:
@@ -253,7 +264,7 @@ class ReadingEstimator:
                     remaining += words
         self.novel_estimates[key] = Estimate(remaining * rate, remaining * rate, 0)
         self.novel_states[key] = 'available'
-        await asyncio.to_thread(snapshots.save, scope_key, fingerprint, self.novel_estimates[key])
+        await asyncio.to_thread(snapshots.save, scope_key, fingerprint, snapshots.WordCounts(remaining, remaining))
 
     def for_novel(self, novel_id, volume_id=None):
         return self.novel_estimates.get((novel_id, volume_id))

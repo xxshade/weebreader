@@ -123,6 +123,16 @@ class TextEtaChecks(audit.AuditChecks):
             self.wait('!etaProbe.reading.isConnected || etaProbe.reading.textContent!=='+repr(previous))
             self.assertTrue(self.js('return etaProbe.reading.isConnected'),
                             'Same-chapter progress must preserve the existing Reading card')
+            previous=self.js('return etaProbe.reading.textContent')
+            session.post(self.base+'/settings/text-replacements', data={
+                'target':'novel:100','find_text':'word','replace_text':'word extra'},
+                headers={'HX-Request':'true'},timeout=10).raise_for_status()
+            try:
+                WebDriverWait(self.driver,10).until(lambda _: self.js('return etaProbe.reading.textContent')!=previous)
+            except TimeoutException:
+                pass
+            self.assertNotEqual(self.js('return etaProbe.reading.textContent'),previous,
+                                'Replacement changes must refresh an available estimate')
         self.assertEqual(self.js('return etaProbe.document'),marker,'ETA refresh must not reload the document')
         self.assertTrue(self.js('return etaProbe.reading.isConnected && etaProbe.whole.isConnected && etaProbe.cover.isConnected'),
                         'ETA refresh must preserve existing cards and covers')
@@ -208,6 +218,8 @@ if __name__=='__main__':
     if not baseline_passed(result,len(selected_browsers(ARGS))*4):
         sys.exit(1)
     for filename,before,after,signal in (
+        ('app/account_events.py', "if path.startswith('/settings/text-replacements'):", 'if False:',
+         'Replacement changes must refresh an available estimate'),
         ('app/static/js/library-events.js','reading_estimate_updated: () => scheduleTextEstimates(),',
          'reading_estimate_updated: () => {},','New valid reading activity must refresh Collecting data through SSE'),
         ('app/static/js/library-events.js',
@@ -247,3 +259,6 @@ if __name__=='__main__':
             print(output.getvalue())
             raise AssertionError('Each selected browser must reject the text ETA defect')
         print(' and '.join(browser.title() for browser in selected_browsers(ARGS))+' rejected: '+signal,flush=True)
+
+    from test_reload_performance_browser import run as run_reload_checks
+    run_reload_checks(ARGS)
