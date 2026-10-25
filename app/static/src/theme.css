@@ -1337,3 +1337,7 @@ body:has(#reader-root) {
 .app-dialog::backdrop {
     background-color: rgb(0 0 0 / 0.6);
 }
+
+/* Estimate diagnostics and partial totals remain readable at small cover sizes. */
+[data-text-eta-kind] { overflow-wrap: anywhere; }
+.reading-eta[data-text-eta-kind] { min-width: 0; flex-shrink: 1; text-align: right; }

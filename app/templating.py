@@ -17,3 +17,7 @@ register_asset_versioning(templates)
 register_events_stamp(templates)
 register_ui_prefs(templates)
 register_template_filters(templates)
+
+from app.stats.estimates import STATE_LABELS, STATE_DETAILS
+
+templates.env.globals.update(estimate_labels=STATE_LABELS, estimate_details=STATE_DETAILS)

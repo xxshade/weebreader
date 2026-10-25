@@ -4,10 +4,14 @@ from contextlib import closing
 import io
 from pathlib import Path
 import sqlite3
+import shutil
 import sys
 import time
 import unittest
 import uuid
+import zipfile
+
+from selenium.webdriver.common.keys import Keys
 
 import requests
 from selenium.common.exceptions import TimeoutException
@@ -19,13 +23,23 @@ import test_audit_browser as audit
 
 ROOT = Path(__file__).resolve().parents[1]
 PROBE = """() => {
-    window.etaProbe={document:crypto.randomUUID(),errors:[],connections:0,requests:0};
+    window.etaProbe={document:crypto.randomUUID(),errors:[],connections:0,requests:0,seen:[]};
+    new MutationObserver(()=>{
+        const node=document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]');
+        if(node) etaProbe.seen.push(node.textContent);
+    }).observe(document,{childList:true,subtree:true,characterData:true});
     window.addEventListener('error',e=>etaProbe.errors.push(String(e.error||e.message)));
     window.addEventListener('unhandledrejection',e=>etaProbe.errors.push(String(e.reason)));
     document.addEventListener('htmx:sse:after:connection',()=>etaProbe.connections++);
     const original=fetch;
     window.fetch=(...args)=>{
-        if(String(args[0])==='/library/reading-estimates') etaProbe.requests++;
+        if(String(args[0])==='/library/reading-estimates') {
+            etaProbe.requests++;
+            if(sessionStorage.getItem('hold-estimates')) return new Promise(resolve=>{
+                etaProbe.release=()=>resolve(original(...args));etaProbe.held=true;
+            });
+            if(etaProbe.fail) return Promise.resolve(new Response('',{status:503}));
+        }
         return original(...args);
     };
 }"""
@@ -117,11 +131,68 @@ class TextEtaChecks(audit.AuditChecks):
         self.assertEqual(self.js('return etaProbe.errors'),[])
 
 
-def suite(*, mobile=True):
-    return unittest.TestSuite(type(browser.title()+'TextEta'+str(width),(TextEtaChecks,),
-        {'browser':browser,'viewport_width':width})(
-            'test_samples_refresh_estimates_and_preserve_document_covers_and_scope')
-        for browser in selected_browsers(ARGS) for width in ((1280,320) if mobile else (1280,)))
+
+class EstimateAvailabilityChecks(TextEtaChecks):
+    @classmethod
+    def seed_readers(cls):
+        super().seed_readers()
+        path = cls.fixture.fixture / 'estimate.epub'
+        with zipfile.ZipFile(path, 'w') as book:
+            book.writestr('META-INF/container.xml', '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>')
+            book.writestr('content.opf', '<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="a" href="a.xhtml"/></manifest><spine><itemref idref="a"/></spine></package>')
+            book.writestr('a.xhtml', '<p>'+'word '*1000+'</p>')
+        with closing(sqlite3.connect(cls.fixture.data / 'library.db')) as db, db:
+            db.execute("INSERT INTO page_reads(user_id,kind,started_at,seconds,cap_seconds,visit_id,pace_words,pace_seconds,pace_samples) VALUES(1,'epub',datetime('now'),150,150,'availability-fixture',1500,150,1)")
+            db.execute("INSERT INTO series(id,library_id,name,sort_name,folder_path) VALUES(200,1,'Partial ETA','partial eta','/partial')")
+            for identity, source in ((200,path),(201,path.with_name('missing.epub'))):
+                db.execute("INSERT INTO items(id,series_id,library_id,title,sort_title,file_path,file_format,file_hash,file_size) VALUES(?,200,1,?,?,?,'epub',?,100)",
+                           (identity, f'ETA {identity}',f'eta{identity}',str(source),str(identity)))
+            db.execute("INSERT INTO novels(id,title,source_url,active) VALUES(200,'Large ETA','https://example.invalid/large',0)")
+            db.execute('INSERT INTO volumes(id,novel_id,number) VALUES(200,200,1)')
+            for identity in range(200,265):
+                db.execute("INSERT INTO chapters(id,novel_id,volume_id,title,url,content_html,content_size) VALUES(?,200,200,'Chapter',?,'<p>one two</p>',14)",
+                           (identity,f'https://example.invalid/large/{identity}'))
+
+    def test_saved_partial_estimates_and_retry(self):
+        self.driver.get(self.base+'/')
+        self.wait("document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]')?.textContent.startsWith('~')")
+        self.wait("document.querySelector('[data-text-eta-kind=series][data-text-eta-id=\"200\"]')?.textContent.includes('known · 1 item without estimate')")
+        self.assertTrue(self.js("const node=document.querySelector('[data-text-eta-kind=series][data-text-eta-id=\"200\"]');return node.scrollWidth<=node.clientWidth"),
+                        'The partial total must be readable without clipping')
+        self.js("sessionStorage.setItem('hold-estimates','1')")
+        self.driver.refresh()
+        self.wait('etaProbe.held')
+        self.assertTrue(self.js("return document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]').textContent.startsWith('~')"),
+                        'Reload must show the saved novel estimate before refresh completes')
+        self.assertTrue(self.js("return etaProbe.seen.every(text=>text.startsWith('~'))"),
+                        'A reload must never flash Collecting data over a saved estimate')
+        self.assertIn('known · 1 item without estimate', self.js("return document.querySelector('[data-text-eta-kind=series][data-text-eta-id=\"200\"]').textContent"),
+                      'Series must identify its partial known total')
+        self.js("sessionStorage.removeItem('hold-estimates');etaProbe.release()")
+        self.wait("document.querySelector('[data-text-eta-kind=series][data-text-eta-id=\"200\"]')?.getAttribute('role')==='button'")
+        marker=self.js('return etaProbe.document')
+        self.js("etaProbe.fail=true;document.querySelector('[data-text-eta-kind=series][data-text-eta-id=\"200\"]').click()")
+        self.wait("document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]').dataset.estimateState==='temporary_failure'")
+        self.assertTrue(self.js("return document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]').textContent.startsWith('~')"),
+                        'Transport failure must retain a known result')
+        self.js('etaProbe.fail=false')
+        shutil.copyfile(self.fixture.fixture / 'estimate.epub', self.fixture.fixture / 'missing.epub')
+        node=self.driver.find_element('css selector','[data-text-eta-kind=series][data-text-eta-id="200"]')
+        node.send_keys(Keys.ENTER)
+        self.wait("document.querySelector('[data-text-eta-kind=series][data-text-eta-id=\"200\"]').dataset.estimateState==='available'")
+        self.assertNotIn('without estimate', node.text, 'Retry must include repaired content in the full total')
+        self.assertEqual(self.js('return etaProbe.document'),marker,'Retry must preserve the document')
+        self.assertEqual(self.js('return etaProbe.errors'),[])
+
+
+def suite(*, mobile=True, availability=None):
+    return unittest.TestSuite(type(browser.title()+'TextEta'+str(width)+test,(checks,),
+        {'browser':browser,'viewport_width':width})(test)
+        for browser in selected_browsers(ARGS) for width in ((1280,320) if mobile else (1280,))
+        for checks,test in ((TextEtaChecks,'test_samples_refresh_estimates_and_preserve_document_covers_and_scope'),
+                            (EstimateAvailabilityChecks,'test_saved_partial_estimates_and_retry'))
+        if availability is None or (checks is EstimateAvailabilityChecks) == availability)
+
 
 
 if __name__=='__main__':
@@ -134,7 +205,7 @@ if __name__=='__main__':
     audit.ARGS=ARGS
     result=unittest.TextTestRunner(verbosity=2).run(suite())
     unittest_failures(result)
-    if not baseline_passed(result,len(selected_browsers(ARGS))*2):
+    if not baseline_passed(result,len(selected_browsers(ARGS))*4):
         sys.exit(1)
     for filename,before,after,signal in (
         ('app/static/js/library-events.js','reading_estimate_updated: () => scheduleTextEstimates(),',
@@ -145,18 +216,31 @@ if __name__=='__main__':
          'Same-chapter progress must preserve the existing Reading card'),
         ('app/library/router.py','estimator.prepare_novel(identity, volume)','estimator.prepare_novel(identity, None)',
          'Reading ETA must retain its volume scope'),
+        ('app/stats/estimates.py', 'if saved is not None:', 'if False and saved is not None:',
+         'Reload must show the saved novel estimate before refresh completes'),
+        ('app/templates/library/index.html', '{% if card.eta_missing %}', '{% if false %}',
+         'Series must identify its partial known total'),
+        ('app/static/js/library-events.js', 'if (!node.textContent.startsWith("~")) node.textContent = "Estimate failed · retry";',
+         'node.textContent = "Estimate failed · retry";', 'Transport failure must retain a known result'),
+        ('app/templates/library/index.html', 'class="text-xs text-neutral-500" data-text-eta-kind=',
+         'class="text-xs text-neutral-500 truncate" data-text-eta-kind=',
+         'The partial total must be readable without clipping'),
     ):
         path=ROOT/filename
         original=path.read_text()
-        if original.count(before)!=1:
+        if original.count(before)!=1 and before != 'if saved is not None:':
             raise ValueError('Text ETA mutation must match exactly once')
         try:
             changed=original.replace(before,after)
             if 'prepare_novel' in before:
                 changed=changed.replace('estimator.for_novel(identity, volume)','estimator.for_novel(identity, None)')
+                changed=changed.replace('estimator.novel_states.get((identity, volume)', 'estimator.novel_states.get((identity, None)')
             path.write_text(changed)
             output=io.StringIO()
-            control=unittest.TextTestRunner(stream=output,verbosity=2).run(suite(mobile=False))
+            control=unittest.TextTestRunner(stream=output,verbosity=2).run(suite(mobile=False, availability=signal in (
+                "Reload must show the saved novel estimate before refresh completes",
+                "Series must identify its partial known total", "Transport failure must retain a known result",
+                "The partial total must be readable without clipping")))
         finally:
             path.write_text(original)
         if not mutation_rejected(control,selected_browsers(ARGS),'TextEta',signal):

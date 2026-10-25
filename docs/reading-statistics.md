@@ -79,8 +79,12 @@ larger. Jumps, layout changes and capped passages do not supply a new pace.
 
 An EPUB card covers that book. A web novel in Reading covers the current
 volume; its library card covers unread chapters in the whole novel. Missing
-chapter text or an old position that cannot identify words shows **Collecting
-data**, rather than guessing from bytes. Reading cards request a fresh estimate
+chapter text shows **Content unavailable · retry**; an old position that cannot
+identify words shows **Position unavailable**. **Collecting data** means only
+insufficient pace evidence. **Calculating…** means a result is still pending,
+and **Estimate failed · retry** indicates a failed request. Unavailable content
+and failed requests can be retried by click or keyboard activation; a position
+needs a new save from the reader. No estimate operation resets reading progress. Reading cards request a fresh estimate
 after progress changes or new valid pace evidence, without replacing covers or
 reloading the page.
 
@@ -122,3 +126,18 @@ database connection, so inventory work cannot occupy the interactive connection
 pool or block login, search and page navigation. Cache quota checks are amortized
 across writes; the disposable cache can temporarily exceed its target by a small
 write budget plus one inventory.
+
+Successful estimates are retained across reloads in an account-scoped derived
+cache under `data/cache/reading-estimates.sqlite3` (at most 4,096 snapshots).
+The page shows the last valid result while the endpoint refreshes learned pace.
+A content, saved-position or replacement-rule change invalidates it; completed
+content never resurrects an old result. Chapter revisions avoid re-reading source
+bodies to validate a large novel's snapshot. The cache contains only signatures
+and durations and can be removed without affecting reading history.
+
+A series with some unknown estimates shows `~X known · N items without estimate`.
+This is a partial total, not the duration of the entire series. Failed content
+calculations log the account/item or novel/chapter ID and exception type at INFO
+level, without file paths, book text or credentials. HTTP 200 for the estimate
+endpoint means the request succeeded; its per-target `state` describes whether
+the prediction is available. There is no persistent background calculation job.

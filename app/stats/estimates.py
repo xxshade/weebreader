@@ -6,8 +6,12 @@ anchor; XHTML bytes are not words. Inventory parsing is lazy for the requested
 cards and runs outside the event loop. Comic rates retain their existing rules.
 """
 import asyncio
+import logging
+from pathlib import Path
 import re
 import zipfile
+
+from app.stats import estimate_snapshots as snapshots
 
 from lxml.etree import XMLSyntaxError
 
@@ -67,6 +71,28 @@ MIN_PACE_SAMPLES = 3
 PRIOR_WORDS = 3000
 
 
+log = logging.getLogger(__name__)
+
+STATE_LABELS = {
+    'collecting': 'Collecting data',
+    'calculating': 'Calculating…',
+    'position_unavailable': 'Position unavailable',
+    'content_unavailable': 'Content unavailable · retry',
+    'temporary_failure': 'Estimate failed · retry',
+    'complete': '',
+    'available': '',
+}
+STATE_DETAILS = {
+    'collecting': 'Not enough valid reading samples yet (1,000 words, 5 minutes, 3 samples).',
+    'calculating': 'The estimate is being calculated after the page opens.',
+    'position_unavailable': 'The saved position cannot be matched to the text. Resume reading and save a new position.',
+    'content_unavailable': 'The content could not be read. Check the file or chapter download, then retry.',
+    'temporary_failure': 'The estimate request failed. Activate to retry.',
+    'complete': '',
+    'available': 'Based on measured reading pace.',
+}
+
+
 class ReadingEstimator:
     defer_large_scopes = False
     def __init__(self, *, spent_by_item, rate_by_series, comic_fallback_rate=None,
@@ -75,9 +101,11 @@ class ReadingEstimator:
         self.rate_by_series = rate_by_series
         self.comic_fallback_rate = comic_fallback_rate
         self.db, self.user_id = db, user_id
+        self.cache_account = user_id
         self.samples = samples or {}
         self.item_estimates, self.novel_estimates = {}, {}
         self.completed_items, self.pending_novels = set(), set()
+        self.item_states, self.novel_states = {}, {}
         self.account_sample = tuple(sum(v[i] for v in self.samples.values()) for i in range(3))
 
     def text_rate(self, kind, identity):
@@ -97,25 +125,29 @@ class ReadingEstimator:
     async def prepare_items(self, items):
         """Parse only requested text items; warm inventory work is cache hits."""
         ids = {item['id'] for item in items if item['file_format'] == 'epub'}
-        if self.defer_large_scopes and len(ids) > 64:
-            completed = await (await self.db.execute(
-                "SELECT item_id FROM reading_progress WHERE user_id=? AND status='completed'",
-                (self.user_id,))).fetchall()
-            self.completed_items.update(row[0] for row in completed)
-            return
-        for identity in ids - self.item_estimates.keys():
-            self.item_estimates[identity] = None
-            rate = self.text_rate('epub', identity)
-            row = await (await self.db.execute(
-                """SELECT items.*, reading_progress.status, reading_progress.current_page,
+        deferred = self.defer_large_scopes and len(ids) > 64
+        requested = list(ids - self.item_estimates.keys())
+        rows = {}
+        for start in range(0, len(requested), 500):
+            batch = requested[start:start + 500]
+            placeholders = ','.join('?' for _ in batch)
+            fetched = await (await self.db.execute(
+                f"""SELECT items.*, reading_progress.status, reading_progress.current_page,
                           reading_progress.current_location, reading_progress.progress_percent
                      FROM items LEFT JOIN reading_progress ON reading_progress.item_id=items.id
-                      AND reading_progress.user_id=? WHERE items.id=?""",
-                (self.user_id, identity))).fetchone()
+                      AND reading_progress.user_id=? WHERE items.id IN ({placeholders})""",
+                (self.user_id, *batch))).fetchall()
+            rows.update((row['id'], row) for row in fetched)
+        for identity in requested:
+            self.item_estimates[identity] = None
+            rate = self.text_rate('epub', identity)
+            self.item_states[identity] = 'collecting' if rate is None else 'calculating'
+            row = rows.get(identity)
             if row is None:
                 continue
             if row['status'] == 'completed':
                 self.completed_items.add(identity)
+                self.item_states[identity] = 'complete'
                 continue
             if rate is None:
                 continue
@@ -123,27 +155,49 @@ class ReadingEstimator:
             if row['current_location']:
                 anchor = re.fullmatch(r'elidx:(\d+)(?::(\d+))?', row['current_location'])
                 if anchor is None:
+                    self.item_states[identity] = 'position_unavailable'
                     continue
                 block, offset = int(anchor[1]), int(anchor[2] or 0)
             elif row['progress_percent']:
+                self.item_states[identity] = 'position_unavailable'
                 continue  # Old percentages cannot identify remaining words.
             rules = await text_replacements.rules_for(self.db, self.user_id, series_id=row['series_id'])
+            scope = (self.cache_account, 'item', identity)
             try:
+                stat = await asyncio.to_thread(Path(row['file_path']).stat)
+                fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
+                    stat.st_mtime_ns, section, block, offset, rules, 1))
+                if self.defer_large_scopes:
+                    saved = await asyncio.to_thread(snapshots.load, scope, fingerprint)
+                    if saved is not None:
+                        self.item_estimates[identity] = Estimate(*saved)
+                        self.item_states[identity] = 'available'
+                        continue
+                if deferred:
+                    continue
                 if section == block == offset == 0:
                     total = remaining = await asyncio.to_thread(inventory_epub_total, row['file_path'], row['file_hash'], rules)
                 else:
                     inventory = await asyncio.to_thread(inventory_epub, row['file_path'], row['file_hash'], rules)
                     total, remaining = inventory.total_words, inventory.remaining(section, block, offset)
-            except (OSError, ValueError, KeyError, AttributeError, IndexError, XMLSyntaxError, zipfile.BadZipFile):
+            except (OSError, ValueError, KeyError, AttributeError, IndexError, XMLSyntaxError, zipfile.BadZipFile) as exc:
+                self.item_states[identity] = 'content_unavailable'
+                log.info('reading_estimate user=%s item=%s state=content_unavailable error=%s',
+                         self.user_id, identity, type(exc).__name__)
                 continue
             if remaining is not None:
                 self.item_estimates[identity] = Estimate(remaining * rate, total * rate, 0)
+                self.item_states[identity] = 'available'
+                await asyncio.to_thread(snapshots.save, scope, fingerprint, self.item_estimates[identity])
+            else:
+                self.item_states[identity] = 'position_unavailable'
 
     async def prepare_novel(self, novel_id, volume_id=None):
         key = novel_id, volume_id
         if key in self.novel_estimates:
             return
         self.novel_estimates[key] = None
+        self.novel_states[key] = 'complete'
         rate = self.text_rate('novel', novel_id)
         position = await (await self.db.execute(
             'SELECT chapter_id,paragraph_index,character_offset,chapter_percent FROM novel_reading_progress WHERE user_id=? AND novel_id=?',
@@ -157,38 +211,63 @@ class ReadingEstimator:
         if not pending[0]:
             return
         self.pending_novels.add(key)
-        if rate is None or (self.defer_large_scopes and pending[0] > 64):
-            return  # Large scopes load through the isolated estimate endpoint.
+        self.novel_states[key] = 'collecting' if rate is None else 'calculating'
+        if rate is None:
+            return
         rules = await text_replacements.rules_for(self.db, self.user_id, novel_id=novel_id)
+        revision = await (await self.db.execute(
+            'SELECT revision FROM novel_content_revisions WHERE novel_id=?', (novel_id,))).fetchone()
+        identities = await (await self.db.execute('SELECT chapters.id ' + query + ' ORDER BY chapters.id', params)).fetchall()
+        scope_key = (self.cache_account, 'novel', novel_id, volume_id)
+        fingerprint = snapshots.signature((revision[0] if revision else 0,
+            [row[0] for row in identities], tuple(position) if position else None, rules, 1))
+        if self.defer_large_scopes:
+            saved = await asyncio.to_thread(snapshots.load, scope_key, fingerprint)
+            if saved is not None:
+                self.novel_estimates[key] = Estimate(*saved)
+                self.novel_states[key] = 'available'
+                return
+            if pending[0] > 64:
+                return
         remaining = 0
         async with self.db.execute('SELECT chapters.id,chapters.content_html ' + query, params) as cursor:
             while batch := await cursor.fetchmany(16):
                 for chapter in batch:
                     if chapter['content_html'] is None:
+                        self.novel_states[key] = 'content_unavailable'
+                        log.info('reading_estimate user=%s novel=%s chapter=%s state=content_unavailable', self.user_id, novel_id, chapter['id'])
                         return  # A missing chapter is never guessed from byte averages.
                     try:
                         if position is not None and chapter['id'] == position['chapter_id']:
                             if position['paragraph_index'] is None and position['chapter_percent']:
+                                self.novel_states[key] = 'position_unavailable'
                                 return
                             inventory = await asyncio.to_thread(inventory_html, chapter['content_html'], rules)
                             words = inventory.remaining(0, position['paragraph_index'] or 0, position['character_offset'] or 0)
                             if words is None:
+                                self.novel_states[key] = 'position_unavailable'
                                 return
                         else:
                             words = await asyncio.to_thread(inventory_html_total, chapter['content_html'], rules)
-                    except (ValueError, OSError):
+                    except (ValueError, OSError) as exc:
+                        self.novel_states[key] = 'content_unavailable'
+                        log.info('reading_estimate user=%s novel=%s state=content_unavailable error=%s', self.user_id, novel_id, type(exc).__name__)
                         return
                     remaining += words
         self.novel_estimates[key] = Estimate(remaining * rate, remaining * rate, 0)
+        self.novel_states[key] = 'available'
+        await asyncio.to_thread(snapshots.save, scope_key, fingerprint, self.novel_estimates[key])
 
     def for_novel(self, novel_id, volume_id=None):
         return self.novel_estimates.get((novel_id, volume_id))
 
     def novel_collecting(self, novel_id, volume_id=None):
-        key = novel_id, volume_id
-        return key in self.pending_novels and self.novel_estimates.get(key) is None
+        return self.novel_states.get((novel_id, volume_id)) == 'collecting'
 
     def is_collecting(self, item):
+        return self.item_states.get(item['id']) == 'collecting'
+
+    def item_without_estimate(self, item):
         return (item['file_format'] == 'epub' and item['id'] not in self.completed_items
                 and self.item_estimates.get(item['id']) is None)
 
@@ -233,11 +312,17 @@ class ReadingEstimator:
         for item in items:
             estimate = self.for_item(item, item)
             if estimate is None:
-                if self.is_collecting(item):
-                    return None
                 continue
             total = (total or 0.0) + estimate.remaining
         return total
+
+    def missing_items(self, items):
+        return sum(self.item_without_estimate(item) for item in items)
+
+    def series_state(self, items):
+        states = [self.item_states.get(item['id'], 'calculating') for item in items if self.item_without_estimate(item)]
+        return next((state for state in ('content_unavailable', 'position_unavailable', 'temporary_failure',
+                                        'calculating', 'collecting') if state in states), 'available')
 
     def can_estimate(self, item):
         if item['file_format'] == COMIC_FORMAT:
@@ -358,6 +443,8 @@ async def build_estimator(db, user_id: int, *, defer_large_scopes=False) -> Read
         comic_fallback_rate=percentile(list(rate_by_series.values()) + gone_series_rates,
                                        COMIC_FALLBACK_PERCENTILE),
     )
+    account = await (await db.execute('SELECT password_hash,created_at FROM users WHERE id=?', (user_id,))).fetchone()
+    estimator.cache_account = (user_id, snapshots.signature(tuple(account) if account else None))
     estimator.defer_large_scopes = defer_large_scopes
     return estimator
 

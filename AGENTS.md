@@ -428,11 +428,16 @@ AVIF cost 2x decode on a phone).
   percentage. EPUBs and web novels share valid pace evidence; legacy durations
   never supply a word rate. The evidence floor matches Statistics (1,000 words,
   300 seconds, three samples); own-work samples gradually replace a prior worth
-  at most 3,000 words from other works. Missing evidence/content/anchors show
-  `Collecting data`. Novel scope is explicit: Reading volume versus whole novel.
+  at most 3,000 words from other works. Only insufficient evidence shows
+  `Collecting data`; pending, unavailable content/position and request failure
+  are distinct states. Novel scope is explicit: Reading volume versus whole novel.
   `prepare_items` / `prepare_novel` lazily load only requested word inventories.
-  Caches contain offsets/counts, not source text; source/rules/version invalidate
-  them. Account/work pace totals use an append-only ledger trigger and a once-only
+  Inventory caches contain offsets/counts, not source text; source/rules/version
+  invalidate them. Account-scoped last-valid duration snapshots live in a separate
+  bounded derived SQLite cache (no main writer/pool slot); source/position/rules
+  invalidate them while pace refreshes asynchronously. Chapter content revisions
+  must change even on same-size edits. Series totals retain known time and count
+  missing estimates explicitly. Account/work pace totals use an append-only ledger trigger and a once-only
   backfill receipt. Removed content retains account evidence; per-work totals
   cascade so reused IDs inherit none. See `docs/reading-statistics.md`.
 - Comic estimates retain pages/series rates, with the 95th percentile of

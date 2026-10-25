@@ -146,7 +146,8 @@ class WordEstimates(EstimateCase):
         estimator = await self.estimator()
         await estimator.prepare_novel(1)
         self.assertIsNone(estimator.for_novel(1))
-        self.assertTrue(estimator.novel_collecting(1))
+        self.assertFalse(estimator.novel_collecting(1))
+        self.assertEqual(estimator.novel_states[(1,None)], 'content_unavailable')
 
     async def test_collecting_novel_does_not_load_source_html(self):
         await self.novel_chapter(1)
