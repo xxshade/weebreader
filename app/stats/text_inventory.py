@@ -122,7 +122,7 @@ def _block(nodes):
     return BlockWords(tuple(offsets[index] for index in word_starts(''.join(text))), length)
 
 
-def _walk(container, blocks):
+def _walk(container, blocks, build):
     run = []
 
     def flush():
@@ -136,7 +136,7 @@ def _walk(container, blocks):
             last -= 1
         nodes = run[first:last + 1]
         if any(_has_content(node) for node in nodes):
-            blocks.append(_block(nodes))
+            blocks.append(build(nodes))
         run.clear()
 
     for node in _children(container):
@@ -147,15 +147,15 @@ def _walk(container, blocks):
             continue
         elif name in WHOLE:
             flush()
-            blocks.append(_block((node,)))
+            blocks.append(build((node,)))
         elif name in MEDIA:
             run.append(node)
         elif _holds_blocks(node):
             flush()
-            _walk(node, blocks)
+            _walk(node, blocks, build)
         elif name in BLOCK_LEVEL and (name in COUNTED or _has_content(node)):
             flush()
-            blocks.append(_block((node,)))
+            blocks.append(build((node,)))
         else:
             run.append(node)
     flush()
@@ -165,7 +165,8 @@ def _rules(rules):
     return tuple((rule['find'], rule.get('replace') or '') for rule in rules if rule.get('find'))
 
 
-def _section(source, rules):
+def _section(source, rules, build=None):
+    build = _block if build is None else build
     if not source.strip():
         return ()
     if rules:
@@ -182,13 +183,13 @@ def _section(source, rules):
     if body is None:
         body = doc
     blocks = []
-    _walk(body, blocks)
+    _walk(body, blocks, build)
     if not blocks:
         nodes = [node for node in _children(body) if
                  (isinstance(node, str) and node.strip()) or
                  (not isinstance(node, str) and _name(node) and _name(node) not in SKIPPED)]
         if nodes:
-            blocks.append(_block(nodes))
+            blocks.append(build(nodes))
     return tuple(blocks)
 
 
@@ -203,6 +204,7 @@ _MAX_CACHE_DISK_BYTES = 256 * 1024 * 1024
 _TOTAL_ENTRIES = 4096
 _totals = OrderedDict()
 _disk_lock = threading.Lock()
+_prune_budgets = OrderedDict()
 
 
 def _units(inventory):
@@ -296,10 +298,23 @@ def _atomic_write(path, data):
                 pass
 
 
-def _prune_disk(directory):
+def _prune_disk(directory, written=None):
     # Prune only our named artifacts, never another process's temporary file.
     # Pair summaries and offsets so old source/replacement versions cannot grow
     # the cache forever. Modification order is sufficient for disposable data.
+    # Amortize metadata I/O: a large novel creates thousands of tiny
+    # summaries. Scanning all prior files for each write is quadratic.
+    # Bound the temporary overshoot by at most 128 KiB plus one inventory.
+    if written is not None:
+        budget = min(128 * 1024, max(1, _MAX_CACHE_DISK_BYTES // 16))
+        previous = _prune_budgets.pop(directory, None)
+        pending = (previous or 0) + written
+        _prune_budgets[directory] = pending
+        while len(_prune_budgets) > 32:
+            _prune_budgets.popitem(last=False)
+        if previous is not None and pending < budget:
+            return
+        _prune_budgets[directory] = 0
     try:
         pairs = {}
         for path in directory.iterdir():
@@ -326,9 +341,11 @@ def _write_disk(path, inventory):
     if len(data) > _MAX_DISK_BYTES:
         return
     with _disk_lock:
-        _atomic_write(path, gzip.compress(data, compresslevel=1, mtime=0))
-        _atomic_write(_summary_path(path), _summary_data(path, inventory.total_words))
-        _prune_disk(path.parent)
+        compressed = gzip.compress(data, compresslevel=1, mtime=0)
+        summary = _summary_data(path, inventory.total_words)
+        _atomic_write(path, compressed)
+        _atomic_write(_summary_path(path), summary)
+        _prune_disk(path.parent, len(compressed) + len(summary))
 
 
 def _remember_total(path, words):
@@ -406,17 +423,31 @@ def _total(key, build):
         # Repair a missing/corrupt summary even if the offset inventory was
         # already in memory or on disk and did not need to be parsed again.
         with _disk_lock:
-            _atomic_write(_summary_path(path), _summary_data(path, words))
-            _prune_disk(path.parent)
+            summary = _summary_data(path, words)
+            _atomic_write(_summary_path(path), summary)
+            _prune_disk(path.parent, len(summary))
     _remember_total(path, words)
     return words
 
 
+def _count_block(nodes):
+    text = ''.join(chunk for node in nodes for chunk, readable in _chunks(node) if readable)
+    return sum(1 for _ in word_starts(text))
+
+
 def inventory_html_total(source, rules=()):
-    rules = tuple(rules)
-    return _total(_html_key(source, _rules(rules)), lambda: inventory_html(source, rules))
+    rules = _rules(rules)
+    return _total(_html_key(source, rules),
+                  lambda: Inventory((), sum(_section(source, rules, _count_block))))
 
 
 def inventory_epub_total(file_path, version, rules=()):
-    rules = tuple(rules)
-    return _total(_epub_key(file_path, version, _rules(rules)), lambda: inventory_epub(file_path, version, rules))
+    rules = _rules(rules)
+    def build():
+        total = 0
+        with zipfile.ZipFile(file_path) as archive:
+            for entry in list_spine_resources(str(file_path)):
+                source = archive.read(entry['href']).decode('utf-8-sig', errors='replace')
+                total += sum(_section(source, rules, _count_block))
+        return Inventory((), total)
+    return _total(_epub_key(file_path, version, rules), build)

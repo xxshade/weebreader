@@ -115,3 +115,10 @@ The displayed progress percentage keeps its existing chapter-size weighting;
 the remaining-time estimate uses words, so the two need not decrease at the
 same rate. Existing measurements are preserved, including word counts recorded
 before the soft-hyphen correction; new passages use the corrected counting rule.
+
+Large shelves and novel scopes render before their cold word inventories are
+prepared. Their estimates fill through a serialized endpoint with a separate
+database connection, so inventory work cannot occupy the interactive connection
+pool or block login, search and page navigation. Cache quota checks are amortized
+across writes; the disposable cache can temporarily exceed its target by a small
+write budget plus one inventory.
