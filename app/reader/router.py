@@ -481,7 +481,7 @@ async def _render_item_card(request: Request, db, user_id: int, item_id: int):
     # read/unread toggle comes back saying what its neighbours say. Marking
     # an item read makes the estimate go away, which is the point: there is
     # nothing left to estimate.
-    estimator = await build_estimator(db, user_id)
+    estimator = await build_estimator(db, user_id, cached_only=True)
     await estimator.prepare_items([item])
     eta = estimator.for_item(item, progress)
     return templates.TemplateResponse(

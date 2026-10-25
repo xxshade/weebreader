@@ -198,6 +198,11 @@ class ANovelCardsTimeIsItsVolumes(ReadingStripCase):
         await self.db.commit()
 
     async def card(self):
+        # The browser fills a cache miss through the authoritative endpoint;
+        # HTML rendering itself only reads that cached result.
+        from app.library.router import reading_estimates
+        from tests.test_text_eta_cards import JsonRequest
+        await reading_estimates(JsonRequest([{'kind':'novel','id':1,'volume_id':100}]), {'id':1}, self.db)
         return next(entry for entry in await _reading_items(self.db,1) if entry['kind']=='novel')
 
     async def test_reading_scope_stops_at_volume_and_uses_character_anchor(self):
