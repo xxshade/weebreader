@@ -18,6 +18,7 @@
 {% block content %}
     <div id="reader-root"
          data-source="novel"
+         data-reader-user-id="{{ user.id if user is defined else '' }}"
          data-series-url="/novels/{{ novel.id }}"
          data-item-id="{{ novel.id }}"
          data-start-cfi="{{ 'elidx:' ~ saved_paragraph ~ ':' ~ saved_offset if saved_paragraph is not none and saved_paragraph >= 0 else '' }}"

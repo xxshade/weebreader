@@ -255,15 +255,14 @@ def select_plan(client, repo):
                             initial=os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch')
 
 
-def reconcile(client, repo):
-    """Adopt stable semantics on tooling/docs-only merges, including rollout."""
+def stable_image(client, repo):
+    """Resolve and verify the current stable image without mutating aliases."""
     from scripts.auto_release import History, VERSION, plan, stable_releases
     if plan(client, repo, History()) is not None:
         raise ValueError('Unreleased application changes require the publication path.')
     stable = stable_releases(client, repo)
     if not stable:
-        print('Awaiting the initial manual release; no stable image to reconcile.')
-        return
+        return None
     item = max(stable, key=lambda r: tuple(map(int, VERSION.fullmatch(r['tag_name']).groups())))
     commit = History().git('rev-parse', item['tag_name'] + '^{commit}')
     release = Release(item['tag_name'][1:], repo.repository, commit, repo.ref)
@@ -275,9 +274,21 @@ def reconcile(client, repo):
     if not state and f'{release.image}@{image[0]}' not in item.get('body', ''):
         raise ValueError('Legacy image digest is not recorded in the stable release notes.')
     refuse_backward_promotion(release, client)
-    copy_alias(client, release, commit, image, immutable=True)
+    return release, image
+
+
+def reconcile(client, repo, expected_digest=None):
+    """Adopt stable semantics after scanning this same immutable image."""
+    resolved = stable_image(client, repo)
+    if resolved is None:
+        print('Awaiting the initial manual release; no stable image to reconcile.')
+        return
+    release, image = resolved
+    if expected_digest is not None and expected_digest != image[0]:
+        raise ValueError('Stable image changed after its vulnerability scan; refusing alias changes.')
+    copy_alias(client, release, release.commit, image, immutable=True)
     copy_alias(client, release, 'latest', image)
-    print(f'Stable {release.version}, latest and {commit} identify {image[0]}.')
+    print(f'Stable {release.version}, latest and {release.commit} identify {image[0]}.')
 
 
 def queue_pending(client, repo):
@@ -300,7 +311,13 @@ def main():
     if command == 'advance':
         print('Queued remaining main changes.' if queue_pending(client, repo) else 'No newer main commit to publish.')
     elif command == 'reconcile':
-        reconcile(client, repo)
+        reconcile(client, repo, os.environ.get('SCANNED_IMAGE_DIGEST'))
+    elif command == 'security-target':
+        resolved = stable_image(client, repo)
+        if resolved is None:
+            raise ValueError('There is no stable image to scan.')
+        release, image = resolved
+        output = {'image': release.image + '@' + image[0], 'digest': image[0]}
     elif command == 'plan':
         from scripts.auto_release import stable_releases
         value = select_plan(client, repo)

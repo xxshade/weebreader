@@ -2,8 +2,8 @@
 
 Session claims use server time. A delayed delivery never makes an old device
 the active reader. Each checkpoint carries cumulative visible intervals; only
-the new accounting delta is appended to page_reads, keeping its totals triggers
-and the existing remaining-time estimator unchanged.
+the new accounting delta is appended to page_reads. Valid word/time evidence
+is recorded separately from historical counted seconds for text predictions.
 """
 import asyncio
 import hashlib
@@ -41,6 +41,10 @@ def word_starts(text):
             if not inside:
                 yield index
             inside = True
+        elif char == '\u00ad':
+            # A discretionary hyphen is invisible word-internal typography.
+            # Keep its source offset, but never start another word after it.
+            continue
         elif category == 'M' and inside:
             continue
         elif char in "'’" and inside and index + 1 < len(text) and unicodedata.category(text[index+1])[0] in ('L','N'):
@@ -316,19 +320,22 @@ async def record_activity(db, user_id, comic_cap, text_cap, value, now=None):
         raw_seconds=excluded.raw_seconds,counted_seconds=excluded.counted_seconds,closed=excluded.closed''',
         (visit,user_id,session_id,identity,revision,json.dumps(visible),raw,counted,cap,words,
          json.dumps(word_positions),int(closed),kind,item,novel,chapter))
+    return bool(pace and credited_words and raw >= 1)
 
 
 async def record_batch(db, user, activities):
     if not isinstance(activities, list) or len(activities) > 20:
         raise ValueError('Expected at most 20 activities.')
     accepted, rejected = [], []
+    pace_changed = False
     for value in activities:
         try:
             if not isinstance(value, dict):
                 raise ValueError('Invalid activity.')
-            await record_activity(db, user['id'], user['page_time_cap_seconds'],
-                                  user['text_time_cap_seconds'], value)
+            changed = await record_activity(db, user['id'], user['page_time_cap_seconds'],
+                                            user['text_time_cap_seconds'], value)
+            pace_changed = pace_changed or bool(changed)
             accepted.append({'id': value['id'], 'revision': value['revision']})
         except (ValueError, KeyError, TypeError, UnicodeError, IndexError, OSError, OverflowError):
             rejected.append(value.get('id') if isinstance(value, dict) else None)
-    return {'accepted': accepted, 'rejected': rejected}
+    return {'accepted': accepted, 'rejected': rejected, 'pace_changed': pace_changed}

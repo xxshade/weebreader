@@ -19,6 +19,24 @@ caches use version-specific keys and the repository's default storage cap.
 
 The same scripts run locally for development and diagnosis.
 
+`test_statistics_layout_browser.py` verifies the three Reading indicators at
+desktop and 320px widths, bounded help bubbles, capped window totals, custom
+dates and accessible chart tabs retained across date swaps. Controls restore
+the two-column layout, incorrect totals, simultaneous charts, lost selection
+and an out-of-bounds help bubble; both engines must reject them.
+
+`test_text_eta_browser.py` exercises the real HTTP/SSE path from insufficient
+evidence to a measured prediction, exact saved positions, distinct volume and
+whole-novel scopes, and updates that retain the document, cards and covers.
+The backend estimator and inventory tests cover source offsets, gradual rate
+adaptation, legacy history, content removal, cache invalidation and backfill.
+
+`test_hyphenation_browser.py` exercises native dictionary hyphenation, glyphs at
+page boundaries, original text preservation, language preferences, reflow and
+resume in both text readers. Narrow desktop viewports are simulations; neither
+these checks nor the browser's dictionary availability imply native Android or
+LibreWolf-specific coverage.
+
 Select the current stable versions once per local validation run with
 `python scripts/browser_versions.py --output browser-versions.json`, then
 provision and retain those versions for the complete run.

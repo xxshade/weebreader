@@ -278,26 +278,12 @@
                           title="{% if card.tracked_count %}Tracking: linked to {{ card.tracked_count }} of {{ tracker_total }} services{% else %}Tracking: not linked{% endif %}"></span>
                 </div>
                 <p title="{{ card.name }}" class="card-title">{{ card.name }}</p>
-                {# How long the badge above is worth, in the same words the
-                   "Reading" strip uses for one item -- same `duration`
-                   filter, same leading "~". What it counts is everything
-                   unread: every item of a series, and for a novel what is
-                   left of the chapter in hand plus every chapter not marked
-                   read.
-
-                   Rendered only when there IS a basis for it: a comic
-                   series nobody has read a page of borrows the slow end of
-                   the reader's other series, and with no series read at
-                   all there is nothing to borrow (see stats/estimates.py).
-
-                   NOT .reading-eta: that class is what library-events.js
-                   rewrites from a progress event, using the CHAPTER
-                   percentage in it, and a novel card in this grid carries
-                   the same data-novel-id the strip's card does -- so the
-                   shared name would have had one card's chapter scale the
-                   other card's whole-novel total. This line is replaced
-                   wholesale with the card instead (see refreshCard). #}
-                {% if card.remaining_seconds %}
+                {# Home text scopes are independently refreshed; no chapter
+                   percentage may scale an entire novel or series. #}
+                {% if card.text_eta %}
+                <p class="text-xs text-neutral-500 truncate" data-text-eta-kind="{{ card.kind }}" data-text-eta-id="{{ card.id }}"
+                   title="{% if card.remaining_seconds is not none %}About {{ card.remaining_seconds | duration }} left, based on measured reading pace{% else %}Collecting valid reading samples{% endif %}">{% if card.remaining_seconds is not none %}~{{ card.remaining_seconds | duration }}{% else %}Collecting data{% endif %}</p>
+                {% elif card.remaining_seconds %}
                 <p class="text-xs text-neutral-500 truncate"
                    title="About {{ card.remaining_seconds | duration }} of this left to read, going by how fast you read">~{{ card.remaining_seconds | duration }}</p>
                 {% endif %}

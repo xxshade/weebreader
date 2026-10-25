@@ -24,11 +24,7 @@
         {% else %}
         {# A KPI row, not a chart: these are single headline numbers, and a
            one-bar bar chart of each would say less in more space. #}
-        <div class="grid grid-cols-2 gap-3 mb-4">
-            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
-                <p class="text-xs text-neutral-500">Time read</p>
-                <p class="text-lg font-semibold">{{ totals.seconds | duration }}</p>
-            </div>
+        <div class="stats-kpis mb-4" aria-label="Reading indicators">
             <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2" data-reading-pace="text">
                 <div class="tip-row">
                     <p class="text-xs text-neutral-500">Estimated text pace</p>
@@ -41,29 +37,15 @@
                     {% if pace.since %}<br>Word measurement since {{ pace.since }}.{% endif %}
                     {% endcall %}
                 </div>
-                <p class="text-lg font-semibold">{% if pace.wpm is not none %}{{ pace.wpm | round | int }} words/min{% else %}Collecting data{% endif %}</p>
-            </div>
-            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
-                <p class="text-xs text-neutral-500">Text words traversed</p>
-                <p class="text-lg font-semibold">{{ text_words }}</p>
-            </div>
-            <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
-                <div class="tip-row">
-                    <p class="text-xs text-neutral-500">Comic pages</p>
-                    {% call tip.help("How comic pages are counted") %}
-                    Includes rereading the same page. This is not a count of
-                    unique pages completed.
-                    {% endcall %}
-                </div>
-                <p class="text-lg font-semibold">{{ comic_visits }}</p>
+                <p class="stats-value font-semibold">{% if pace.wpm is not none %}{{ pace.wpm | round | int }} words/min{% else %}Collecting data{% endif %}</p>
             </div>
             <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
                 <p class="text-xs text-neutral-500">Time per comic page</p>
-                <p class="text-lg font-semibold">{% if comic_seconds_per_visit is not none %}{{ comic_seconds_per_visit | duration }}{% else %}—{% endif %}</p>
+                <p class="stats-value font-semibold">{% if comic_seconds_per_visit is not none %}{{ comic_seconds_per_visit | duration }}{% else %}—{% endif %}</p>
             </div>
             <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2">
                 <p class="text-xs text-neutral-500">Days with reading</p>
-                <p class="text-lg font-semibold">{{ totals.days }}</p>
+                <p class="stats-value font-semibold">{{ totals.days }}</p>
             </div>
         </div>
         {% endif %}

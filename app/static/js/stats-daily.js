@@ -24,6 +24,32 @@
     const COLUMN = "[data-daily-chart] > [data-tip]";
     let tip = null;
     let active = null;
+    // Kept in this document so a range's outerHTML swap preserves the tab.
+    // A fresh document starts on time, without persisting a hidden preference.
+    let selectedMeasure = "seconds";
+
+    function selectMeasure(measure, focus = false) {
+        if (!["seconds", "comic_visits"].includes(measure)) return;
+        const root = document.getElementById("daily-activity");
+        if (!root) return;
+        selectedMeasure = measure;
+        hide();
+        for (const tab of root.querySelectorAll("[data-chart-tab]")) {
+            const selected = tab.dataset.chartTab === measure;
+            tab.setAttribute("aria-selected", String(selected));
+            tab.tabIndex = selected ? 0 : -1;
+            if (selected && focus) tab.focus();
+        }
+        for (const panel of root.querySelectorAll("[data-chart-panel]")) {
+            panel.hidden = panel.dataset.chartPanel !== measure;
+        }
+    }
+
+    document.addEventListener("click", (event) => {
+        const tab = event.target.closest?.("[data-chart-tab]");
+        if (tab) selectMeasure(tab.dataset.chartTab);
+    });
+    document.addEventListener("htmx:after:swap", () => selectMeasure(selectedMeasure));
 
     // One element per document, re-made if a swap of <body> took it away.
     // It carries `viz` so the palette's --series-N are defined inside it:
@@ -140,6 +166,17 @@
     // the rest. Tabbing through ninety days one by one to get past a chart
     // is not a way to read it.
     document.addEventListener("keydown", (event) => {
+        const tab = event.target.closest?.("[data-chart-tab]");
+        if (tab) {
+            const order = ["seconds", "comic_visits"];
+            const at = order.indexOf(tab.dataset.chartTab);
+            const next = { ArrowLeft: 1 - at, ArrowRight: 1 - at, Home: 0, End: 1 }[event.key];
+            if (next !== undefined) {
+                event.preventDefault();
+                selectMeasure(order[next], true);
+            }
+            return;
+        }
         const column = event.target.closest?.(COLUMN);
         if (!column) return;
         const all = Array.from(column.parentElement.querySelectorAll(":scope > [data-tip]"));

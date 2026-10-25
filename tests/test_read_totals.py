@@ -265,10 +265,10 @@ class WhatTheEstimatorReadsNow(TotalsCase):
         progress = await (await self.db.execute(
             "SELECT * FROM reading_progress WHERE item_id = 2")).fetchone()
         eta = estimator.for_item(item, progress)
-        # 600 seconds bought 30% of it, so the whole book projects to 2000
-        # and there are 1400 left.
-        self.assertAlmostEqual(eta.total, 2000.0)
-        self.assertAlmostEqual(eta.remaining, 1400.0)
+        # Historical time remains available to statistics, but cannot invent
+        # matched word evidence for a text prediction.
+        self.assertIsNone(eta)
+        self.assertEqual(estimator.spent_by_item[2], 600)
 
     async def test_an_estimate_disappears_with_the_book_it_was_about(self):
         await self.flush([{"item_id": 2, "seconds": 60, "ago": 0} for _ in range(10)])

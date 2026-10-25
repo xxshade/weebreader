@@ -259,120 +259,90 @@ class TheTimeIsEverythingUnread(ShelfCase):
 
 
 class ANovelsShelfIsItsChapters(ShelfCase):
-    """A novel's items are chapters, and the one in hand is part-read
-    rather than unread -- so unlike a series this cannot be counted and
-    summed in one step. It is the shape the "Reading" strip builds per
-    VOLUME, at the scale of the whole novel."""
+    """Exact word inventories share a pace but retain each card's scope."""
 
-    async def test_unread_is_every_chapter_not_marked_read(self):
-        await self.chapter(1)
-        await self.chapter(2)
-        await self.chapter(3)
+    async def chapter_words(self, chapter_id, words=100, *, volume=1):
+        await self.chapter(chapter_id, volume=volume)
+        source = '<p>' + 'x ' * words + '</p>'
+        await self.db.execute('UPDATE chapters SET content_html=?,content_size=? WHERE id=?',
+                              (source,len(source),chapter_id))
+        await self.db.commit()
+
+    async def word_pace(self):
+        # Account evidence independent of positions or legacy durations.
+        for index in range(3):
+            await self.db.execute("""INSERT INTO page_reads
+                (user_id,kind,started_at,seconds,cap_seconds,visit_id,words,pace_words,pace_seconds,pace_samples)
+                VALUES (1,'novel',datetime('now'),100,100,?,1000,1000,100,1)""", (f'sample-{index}',))
+        await self.db.commit()
+
+    async def anchor(self, chapter_id, offset=0, percent=99):
+        await self.open_at(chapter_id, percent)
+        await self.db.execute('UPDATE novel_reading_progress SET paragraph_index=0,character_offset=?', (offset,))
+        await self.db.commit()
+
+    async def test_unread_counts_include_skipped_and_current_chapters(self):
+        await self.chapter_words(1)
+        await self.chapter_words(2)
+        await self.chapter_words(3)
+        await self.anchor(2)
+        await self.mark_read(3)
+        self.assertEqual((await self.novel()).unread,2)
+
+    async def test_home_scope_crosses_volumes_and_uses_exact_anchor_not_percent(self):
+        await self.word_pace()
+        await self.chapter_words(1,100,volume=1)
+        await self.chapter_words(2,200,volume=2)
+        await self.anchor(1,offset=40,percent=99)
+        # 20 words traversed, 80 + 200 remain at 0.1 s/word.
+        self.assertAlmostEqual((await self.novel()).remaining,28)
+
+    async def test_skipped_chapters_remain_until_explicitly_marked_read(self):
+        await self.word_pace()
+        await self.chapter_words(1,100)
+        await self.chapter_words(2,100)
+        await self.anchor(2,offset=100)
+        self.assertAlmostEqual((await self.novel()).remaining,15)
         await self.mark_read(1)
-        self.assertEqual((await self.novel()).unread, 2)
+        self.assertAlmostEqual((await self.novel()).remaining,5)
 
-    async def test_the_chapter_in_hand_is_not_finished_so_it_counts(self):
-        await self.chapter(1)
-        await self.chapter(2)
-        await self.open_at(2, 40)
-        self.assertEqual((await self.novel()).unread, 2)
+    async def test_unavailable_content_does_not_fabricate_a_word_inventory(self):
+        await self.word_pace()
+        await self.chapter_words(1)
+        await self.chapter(2,size=None)
+        self.assertIsNone((await self.novel()).remaining)
 
-    async def test_the_time_crosses_volumes(self):
-        # This is the difference from the "Reading" strip, which stops at
-        # the volume: 2 and 3 are in volume 1, 4 is in volume 2, and a card
-        # on the shelf is asked how much of the NOVEL is left.
-        await self.learn_the_novel_rate()
-        self.assertEqual(await self.novel_rate(), 0.3)
-        await self.chapter(2, volume=1)
-        await self.chapter(3, volume=1)
-        await self.chapter(4, volume=2)
-        await self.open_at(2, 40)
+    async def test_never_opened_means_all_unread_words(self):
+        await self.word_pace()
+        await self.chapter_words(1,100)
+        await self.chapter_words(2,200)
+        self.assertAlmostEqual((await self.novel()).remaining,30)
+
+    async def test_marked_current_chapter_contributes_no_words(self):
+        await self.word_pace()
+        await self.chapter_words(1,100)
+        await self.chapter_words(2,200)
+        await self.anchor(1,offset=40)
+        await self.mark_read(1)
+        self.assertAlmostEqual((await self.novel()).remaining,20)
+
+    async def test_completed_scope_has_neither_badge_nor_eta(self):
+        await self.word_pace()
+        await self.chapter_words(1)
+        await self.anchor(1)
+        await self.mark_read(1)
         shelf = await self.novel()
-        self.assertEqual(shelf.unread, 3)
-        # 3 and 4 whole (2000 bytes = 600s), plus 60% of chapter 2 (180s).
-        self.assertAlmostEqual(shelf.remaining, 780, places=4)
-
-    async def test_a_chapter_skipped_past_is_still_ahead(self):
-        # "Unread" is NOT MARKED READ, never "after the saved position": a
-        # chapter jumped over still stands between the reader and the end,
-        # and marking it read is how they say otherwise.
-        await self.learn_the_novel_rate()
-        await self.chapter(2)
-        await self.chapter(3)
-        await self.open_at(3, 0)
-        shelf = await self.novel()
-        self.assertEqual(shelf.unread, 2)
-        self.assertAlmostEqual(shelf.remaining, 600, places=4)   # 2 behind, 3 whole
-
-    async def test_a_chapter_not_downloaded_counts_as_the_novels_average(self):
-        # Leaving it out would understate the time by exactly one chapter,
-        # silently, and a number wrong downwards looks like a right one.
-        await self.learn_the_novel_rate()
-        await self.chapter(2, size=1000)
-        await self.chapter(3, size=3000)
-        await self.chapter(4, size=None)
-        # The mean of the measured chapters across the whole novel is
-        # (1000 + 3000 + 901's 1000) / 3 = 1666.67, so chapter 4 is sized
-        # by that. Total bytes 1000 + 3000 + 1666.67 at 0.3 s/byte.
-        self.assertAlmostEqual((await self.novel()).remaining, 1700, places=2)
-
-    async def test_a_novel_never_opened_counts_all_of_it(self):
-        # No saved position at all: there is no chapter in hand, and
-        # sizing one that does not exist by the mean would invent it.
-        await self.learn_the_novel_rate()
-        await self.chapter(2)
-        await self.chapter(3)
-        shelf = await self.novel()
-        self.assertEqual(shelf.unread, 2)
-        self.assertAlmostEqual(shelf.remaining, 600, places=4)
-
-    async def test_the_chapter_in_hand_ticked_off_adds_no_time(self):
-        # A chapter already marked read has nothing left in it whatever
-        # position happens to be saved inside it -- the trap the "Reading"
-        # strip hit as "about 30m left" on a volume with nothing in it.
-        await self.learn_the_novel_rate()
-        await self.chapter(2)
-        await self.chapter(3)
-        await self.open_at(2, 40)
-        await self.mark_read(2)
-        shelf = await self.novel()
-        self.assertEqual(shelf.unread, 1)
-        self.assertAlmostEqual(shelf.remaining, 300, places=4)   # chapter 3 alone
-
-    async def test_a_novel_read_to_the_end_has_no_badge_and_no_time(self):
-        await self.learn_the_novel_rate()
-        await self.chapter(2)
-        await self.open_at(2, 100)
-        await self.mark_read(2)
-        shelf = await self.novel()
-        # Chapter 901 taught the rate and is itself read, so nothing here
-        # is unread -- and "~0s left" is not worth a line on a card.
-        self.assertEqual(shelf.unread, 0)
+        self.assertEqual(shelf.unread,0)
         self.assertIsNone(shelf.remaining)
+        self.assertFalse(shelf.text_eta)
 
-    async def test_no_rate_learned_means_no_number_at_all(self):
-        await self.chapter(1)
-        await self.chapter(2)
+    async def test_legacy_time_is_preserved_without_becoming_valid_pace(self):
+        await self.chapter_words(1)
+        await self.anchor(1,offset=100)
+        await self.spend(1000,chapter_id=1,novel_id=1)
         shelf = await self.novel()
-        self.assertEqual(shelf.unread, 2)
         self.assertIsNone(shelf.remaining)
-
-    async def test_the_own_pace_of_the_chapter_in_hand_still_counts(self):
-        # The one thing a rate cannot know: this chapter is heavy going for
-        # this reader. 600s over 25% of chapter 2 projects 2400s for it, so
-        # 1800s are left of it, against the 540s its bytes alone would
-        # claim at the rate below.
-        #
-        # And those 600s are a second sample of that rate, the same way
-        # timing a comic is: 900 seconds over 1250 bytes read is 0.72
-        # s/byte, so chapter 3 is 720. Asserted, not assumed.
-        await self.learn_the_novel_rate()
-        await self.chapter(2)
-        await self.chapter(3)
-        await self.open_at(2, 25)
-        await self.spend(600, chapter_id=2, novel_id=1)
-        self.assertAlmostEqual(await self.novel_rate(), 0.72, places=6)
-        self.assertAlmostEqual((await self.novel()).remaining, 2520, places=4)
+        self.assertTrue(shelf.text_eta)
 
 
 class OneNumberUnderTwoNames(unittest.TestCase):
@@ -458,7 +428,6 @@ class TheGridsEstimateIsNotTheStrips(unittest.TestCase):
         # the line below it must not, and the assertion above is green only
         # because the blanking took that sentence out.
         raw = (APP / "templates/library/index.html").read_text()
-        self.assertIn("reading-eta", raw)
         self.assertNotIn("reading-eta", _strip(raw))
 
 
@@ -484,7 +453,7 @@ class TheLiveCardCarriesBothNumbers(unittest.TestCase):
         self.assertIn("thumb.appendChild(countBadge);", self.builder)
 
     def test_the_time_is_rendered_only_when_there_is_one(self):
-        self.assertIn("if (card.remaining_seconds) {", self.builder)
+        self.assertIn("if (card.remaining_seconds || card.text_eta) {", self.builder)
         self.assertIn("formatDuration(card.remaining_seconds)", self.builder)
         self.assertIn("a.appendChild(eta);", self.builder)
 

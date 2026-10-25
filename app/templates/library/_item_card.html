@@ -56,16 +56,19 @@
            makes it worth showing on a series page full of unread volumes,
            where the left-hand side is otherwise empty.
 
-           data-eta-total is the projected time for the whole item, so a
-           percentage arriving over SSE can be turned back into a remaining
-           time in the browser without another request. #}
-        {% if show_percent or page_count or eta %}
+           Text estimates count words from the saved position and are refreshed
+           authoritatively; comic estimates retain percent-based updates. #}
+        {% set text_eta = item.file_format == 'epub' and not is_read %}
+        {% if show_percent or page_count or eta or text_eta %}
         <p class="text-xs text-neutral-500 flex items-center justify-between gap-2">
             <span class="min-w-0 truncate">
                 {%- if show_percent %}<span class="progress-label">{{ progress.progress_percent|round|int }}%</span><span class="progress-remaining">{% if pages_left is not none %} · {{ pages_left }} page{{ 's' if pages_left != 1 else '' }} left{% endif %}</span>
                 {%- elif page_count %}{{ page_count }} page{{ 's' if page_count != 1 else '' }}{% endif -%}
             </span>
-            {% if eta %}
+            {% if text_eta %}
+            <span class="reading-eta flex-shrink-0" data-text-eta-kind="item" data-text-eta-id="{{ item.id }}"
+                  title="{% if eta %}About {{ eta.remaining | duration }} left, based on measured reading pace{% else %}Collecting valid reading samples{% endif %}">{% if eta %}~{{ eta.remaining | duration }}{% else %}Collecting data{% endif %}</span>
+            {% elif eta %}
             <span class="reading-eta flex-shrink-0" data-eta-total="{{ eta.total | round | int }}"
                   title="About {{ eta.remaining | duration }} left, going by how fast you read">~{{ eta.remaining | duration }}</span>
             {% endif %}

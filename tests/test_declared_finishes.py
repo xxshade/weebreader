@@ -109,7 +109,7 @@ class _Case(unittest.IsolatedAsyncioTestCase):
 
     async def item_rate(self):
         est = await build_estimator(self.db, 1)
-        return est.rate_by_format.get("epub")
+        return est.text_rate('epub', 1)
 
 
 class HowLongOneVolumeTakes(_Case):
@@ -213,20 +213,19 @@ class TheReadingRate(_Case):
     reader has not touched."""
 
     async def test_a_book_ticked_off_early_does_not_make_the_reader_fast(self):
-        # 600s over 12% of 100 KB is 12 KB read; calling it 100 KB says the
-        # reader is 8x faster than they are, on every estimate.
+        # A declaration and historical time cannot manufacture matched words.
         await self.item(1, text_size=100_000)
         await self.read_for(600, item_id=1)
         await self.reached(1, 12)
         await self.mark_read(1)
-        self.assertAlmostEqual(await self.item_rate(), 600 / 12_000, delta=1e-6)
+        self.assertIsNone(await self.item_rate())
 
-    async def test_a_book_read_to_the_end_pairs_with_its_whole_text(self):
+    async def test_a_legacy_book_read_to_the_end_still_needs_word_evidence(self):
         await self.item(1, text_size=100_000)
         await self.read_for(600, item_id=1)
         await self.reached(1, 100)
         await self.mark_read(1)
-        self.assertAlmostEqual(await self.item_rate(), 600 / 100_000, delta=1e-9)
+        self.assertIsNone(await self.item_rate())
 
     async def test_a_book_never_opened_teaches_nothing(self):
         await self.item(1, text_size=100_000)
@@ -277,8 +276,8 @@ class Novels(_Case):
         await self.read_for(600, chapter_id=1)
         await self.mark_volume_read()
         est = await build_estimator(self.db, 1)
-        # 600s over 10% of one 10 KB chapter, not over 10 KB.
-        self.assertAlmostEqual(est.novel_rate, 600 / 1_000, delta=1e-6)
+        # Marking chapters read never turns legacy seconds into word samples.
+        self.assertIsNone(est.text_rate('novel', 1))
 
     async def test_marking_the_chapter_you_are_in_records_where_you_are(self):
         await self.db.execute(

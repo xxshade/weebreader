@@ -334,6 +334,59 @@
     }
     const prefs = loadPrefs();
 
+    // These are work-specific, unlike the device-wide font/theme controls.
+    // Never add discretionary hyphen characters: text offsets and verified
+    // reading passages must continue to name the original DOM text.
+    const workPrefsKey = `text-work-prefs:${root.dataset.readerUserId || 'local'}:${source}:${itemId}`;
+    function canonicalLanguage(value) {
+        if (!value || typeof value !== 'string') return '';
+        try {
+            const tag = Intl.getCanonicalLocales(value.trim().replace(/_/g, '-'))[0] || '';
+            return /^(und|mul|zxx)(-|$)/i.test(tag) ? '' : tag;
+        } catch { return ''; }
+    }
+    let workPrefs = {hyphenation: false, language: ''};
+    try {
+        const saved = JSON.parse(localStorage.getItem(workPrefsKey)) || {};
+        workPrefs = {hyphenation: saved.hyphenation === true, language: canonicalLanguage(saved.language)};
+    } catch { /* unavailable storage or an older malformed preference */ }
+    let metadataLanguage = '';
+    let currentChapterLanguage = '';
+    function saveWorkPrefs() {
+        try { localStorage.setItem(workPrefsKey, JSON.stringify(workPrefs)); } catch { /* device-local only */ }
+    }
+    function applyChapterLanguage(doc) {
+        const html = doc.documentElement;
+        if (!html.hasAttribute('data-reader-source-language')) {
+            html.dataset.readerSourceLanguage = canonicalLanguage(html.getAttribute('lang') || html.getAttribute('xml:lang'))
+                || canonicalLanguage(doc.body.getAttribute('lang') || doc.body.getAttribute('xml:lang'));
+            html.dataset.readerSourceBodyLanguage = doc.body.getAttribute('lang') || '';
+        }
+        const language = workPrefs.language || html.dataset.readerSourceLanguage || metadataLanguage;
+        if (language) html.setAttribute('lang', language); else html.removeAttribute('lang');
+        // A body-level language must not defeat an explicit work override.
+        if (workPrefs.language) doc.body.setAttribute('lang', workPrefs.language);
+        else if (html.dataset.readerSourceBodyLanguage) doc.body.setAttribute('lang', html.dataset.readerSourceBodyLanguage);
+        else doc.body.removeAttribute('lang');
+        if (workPrefs.hyphenation) html.dataset.readerHyphenation = language ? 'auto' : 'manual';
+        else delete html.dataset.readerHyphenation;
+        currentChapterLanguage = language;
+        renderWorkPrefs();
+    }
+    function renderWorkPrefs() {
+        if (!root.isConnected) return;
+        const enabled = document.getElementById("hyphenation-enabled");
+        const language = document.getElementById("hyphenation-language");
+        const status = document.getElementById("hyphenation-status");
+        if (!enabled || !language || !status) return;
+        enabled.checked = workPrefs.hyphenation;
+        if (document.activeElement !== language) language.value = workPrefs.language;
+        const effective = workPrefs.language || currentChapterLanguage || metadataLanguage;
+        status.textContent = !workPrefs.hyphenation ? 'Using the book’s original hyphenation rules.'
+            : effective ? `Language: ${effective}. Hyphenation depends on this browser’s dictionary.`
+                : 'Set a language above to enable automatic hyphenation.';
+    }
+
     // `shell` is the reader's own chrome (top bar, settings panel, page-nav
     // and whatever the content iframe doesn't cover) -- separate from
     // `background` because those elements are transparent over <body> and
@@ -399,7 +452,11 @@
             // tall to fit is shown as its own page (see renderPage in the
             // JS), and this is what actually lets the rest of it be
             // reached by scrolling instead of being silently clipped.
-            `p { margin: 0 0 1.1em 0; } img { max-width: 100%; height: auto; border-radius: 4px; margin: 1em 0; }`;
+            `p { margin: 0 0 1.1em 0; } img { max-width: 100%; height: auto; border-radius: 4px; margin: 1em 0; }` +
+            `@layer reader-work-preferences { html[data-reader-hyphenation="auto"] body, html[data-reader-hyphenation="auto"] body * { hyphens: auto !important; -webkit-hyphens: auto !important; } ` +
+            `html[data-reader-hyphenation="manual"] body, html[data-reader-hyphenation="manual"] body * { hyphens: manual !important; -webkit-hyphens: manual !important; } ` +
+            `html[data-reader-hyphenation] pre, html[data-reader-hyphenation] pre *, html[data-reader-hyphenation] code, html[data-reader-hyphenation] code * { hyphens: manual !important; -webkit-hyphens: manual !important; } } ` +
+            `[data-reader-continuation-hyphen]::after { content: var(--reader-continuation-character, "\\2010"); }`;
     }
 
     // ---------- Shared: spine list + chapter document building ----------
@@ -412,6 +469,8 @@
             // Before normalizeSpine, so the first chapter URL built from
             // this spine already carries it.
             contentVersion = data.version || "";
+            metadataLanguage = canonicalLanguage(data.language);
+            renderWorkPrefs();
             spineList = adapter.normalizeSpine(data);
             buildSpineWeights();
         }
@@ -470,13 +529,10 @@
             `<base href="${baseHref}">` +
             `<link rel="stylesheet" href="${stylesheetUrl}">` +
             `<style id="reader-theme-style">${themeCssText()}</style>`;
-        if (/<head[^>]*>/i.test(rawHtml)) {
-            return rawHtml.replace(/<head[^>]*>/i, (m) => m + injected);
-        }
-        // no <head> (malformed/incomplete HTML, or a bare paragraph slice
-        // built by the paginator) -- inject one at the front, the browser
-        // accepts loose <style>/<base> before <body> too
-        return injected + rawHtml;
+        const doc = new DOMParser().parseFromString(rawHtml, 'text/html');
+        applyChapterLanguage(doc);
+        doc.head.insertAdjacentHTML('afterbegin', injected);
+        return doc.documentElement.outerHTML;
     }
 
     let userHasInteracted = false;
@@ -583,14 +639,50 @@
     let bottomSentinelObserver = null;
     let topSentinelObserver = null;
     let customHasNavigated = false;
+    let customReflowing = false;
+    let customReflowGeneration = 0;
 
     function reapplyCustomTheme() {
         const css = themeCssText();
         for (const wrapper of sectionWrappers) {
             const iframe = wrapper && wrapper.querySelector("iframe");
             const styleEl = iframe && iframe.contentDocument && iframe.contentDocument.getElementById("reader-theme-style");
-            if (styleEl) styleEl.textContent = css;
+            if (styleEl) {
+                applyChapterLanguage(iframe.contentDocument);
+                styleEl.textContent = css;
+            }
         }
+    }
+
+    async function remeasureCustomSections(position) {
+        const generation = ++customReflowGeneration;
+        customReflowing = true;
+        cancelScrollSave();
+        for (const wrapper of sectionWrappers) {
+            const iframe = wrapper?.querySelector('iframe');
+            if (!iframe || wrapper.dataset.mounted !== '1') continue;
+            await waitForFonts(iframe.contentDocument);
+            if (generation !== customReflowGeneration || !customMode || !root.isConnected) {
+                if (generation === customReflowGeneration) customReflowing = false;
+                return;
+            }
+            // A fixed old frame height otherwise becomes the document's
+            // minimum height, hiding shrinkage after a typography change.
+            iframe.style.height = '1px';
+            const height = Math.ceil(iframe.contentDocument.documentElement.scrollHeight);
+            iframe.style.height = `${height}px`;
+            wrapper.style.height = `${height}px`;
+        }
+        if (generation !== customReflowGeneration || !customMode || !root.isConnected) {
+            if (generation === customReflowGeneration) customReflowing = false;
+            return;
+        }
+        scrollToCustomPosition(position.spineIndex, {index: position.elementIndex, offset: position.offset || 0});
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (generation !== customReflowGeneration) return;
+            customReflowing = false;
+            reportContinuousTiming(false);
+        }));
     }
 
     function ensureWrappers() {
@@ -962,6 +1054,7 @@
 
         let scrollRafPending = false;
         function onCustomScroll() {
+            if (customReflowing) return;
             if (scrollRafPending) return;
             scrollRafPending = true;
             requestAnimationFrame(() => {
@@ -1192,20 +1285,38 @@
     // against the source and count word starts without splitting words twice.
     function timingText(block) {
         const skipped = new Set(['script','style','noscript','template','svg','math','video','audio','canvas','iframe','object','embed']);
-        function text(node) {
-            if (node.nodeType === 3) return node.data;
-            if (node.nodeType !== 1 || skipped.has(node.localName)) return '';
-            return Array.from(node.childNodes, text).join('');
+        const runs = [];
+        let domOffset = 0, text = '';
+        function visit(node) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                runs.push({start: domOffset, end: domOffset + node.length, readable: text.length});
+                domOffset += node.length;
+                text += node.data;
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                // Saved anchors count all DOM text, including labels inside
+                // media. Reading pace excludes that text. Preserve the gap
+                // and map the anchor into the filtered passage explicitly.
+                if (skipped.has(node.localName)) domOffset += node.textContent.length;
+                else for (const child of node.childNodes) visit(child);
+            }
         }
-        return block.nodes.map(text).join('');
+        for (const node of block.nodes) visit(node);
+        function offsetAt(offset) {
+            for (const run of runs) {
+                if (offset < run.start) return run.readable;
+                if (offset <= run.end) return run.readable + Math.max(0, offset - run.start);
+            }
+            return text.length;
+        }
+        return {text, length: domOffset, offsetAt};
     }
     function timingPassage(blocks, start, end) {
         const result = [];
         for (let i = start.index; i < blocks.length && i <= end.index; i++) {
-            const text = timingText(blocks[i]);
-            const from = Math.min(text.length, i === start.index ? start.offset || 0 : 0);
-            const to = Math.min(text.length, i === end.index ? end.offset || 0 : text.length);
-            if (to > from) result.push({text, start:from, end:to});
+            const readable = timingText(blocks[i]);
+            const from = readable.offsetAt(i === start.index ? start.offset || 0 : 0);
+            const to = readable.offsetAt(i === end.index ? end.offset || 0 : readable.length);
+            if (to > from) result.push({text: readable.text, start:from, end:to});
         }
         return result;
     }
@@ -1902,18 +2013,37 @@
     // comic reader's fit-change. Continuous scroll doesn't need a rebuild:
     // its layout adjusts on its own (no fixed page boundaries to recompute).
     function reapplyPrefsToCurrentView() {
+        const position = customMode && mountedFrom >= 0 ? measureCustomPosition() : null;
         timingReflowUntil = performance.now() + 500;
         readingTime.interrupt();
         applyShellTheme();
         reapplyCustomTheme(); // harmless no-op if no scroll chapters are mounted yet
         if (!customMode && pgSpineIndex !== null) gotoPaginatedForward(pgSpineIndex, pgPageStart);
-        if (customMode) requestAnimationFrame(() => requestAnimationFrame(() => reportContinuousTiming(false)));
+        if (position) remeasureCustomSections(position).catch(error => {
+            customReflowing = false;
+            warnChapterNotLoaded(error);
+        });
     }
 
     fontSelect.addEventListener("change", (e) => { prefs.font = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
     lineHeightInput.addEventListener("input", (e) => { prefs.lineHeight = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
     widthInput.addEventListener("input", (e) => { prefs.width = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
     themeSelect.addEventListener("change", (e) => { prefs.theme = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
+    document.getElementById("hyphenation-enabled").addEventListener('change', (event) => {
+        workPrefs.hyphenation = event.target.checked;
+        saveWorkPrefs();
+        renderWorkPrefs();
+        reapplyPrefsToCurrentView();
+    });
+    document.getElementById("hyphenation-language").addEventListener('change', (event) => {
+        const language = canonicalLanguage(event.target.value);
+        event.target.setCustomValidity(event.target.value.trim() && !language ? 'Use a language code such as en or pt-BR.' : '');
+        if (!event.target.checkValidity()) { event.target.reportValidity(); return; }
+        workPrefs.language = language;
+        saveWorkPrefs();
+        renderWorkPrefs();
+        reapplyPrefsToCurrentView();
+    });
     flowSelect.addEventListener("change", (e) => { applyFlow(e.target.value); });
     if (bottomGapInput) {
         bottomGapInput.addEventListener("input", (e) => {
@@ -1930,6 +2060,7 @@
     widthInput.value = prefs.width;
     themeSelect.value = prefs.theme;
     flowSelect.value = prefs.flow;
+    renderWorkPrefs();
     // The reported total, not just the manual part -- what the reader wants
     // to know is how much room is being kept clear, however it was arrived
     // at, so a phone that needs nothing shows 0 and stays out of the way.
