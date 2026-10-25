@@ -29,8 +29,13 @@ change with its justification; it must not be introduced just to make CI green.
 - Reconciliation scans the verified current stable image before changing its
   aliases. It checks that the image digest still matches the scanned digest.
 
+Trivy reads an OCI layout directory rather than an OCI transport tar file. The
+wrapper safely extracts the OCI metadata and blobs into a temporary directory,
+rejecting links, special files and unsafe paths. It scans that layout and removes
+it afterwards; the original archive's bytes and identity remain unchanged.
+
 Reports include all severities and package inventories in `vulnerabilities.json`,
-a readable `summary.md`, and the scanned artifact identity. GitHub retains these
+a readable `summary.md`, scanner output in `scanner.log`, and the scanned artifact identity. GitHub retains these
 diagnostics for seven days, on successful and failed scans. OCI archives and
 registry credentials are not uploaded as diagnostic artifacts.
 

@@ -92,8 +92,17 @@ class StatisticsLayoutChecks(audit.AuditChecks):
         self.driver.find_element('id', 'range-custom-toggle').click()
         self.wait("!document.querySelector('#range-picker').hidden")
         today = self.js("return document.querySelector('#daily-activity').dataset.today")
-        self.driver.find_element('css selector', f'[data-cal-day="{today}"]').click()
-        self.driver.find_element('css selector', f'[data-cal-day="{today}"]').click()
+        # Hover rebuilds the calendar cells. Resolve the pointer position
+        # before clicking, rather than reusing a replaced element reference.
+        for _ in range(2):
+            point = self.driver.execute_script("""const day=document.querySelector(arguments[0]);
+                day.scrollIntoView({block:'center',behavior:'instant'});
+                const r=day.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};""",
+                                               f'[data-cal-day="{today}"]')
+            actions = ActionChains(self.driver)
+            actions.w3c_actions.pointer_action.move_to_location(round(point['x']), round(point['y']))
+            actions.click().perform()
+        self.wait("!document.querySelector('[data-cal-action=apply]').disabled")
         self.driver.find_element('css selector', '[data-cal-action=apply]').click()
         self.wait(f"document.querySelector('#daily-activity').dataset.windowStart==='{today}'")
         selection('comic_visits')

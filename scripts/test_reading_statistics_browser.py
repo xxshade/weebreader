@@ -168,8 +168,10 @@ def check_reading_priority(case):
     case.assertEqual(case.row('SELECT session_id FROM reading_claims WHERE user_id=1 AND ended IS NULL')['session_id'],other_session,
                      'Reconnecting must not take reading priority without user activity')
     case.driver.get(case.base+'/stats')
-    case.assertIn('Text words traversed',case.driver.find_element('tag name','body').text)
-    case.assertIn('Comic pages',case.driver.find_element('tag name','body').text)
+    body_text = case.driver.find_element('tag name','body').text
+    case.assertNotIn('Text words traversed', body_text)
+    case.assertIn('Time per comic page', body_text)
+    case.assertIn('Days with reading', body_text)
     case.assertEqual(len(case.driver.find_elements('css selector','[data-reading-pace]')),1)
     case.assertIn('Collecting data',case.driver.find_element('css selector','[data-reading-pace="text"]').text)
 

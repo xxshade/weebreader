@@ -5,12 +5,13 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 
 import yaml
 
 from scripts.container_security import (TRIVY_SHA256, TRIVY_VERSION, command,
-                                        digest_file, evaluate, scan, verify_archive)
+                                        digest_file, evaluate, scan, scanner_input, verify_archive)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,11 +68,24 @@ class ScanPolicy(unittest.TestCase):
                           "if sys.argv[1]=='--version':\n"
                           f" print('Version: {version}');raise SystemExit(0)\n"
                           f"raise_on_scan={fail!r}\n"
+                          "print('fixture scanner diagnostic', file=sys.stderr)\n"
                           "if raise_on_scan: raise SystemExit(7)\n"
                           "output=pathlib.Path(sys.argv[sys.argv.index('--output')+1])\n"
+                          "image=pathlib.Path(sys.argv[sys.argv.index('--input')+1])\n"
+                          "if not image.is_dir() or not (image/'oci-layout').is_file(): raise SystemExit(9)\n"
                           f"output.write_text({json.dumps(payload)!r})\n")
         binary.chmod(0o755)
         return binary
+
+    def archive(self, path, extra=None):
+        with tarfile.open(path, 'w') as bundle:
+            for name, data in (('oci-layout', b'{"imageLayoutVersion":"1.0.0"}'),
+                               ('index.json', b'{"schemaVersion":2,"manifests":[]}')):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                bundle.addfile(info, io.BytesIO(data))
+            if extra is not None:
+                bundle.addfile(extra, io.BytesIO(b'x') if extra.isfile() else None)
 
     def test_orchestrator_blocks_critical_scanner_errors_stale_reports_and_wrong_versions(self):
         cases = [(report(), TRIVY_VERSION, False, 0),
@@ -84,7 +98,7 @@ class ScanPolicy(unittest.TestCase):
                 root = Path(directory)
                 binary = self.scanner(root, payload, version=version, fail=fail)
                 archive = root / 'image.tar'
-                archive.write_bytes(b'disposable image bytes')
+                self.archive(archive)
                 reports = root / 'reports'
                 reports.mkdir()
                 (reports / 'vulnerabilities.json').write_text(json.dumps(report()))
@@ -93,6 +107,30 @@ class ScanPolicy(unittest.TestCase):
                 self.assertEqual(actual, expected)
                 summary = (reports / 'summary.md').read_text()
                 self.assertIn('Passed' if expected == 0 else 'Blocked', summary)
+                if version == TRIVY_VERSION:
+                    self.assertIn('fixture scanner diagnostic', (reports / 'scanner.log').read_text())
+
+    def test_oci_input_is_temporary_safe_and_preserves_the_published_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / 'image.tar'
+            self.archive(archive)
+            identity = digest_file(archive)
+            with scanner_input(archive) as layout:
+                self.assertTrue((layout / 'oci-layout').is_file())
+                self.assertEqual(json.loads((layout / 'index.json').read_text())['schemaVersion'], 2)
+            self.assertFalse(layout.exists(), 'Temporary image data must not remain with the reports')
+            self.assertEqual(digest_file(archive), identity)
+            for name, kind in (('../escape', tarfile.REGTYPE), ('/absolute', tarfile.REGTYPE),
+                               ('blobs/link', tarfile.SYMTYPE), ('blobs/hardlink', tarfile.LNKTYPE),
+                               ('blobs/device', tarfile.CHRTYPE), ('other-file', tarfile.REGTYPE)):
+                entry = tarfile.TarInfo(name)
+                entry.type = kind
+                entry.size = 1 if entry.isfile() else 0
+                entry.linkname = 'index.json' if entry.issym() or entry.islnk() else ''
+                self.archive(archive, entry)
+                with self.subTest(name=name), self.assertRaises((ValueError, tarfile.TarError)):
+                    with scanner_input(archive):
+                        pass
 
     def test_published_archive_must_be_the_same_bytes_that_were_scanned(self):
         with tempfile.TemporaryDirectory() as directory:

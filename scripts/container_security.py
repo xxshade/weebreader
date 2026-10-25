@@ -1,13 +1,16 @@
 """Scan the runtime image and fail closed on critical CVEs or incomplete scans."""
 import argparse
 from collections import Counter
+from contextlib import contextmanager
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 
 TRIVY_VERSION = '0.76.1'
 TRIVY_SHA256 = 'c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0'
@@ -82,6 +85,53 @@ def verify_archive(archive, identity):
         raise ValueError('Image archive differs from the artifact that passed its vulnerability scan.')
 
 
+@contextmanager
+def scanner_input(archive):
+    """Trivy accepts Docker tar files but needs an OCI *layout directory*.
+
+    Unpack only the outer OCI transport, never its filesystem layers. Keep
+    the original archive unchanged for hashing and publication. The temporary
+    layout is outside diagnostics and disappears even when scanning fails.
+    """
+    if archive is None:
+        yield None
+        return
+    with tarfile.open(archive, 'r:*') as bundle:
+        members = bundle.getmembers()
+        names = {str(PurePosixPath(member.name)) for member in members}
+        if 'oci-layout' not in names or 'index.json' not in names:
+            if 'manifest.json' not in names:
+                raise ValueError('Archive is neither a Docker image nor an OCI layout.')
+            yield archive
+            return
+        for member in members:
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or '..' in path.parts:
+                raise ValueError('Unsafe OCI archive path.')
+            if not (member.isfile() or member.isdir()):
+                raise ValueError('OCI archive links and special files are forbidden.')
+            if str(path) not in ('.', 'oci-layout', 'index.json', 'blobs') and path.parts[0] != 'blobs':
+                raise ValueError('Unexpected file outside the OCI metadata and blobs.')
+        with tempfile.TemporaryDirectory(prefix='weebreader-oci-') as directory:
+            bundle.extractall(directory, members=members, filter='data')
+            yield Path(directory)
+
+
+def run_scanner(args, log_path):
+    """Preserve scanner diagnostics in both Actions output and the report artifact."""
+    with Path(log_path).open('w') as log:
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, errors='replace', bufsize=1)
+        try:
+            for line in process.stdout:
+                print(line, end='', flush=True)
+                log.write(line)
+                log.flush()
+            return process.wait()
+        finally:
+            process.stdout.close()
+
+
 def cell(value):
     return str(value or '—').replace('|', '\\|').replace('\n', ' ')[:250]
 
@@ -95,14 +145,16 @@ def scan(binary, directory, *, archive=None, image=None, cache=None):
     lines = ['## Runtime image vulnerability scan', '', f'Trivy `{TRIVY_VERSION}`; blocking severity: **CRITICAL**, including unfixed CVEs.', '']
     status = 2
     try:
-        actual = subprocess.check_output([str(binary), '--version'], text=True).splitlines()[0]
-        if actual != 'Version: ' + TRIVY_VERSION:
+        actual = subprocess.check_output([str(binary), '--version'], text=True).splitlines()
+        if not actual or actual[0] != 'Version: ' + TRIVY_VERSION:
             raise ValueError('The scanner version differs from the pinned, verified release.')
         identity = digest_file(archive) if archive is not None else image
         lines.extend([f'Scanned artifact: `{identity}`', ''])
-        result = subprocess.run(command(binary, report_path, archive=archive, image=image, cache=cache), check=False)
-        if result.returncode:
-            raise ValueError(f'Scanner failed with exit code {result.returncode}; no clean result is assumed.')
+        with scanner_input(archive) as source:
+            returncode = run_scanner(command(binary, report_path, archive=source, image=image, cache=cache),
+                                     directory / 'scanner.log')
+        if returncode:
+            raise ValueError(f'Scanner failed with exit code {returncode}; no clean result is assumed.')
         report = json.loads(report_path.read_text())
         counts, critical = evaluate(report)
         lines.extend(['| Severity | Findings |', '| --- | ---: |'])
@@ -118,8 +170,10 @@ def scan(binary, directory, *, archive=None, image=None, cache=None):
             lines.extend(['', '**Passed:** complete OS and Python inventories contain no known critical CVEs.'])
             status = 0
         (directory / 'identity.txt').write_text(str(identity) + '\n')
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:
         lines.extend(['', '**Blocked:** ' + cell(error)])
+        with (directory / 'scanner.log').open('a') as log:
+            log.write('\nScan blocked: ' + str(error) + '\n')
     summary = '\n'.join(lines) + '\n'
     (directory / 'summary.md').write_text(summary)
     if os.environ.get('GITHUB_STEP_SUMMARY'):
