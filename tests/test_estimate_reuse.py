@@ -1,5 +1,6 @@
 """Unchanged authoritative requests reuse source counts with current account pace."""
 from contextlib import ExitStack, closing
+import asyncio
 import json
 import sqlite3
 import zipfile
@@ -19,6 +20,95 @@ from tests.test_text_eta_cards import JsonRequest
 class EstimateReuse(EstimateCase):
     book = _Fixtures.book
     evidence = _Fixtures.evidence
+
+    async def replacement_scopes(self):
+        for identity in range(1, 5):
+            await self.book(identity)
+        await self.db.executemany(
+            "INSERT INTO series(id,library_id,name,sort_name,folder_path) VALUES(?,1,?,?,?)",
+            [(identity, f'S{identity}', f's{identity}', f'/s{identity}') for identity in (1, 2)])
+        await self.db.execute('UPDATE items SET series_id=CASE WHEN id<=2 THEN 1 ELSE 2 END')
+        for identity in (1, 2):
+            await self.novel_chapter(identity)
+        await self.novel_chapter(3, novel_id=2)
+        await self.db.execute('INSERT INTO volumes(id,novel_id,number) VALUES(3,1,2)')
+        await self.db.execute('UPDATE chapters SET volume_id=3 WHERE id=2')
+        await self.db.execute("UPDATE chapters SET content_html='<p>one two three four</p>'")
+        await self.db.execute("""INSERT INTO text_replacements(user_id,series_id,find_text,replace_text)
+            VALUES(1,1,'one','one extra')""")
+        await self.db.execute("""INSERT INTO text_replacements(user_id,novel_id,find_text,replace_text)
+            VALUES(1,1,'one','one extra extra extra')""")
+        await self.evidence()
+        return ([{'kind':'series','id':identity} for identity in (1, 2)]
+                + [{'kind':'item','id':identity} for identity in range(1, 5)]
+                + [{'kind':'novel','id':1}, {'kind':'novel','id':1,'volume_id':1},
+                   {'kind':'novel','id':1,'volume_id':3}, {'kind':'novel','id':2}])
+
+    def assert_rule_queries(self, statements):
+        queries = [sql for sql in statements if 'FROM text_replacements' in sql]
+        self.assertEqual(len(queries), 4, 'Rules must be queried once per account/work per estimator, including empty rules')
+        for column in ('series_id', 'novel_id'):
+            for identity in (1, 2):
+                self.assertEqual(sum(f'{column} = {identity} ' in sql for sql in queries), 1)
+
+    async def test_authoritative_targets_share_rules_across_items_and_novel_volumes(self):
+        targets = await self.replacement_scopes()
+        statements = []
+        await self.db.set_trace_callback(statements.append)
+        try:
+            results = await self.estimates(targets)
+        finally:
+            await self.db.set_trace_callback(None)
+        self.assert_rule_queries(statements)
+        self.assertEqual([round(row['remaining'], 5) for row in results],
+                         [4.2, 3.6, 2.1, 2.1, 1.8, 1.8, 4.2, 2.1, 2.1, 1.2],
+                         'Series and novels with the same ID must retain their own rules and scopes')
+
+    async def test_cached_html_estimator_shares_rules_across_preparation_batches(self):
+        targets = await self.replacement_scopes()
+        await self.estimates(targets)
+        model = await build_estimator(self.db, 1, cached_only=True)
+        statements = []
+        await self.db.set_trace_callback(statements.append)
+        try:
+            with self.no_source_work():
+                for identity in range(1, 5):
+                    await model.prepare_items([{'id':identity,'file_format':'epub'}])
+                for novel, volume in ((1, None), (1, 1), (1, 3), (2, None)):
+                    await model.prepare_novel(novel, volume)
+        finally:
+            await self.db.set_trace_callback(None)
+        self.assert_rule_queries(statements)
+        self.assertAlmostEqual(model.item_estimates[1].remaining, 2.1)
+        self.assertAlmostEqual(model.for_novel(1).remaining, 4.2)
+
+    async def test_rules_are_isolated_between_accounts_and_refreshed_after_each_request(self):
+        targets = await self.replacement_scopes()
+        await self.db.execute("INSERT INTO users(id,username,password_hash) VALUES(2,'other','x')")
+        await self.db.execute("""INSERT INTO page_reads(user_id,kind,started_at,seconds,cap_seconds,
+            visit_id,pace_words,pace_seconds,pace_samples)
+            VALUES(2,'epub',datetime('now'),0,0,'other',1200,360,3)""")
+        await self.db.execute("""INSERT INTO text_replacements(user_id,series_id,find_text,replace_text)
+            VALUES(2,1,'one','one extra extra extra extra')""")
+        await self.db.commit()
+        first, other = await asyncio.gather(
+            self.estimates(targets), reading_estimates(JsonRequest(targets), {'id':2}, self.db))
+        self.assertAlmostEqual(first[2]['remaining'], 2.1)
+        self.assertAlmostEqual(other['estimates'][2]['remaining'], 3.0, msg='Accounts must not share replacement rules')
+        self.assertAlmostEqual(other['estimates'][6]['remaining'], 2.4)
+        await self.db.execute("""UPDATE text_replacements SET replace_text='one extra extra'
+            WHERE user_id=1 AND series_id=1""")
+        await self.db.execute("""INSERT INTO text_replacements(user_id,series_id,find_text,replace_text)
+            VALUES(1,2,'one','one extra')""")
+        await self.db.commit()
+        changed = await self.estimates(targets)
+        self.assertAlmostEqual(changed[2]['remaining'], 2.4, msg='The next request must see edited rules')
+        self.assertAlmostEqual(changed[4]['remaining'], 2.1, msg='Empty rule results must not survive into the next request')
+        await self.db.execute('DELETE FROM text_replacements WHERE user_id=1')
+        await self.db.commit()
+        removed = await self.estimates(targets)
+        self.assertAlmostEqual(removed[2]['remaining'], 1.8, msg='The next request must see deleted series rules')
+        self.assertAlmostEqual(removed[6]['remaining'], 2.4, msg='The next request must see deleted novel rules')
 
     async def scopes(self):
         await self.book()

@@ -71,3 +71,21 @@ synthetic shelf also needs to build its source inventories and takes longer.
 Legacy durations remain visible while their scopes are upgraded. No cache
 removal or history reset is required. Subsequent visits reuse source counts;
 changes to reading pace only require multiplication by the current learned rate.
+
+## Replacement rule queries
+
+Word-count reuse still needs the current text replacement rules to validate each
+snapshot. Previously, preparing 151 EPUBs in 26 series repeated that query once
+per EPUB. Each request's account-bound estimator now reuses rules per series or
+novel, including empty results. Novel volumes share their novel's rules, while
+series and novels with the same numeric ID remain distinct. A new request starts
+with no rules cached, so additions, edits and deletions invalidate counts as
+before.
+
+On the warmed server fixture above, this reduces EPUB rule queries from 151 to
+26 and total aiosqlite worker calls for Home from 366 to 116. Worker calls include
+execution and result fetching; they are not a count of SQL statements. Backend
+tests trace the real authoritative endpoint and the cache-only HTML estimator,
+including multiple preparation batches, concurrent accounts and rule edits
+between requests. This does not change the SQLite engine, connection pool or
+write serialization.
