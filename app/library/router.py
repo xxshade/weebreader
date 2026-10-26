@@ -229,7 +229,7 @@ NOTHING_LEFT = ShelfReading(unread=0, remaining=None)
 NO_CHAPTERS = NovelShelf(unread=0, remaining=None, newest=None)
 
 
-async def _series_reading(db, user_id: int, estimator, series_id: int | None = None):
+async def _series_reading(db, user_id: int, estimator, series_ids=None):
     """What each series still has waiting, keyed by series id.
 
     "Unread" is NOT COMPLETED, which is the same rule the time beside it
@@ -251,12 +251,17 @@ async def _series_reading(db, user_id: int, estimator, series_id: int | None = N
     which is the whole difference between filtering here and filtering in
     the loop. A shelf read to the end costs nothing at all.
 
-    `series_id` narrows it to one series, for the card endpoint that
-    re-renders a single card -- the same code, so a live card cannot show a
-    number the grid would not have.
+    `series_ids` narrows it to requested cards. None means the whole shelf;
+    an empty collection means no work. One card retains its simple query.
     """
-    scope = "AND items.series_id = ?" if series_id is not None else ""
-    params = (user_id, series_id) if series_id is not None else (user_id,)
+    selected = sorted(set(series_ids)) if series_ids is not None else None
+    if selected == []:
+        return {}
+    scope, params = "", (user_id,)
+    if selected is not None:
+        scope = ("AND items.series_id = ?" if len(selected) == 1 else
+                 "AND items.series_id IN (" + ','.join('?' for _ in selected) + ")")
+        params = (user_id, *selected)
     rows = await (await db.execute(f"""
         SELECT items.id, items.series_id, items.file_format,
                items.text_size, items.page_count,
@@ -857,7 +862,7 @@ async def series_card(series_id: int, user=Depends(get_current_user), db=Depends
     # rendered, and a second COUNT(*) written out here is exactly how that
     # stops being true.
     reading = await _series_reading(
-        db, user["id"], await build_estimator(db, user["id"], cached_only=True), series_id)
+        db, user["id"], await build_estimator(db, user["id"], cached_only=True), [series_id])
 
     return _series_card(
         s, status=status,
@@ -1234,6 +1239,8 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
         key = f"{kind}:{identity}:{volume or ''}"
         parsed[key] = (kind, identity, volume)
     estimator = await build_estimator(db, user["id"])
+    series_ids = {identity for kind, identity, _ in parsed.values() if kind == "series"}
+    series_reading = await _series_reading(db, user["id"], estimator, series_ids) if series_ids else {}
     results = []
     for key, (kind, identity, volume) in parsed.items():
         estimate, state, missing = None, "complete", 0
@@ -1259,7 +1266,7 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
                 estimate = estimator.for_novel(identity, volume)
                 state = estimator.novel_states.get((identity, volume), "content_unavailable")
         else:
-            reading = (await _series_reading(db, user["id"], estimator, identity)).get(identity, NOTHING_LEFT)
+            reading = series_reading.get(identity, NOTHING_LEFT)
             state, missing = reading.state, reading.missing
             results.append({"key": key, "remaining": reading.remaining, "total": None,
                             "collecting": state == "collecting", "state": state, "missing": missing})

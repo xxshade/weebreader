@@ -196,6 +196,14 @@ class ReadingEstimator:
                 self.item_states[identity] = 'position_unavailable'
                 continue  # Old percentages cannot identify remaining words.
             prepared.append((row, rate, section, block, offset))
+        pending_series = {row['series_id'] for row, *_ in prepared
+                          if row['series_id'] is not None
+                          and (row['series_id'], None) not in self._replacement_rules}
+        # Keep the original lazy query for one series. Multiple requested
+        # series share bounded queries; nothing survives this estimator.
+        if len(pending_series) > 1:
+            rules = await text_replacements.rules_for_series(self.db, self.user_id, pending_series)
+            self._replacement_rules.update(((identity, None), values) for identity, values in rules.items())
         for start in range(0, len(prepared), FILE_STAT_BATCH_SIZE):
             batch = prepared[start:start + FILE_STAT_BATCH_SIZE]
             # Keep checks off the loop, without one thread round trip per file.
