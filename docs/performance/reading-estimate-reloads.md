@@ -89,3 +89,26 @@ tests trace the real authoritative endpoint and the cache-only HTML estimator,
 including multiple preparation batches, concurrent accounts and rule edits
 between requests. This does not change the SQLite engine, connection pool or
 write serialization.
+
+## Bounded file checks
+
+With rules reused, the next comparison found that 151 eligible EPUBs still
+submitted 151 separate worker tasks for their filesystem `stat()` calls. The
+estimator now prepares eligible items first and submits at most 32 file checks
+per worker task, reducing those submissions to five on this fixture. File size
+and modification time still participate in every request's fingerprints; no
+file metadata is retained across requests. Rules, positions, current pace and
+source inventory invalidation are unchanged.
+
+The worker returns each file's result or error independently, including invalid
+paths. Estimation keeps healthy results and identifies unavailable items in a
+partial total. Each batch finishes before the next is submitted, so task
+cancellation can leave only its bounded active batch running. Completed items,
+unusable source positions and insufficient pace evidence need no file checks.
+
+Backend tests exercise both the authoritative endpoint and cache-only HTML
+preparation with 65 eligible files plus excluded items. They count actual source
+checks, assert worker-thread execution and batch bounds, and exercise changed,
+missing, invalid and repaired paths across requests and cancellation. Local
+Xeon measurements are comparisons, not emulation of an Intel N100 or energy
+measurements; CPU time alone cannot establish watts saved.
