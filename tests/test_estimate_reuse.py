@@ -44,12 +44,17 @@ class EstimateReuse(EstimateCase):
                 + [{'kind':'novel','id':1}, {'kind':'novel','id':1,'volume_id':1},
                    {'kind':'novel','id':1,'volume_id':3}, {'kind':'novel','id':2}])
 
-    def assert_rule_queries(self, statements):
+    def assert_rule_queries(self, statements, *, grouped=False):
         queries = [sql for sql in statements if 'FROM text_replacements' in sql]
-        self.assertEqual(len(queries), 4, 'Rules must be queried once per account/work per estimator, including empty rules')
-        for column in ('series_id', 'novel_id'):
+        self.assertEqual(len(queries), 3 if grouped else 4,
+                         'Rules must be read once per requested group or lazy work, including empty results')
+        if grouped:
+            self.assertEqual(sum('series_id IN (1,2)' in sql for sql in queries), 1)
+        else:
             for identity in (1, 2):
-                self.assertEqual(sum(f'{column} = {identity} ' in sql for sql in queries), 1)
+                self.assertEqual(sum(f'series_id = {identity} ' in sql for sql in queries), 1)
+        for identity in (1, 2):
+            self.assertEqual(sum(f'novel_id = {identity} ' in sql for sql in queries), 1)
 
     async def test_authoritative_targets_share_rules_across_items_and_novel_volumes(self):
         targets = await self.replacement_scopes()
@@ -59,7 +64,7 @@ class EstimateReuse(EstimateCase):
             results = await self.estimates(targets)
         finally:
             await self.db.set_trace_callback(None)
-        self.assert_rule_queries(statements)
+        self.assert_rule_queries(statements, grouped=True)
         self.assertEqual([round(row['remaining'], 5) for row in results],
                          [4.2, 3.6, 2.1, 2.1, 1.8, 1.8, 4.2, 2.1, 2.1, 1.2],
                          'Series and novels with the same ID must retain their own rules and scopes')

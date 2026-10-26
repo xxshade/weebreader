@@ -112,3 +112,20 @@ checks, assert worker-thread execution and batch bounds, and exercise changed,
 missing, invalid and repaired paths across requests and cancellation. Local
 Xeon measurements are comparisons, not emulation of an Intel N100 or energy
 measurements; CPU time alone cannot establish watts saved.
+
+## Grouped estimate queries
+
+Request-local rule reuse still issued one query per distinct series, and the
+estimate endpoint prepared every requested series separately. Multiple series
+now share bounded rule queries (500 series per query, scoped to the account),
+including empty rule sets and preserving rule order. A single series retains
+the original lazy lookup. Novel rules remain scoped independently.
+
+The endpoint gathers validated series targets before preparing their unread
+items once through the same aggregation used by Home. The selected scope uses
+an equality query for one series and an `IN` query for multiple series; an empty
+selection returns without querying. This does not broaden the 100-target limit
+or truncate the number of books within the requested series. Individual item
+targets, including orphans and completed items, remain independent, and results
+retain the deduplicated request order. File checks retain their sequential
+32-file batch bound and remain fresh on each request.

@@ -15,6 +15,7 @@ structural rather than a promise: the file is never in the path at all.
 import json
 
 MAX_RULES_PER_TARGET = 50
+RULE_QUERY_BATCH_SIZE = 500
 
 
 async def rules_for(db, user_id: int, *, series_id=None, novel_id=None) -> list[dict]:
@@ -48,6 +49,22 @@ async def rules_json(db, user_id: int, *, series_id=None, novel_id=None) -> str:
     parses this unconditionally, and an empty attribute is not JSON.
     """
     return json.dumps(await rules_for(db, user_id, series_id=series_id, novel_id=novel_id))
+
+
+async def rules_for_series(db, user_id: int, series_ids) -> dict[int, list[dict]]:
+    """Rules for just these series, including empty results, in reader order."""
+    identities = sorted(set(series_ids) - {None})
+    result = {identity: [] for identity in identities}
+    for start in range(0, len(identities), RULE_QUERY_BATCH_SIZE):
+        batch = identities[start:start + RULE_QUERY_BATCH_SIZE]
+        marks = ','.join('?' for _ in batch)
+        rows = await (await db.execute(
+            f"SELECT series_id, find_text, replace_text FROM text_replacements "
+            f"WHERE user_id = ? AND series_id IN ({marks}) ORDER BY id",
+            (user_id, *batch))).fetchall()
+        for row in rows:
+            result[row['series_id']].append({'find': row['find_text'], 'replace': row['replace_text']})
+    return result
 
 
 async def list_all(db, user_id: int) -> list[dict]:

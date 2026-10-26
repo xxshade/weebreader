@@ -147,6 +147,14 @@ novel reuse those rules during that request. Each request builds a new estimator
 for its account, so rule additions, edits and deletions remain visible on the
 next request; rules are never shared between accounts or retained across visits.
 
+When several series need rules, their rules are fetched together in bounded
+groups, preserving each series' rule order and empty results. A single series
+keeps its lazy lookup. A request for several series also prepares their unread
+items together, using the same aggregation as the home page. Only requested
+series are included, and response order, individual item targets and novel
+volume boundaries remain unchanged. An empty selection never means the whole
+shelf; only the home page's unrestricted query does.
+
 Every eligible EPUB's file size and modification time are checked again on each
 request. These filesystem checks run outside the event loop in batches of at
 most 32 files, without retaining file metadata between requests. A missing file
