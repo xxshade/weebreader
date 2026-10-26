@@ -69,6 +69,7 @@ MIN_PACE_WORDS = 1000
 MIN_PACE_SECONDS = 300
 MIN_PACE_SAMPLES = 3
 PRIOR_WORDS = 3000
+FILE_STAT_BATCH_SIZE = 32
 
 
 log = logging.getLogger(__name__)
@@ -91,6 +92,17 @@ STATE_DETAILS = {
     'complete': '',
     'available': 'Based on measured reading pace.',
 }
+
+
+def _stat_epub_files(rows):
+    """Check one bounded batch in a worker; one bad path affects one item."""
+    results = {}
+    for row in rows:
+        try:
+            results[row['id']] = Path(row['file_path']).stat()
+        except (OSError, ValueError) as error:
+            results[row['id']] = error
+    return results
 
 
 class ReadingEstimator:
@@ -159,6 +171,7 @@ class ReadingEstimator:
                       AND reading_progress.user_id=? WHERE items.id IN ({placeholders})""",
                 (self.user_id, *batch))).fetchall()
             rows.update((row['id'], row) for row in fetched)
+        prepared = []
         for identity in requested:
             self.item_estimates[identity] = None
             rate = self.text_rate('epub', identity)
@@ -182,35 +195,45 @@ class ReadingEstimator:
             elif row['progress_percent']:
                 self.item_states[identity] = 'position_unavailable'
                 continue  # Old percentages cannot identify remaining words.
-            rules = await self._rules_for(series_id=row['series_id'])
-            scope = (self.cache_account, 'item', identity)
-            try:
-                stat = await asyncio.to_thread(Path(row['file_path']).stat)
-                fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
-                    stat.st_mtime_ns, section, block, offset, rules, 1))
-                saved = await self._cached_estimate(scope, fingerprint, rate)
-                if saved is not None:
-                    self.item_estimates[identity] = saved
-                    self.item_states[identity] = 'available'
+            prepared.append((row, rate, section, block, offset))
+        for start in range(0, len(prepared), FILE_STAT_BATCH_SIZE):
+            batch = prepared[start:start + FILE_STAT_BATCH_SIZE]
+            # Keep checks off the loop, without one thread round trip per file.
+            # Results belong only to this batch; a new request checks again.
+            stats = await asyncio.to_thread(_stat_epub_files, [entry[0] for entry in batch])
+            for row, rate, section, block, offset in batch:
+                identity = row['id']
+                rules = await self._rules_for(series_id=row['series_id'])
+                scope = (self.cache_account, 'item', identity)
+                try:
+                    stat = stats[identity]
+                    if isinstance(stat, (OSError, ValueError)):
+                        raise stat
+                    fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
+                        stat.st_mtime_ns, section, block, offset, rules, 1))
+                    saved = await self._cached_estimate(scope, fingerprint, rate)
+                    if saved is not None:
+                        self.item_estimates[identity] = saved
+                        self.item_states[identity] = 'available'
+                        continue
+                    if self.cached_only:
+                        continue  # HTML renders never wait for a cold inventory.
+                    if section == block == offset == 0:
+                        total = remaining = await asyncio.to_thread(inventory_epub_total, row['file_path'], row['file_hash'], rules)
+                    else:
+                        inventory = await asyncio.to_thread(inventory_epub, row['file_path'], row['file_hash'], rules)
+                        total, remaining = inventory.total_words, inventory.remaining(section, block, offset)
+                except (OSError, ValueError, KeyError, AttributeError, IndexError, XMLSyntaxError, zipfile.BadZipFile) as exc:
+                    self.item_states[identity] = 'content_unavailable'
+                    log.info('reading_estimate user=%s item=%s state=content_unavailable error=%s',
+                             self.user_id, identity, type(exc).__name__)
                     continue
-                if self.cached_only:
-                    continue  # HTML renders never wait for a cold inventory.
-                if section == block == offset == 0:
-                    total = remaining = await asyncio.to_thread(inventory_epub_total, row['file_path'], row['file_hash'], rules)
+                if remaining is not None:
+                    self.item_estimates[identity] = Estimate(remaining * rate, total * rate, 0)
+                    self.item_states[identity] = 'available'
+                    await asyncio.to_thread(snapshots.save, scope, fingerprint, snapshots.WordCounts(remaining, total))
                 else:
-                    inventory = await asyncio.to_thread(inventory_epub, row['file_path'], row['file_hash'], rules)
-                    total, remaining = inventory.total_words, inventory.remaining(section, block, offset)
-            except (OSError, ValueError, KeyError, AttributeError, IndexError, XMLSyntaxError, zipfile.BadZipFile) as exc:
-                self.item_states[identity] = 'content_unavailable'
-                log.info('reading_estimate user=%s item=%s state=content_unavailable error=%s',
-                         self.user_id, identity, type(exc).__name__)
-                continue
-            if remaining is not None:
-                self.item_estimates[identity] = Estimate(remaining * rate, total * rate, 0)
-                self.item_states[identity] = 'available'
-                await asyncio.to_thread(snapshots.save, scope, fingerprint, snapshots.WordCounts(remaining, total))
-            else:
-                self.item_states[identity] = 'position_unavailable'
+                    self.item_states[identity] = 'position_unavailable'
 
     async def prepare_novel(self, novel_id, volume_id=None):
         key = novel_id, volume_id

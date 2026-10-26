@@ -147,6 +147,14 @@ novel reuse those rules during that request. Each request builds a new estimator
 for its account, so rule additions, edits and deletions remain visible on the
 next request; rules are never shared between accounts or retained across visits.
 
+Every eligible EPUB's file size and modification time are checked again on each
+request. These filesystem checks run outside the event loop in batches of at
+most 32 files, without retaining file metadata between requests. A missing file
+or invalid path affects only its own estimate, so known series time remains a
+partial total. Completed items, insufficient pace evidence and incompatible
+saved positions do not cause unnecessary file checks. Cancelling an estimation
+task does not schedule another batch; its active worker may finish that batch.
+
 A content, saved-position or replacement-rule change invalidates the counts;
 completed content never resurrects an old result. Chapter revisions detect even
 same-size content edits without reading novel source bodies. The cache contains
