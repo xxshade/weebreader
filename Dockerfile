@@ -26,6 +26,9 @@ WORKDIR /app
 
 COPY --from=python-builder /install /usr/local
 
+# Package installation is complete; do not ship pip and its bundled dependencies.
+RUN python -m pip uninstall --yes pip
+
 COPY app/ /app/app/
 
 RUN mkdir -p /app/data && chown -R app:app /app

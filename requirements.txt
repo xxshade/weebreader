@@ -15,6 +15,9 @@ qrcode==8.2
 # ---- Web novels (app/novels/) ----
 httpx==0.28.1
 beautifulsoup4==4.15.0
-selenium==4.47.0
+selenium==4.51.0
 apscheduler==3.11.3
 bleach==6.4.0
+
+# Security fix for Selenium's HTTP transport
+urllib3==2.8.0
