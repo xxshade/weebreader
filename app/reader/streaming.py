@@ -3,11 +3,13 @@ Reads specific content from inside an EPUB/CBZ without unpacking everything
 to disk. Used by the web reader (comic and epub).
 """
 
+import asyncio
 import threading
 import zipfile
 from collections import OrderedDict
 
 from PIL import Image
+from starlette.responses import StreamingResponse
 
 from app.library.parsers.cbz import page_names_from
 
@@ -50,6 +52,87 @@ def _pages_of(zf: zipfile.ZipFile, file_path: str, file_hash: str | None) -> lis
         while len(_page_order) > _PAGE_ORDER_SIZE:
             _page_order.popitem(last=False)
     return pages
+
+
+class ZipResource:
+    """Own one archive and entry until streaming finishes or disconnects."""
+    def __init__(self, archive, entry, info):
+        self.archive, self.entry, self.info = archive, entry, info
+        self._lock = threading.Lock()
+        self.closed = False
+
+    def read(self, size):
+        with self._lock:
+            return self.entry.read(size)
+
+    def close(self):
+        with self._lock:
+            if not self.closed:
+                try:
+                    self.entry.close()
+                finally:
+                    self.archive.close()
+                    self.closed = True
+
+
+def _open_resource(file_path, select):
+    archive = zipfile.ZipFile(file_path)
+    try:
+        name = select(archive)
+        info = archive.getinfo(name)
+        return ZipResource(archive, archive.open(info), info)
+    except BaseException:
+        archive.close()
+        raise
+
+
+def open_comic_page(file_path, page_index, file_hash=None):
+    def select(archive):
+        pages = _pages_of(archive, file_path, file_hash)
+        if page_index < 0 or page_index >= len(pages):
+            raise IndexError("page out of range")
+        return pages[page_index]
+    return _open_resource(file_path, select)
+
+
+def open_epub_resource(file_path, resource_path):
+    return _open_resource(file_path, lambda archive: resource_path)
+
+
+async def open_in_thread(function, *args):
+    # If the request is cancelled while the thread opens the ZIP, close the
+    # eventual result rather than abandoning an open file descriptor.
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        def close_result(done):
+            if not done.cancelled() and done.exception() is None:
+                done.result().close()
+        task.add_done_callback(close_result)
+        raise
+
+
+class ZipStreamingResponse(StreamingResponse):
+    def __init__(self, resource, headers=None):
+        self.resource = resource
+        async def chunks():
+            while True:
+                data = await asyncio.to_thread(resource.read, 64 * 1024)
+                if not data:
+                    break
+                yield data
+        super().__init__(chunks(), media_type=mime_for(resource.info.filename),
+                         headers={'Content-Length': str(resource.info.file_size), **(headers or {})})
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Reads can still be finishing in a worker after cancellation;
+            # close waits for the resource lock rather than racing the read.
+            closing = asyncio.create_task(asyncio.to_thread(self.resource.close))
+            await asyncio.shield(closing)
 
 
 def comic_page_bytes(file_path: str, page_index: int,
