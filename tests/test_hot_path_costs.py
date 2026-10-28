@@ -132,10 +132,14 @@ class TheReaderDoesNotBlockTheLoop(unittest.TestCase):
 
     def test_every_archive_read_in_a_request_goes_to_a_thread(self):
         source = (APP / "reader/router.py").read_text()
-        for call in ("comic_page_bytes", "comic_all_page_dimensions",
-                     "epub_resource_bytes", "list_spine_resources"):
+        for call in ("comic_all_page_dimensions", "list_spine_resources"):
             with self.subTest(call=call):
                 self.assertRegex(source, rf"asyncio\.to_thread\(\s*\n?\s*(streaming\.)?{call}")
+
+    def test_streaming_archive_reads_are_offloaded(self):
+        source = (APP / "reader/streaming.py").read_text()
+        self.assertIn("asyncio.to_thread(function, *args)", source)
+        self.assertIn("asyncio.to_thread(resource.read,", source)
 
     def test_no_page_is_measured_on_the_way_out(self):
         # /dimensions has every page's size, computed once and cached in

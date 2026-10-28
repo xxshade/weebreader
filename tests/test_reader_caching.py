@@ -28,7 +28,7 @@ from app.asset_versioning import STATIC_DIR, asset_url, digest_for
 from app.config import settings
 from app.database import get_connection, init_db
 from app.main import VersionedStaticFiles
-from app.reader.router import _content_cache_headers, comic_page, epub_resource
+from app.reader.router import _content_cache_headers, _get_item, comic_page, epub_resource
 
 ROOT = Path(__file__).resolve().parent.parent
 HASH = "a" * 64
@@ -140,12 +140,12 @@ class TheRouteAnswersWithThem(PageDimensionsCase):
     async def test_a_page_asked_for_by_version_may_be_kept(self):
         item = await self._item()
         response = await comic_page(item["id"], 0, _request(), v=item["file_hash"],
-                                    user={"id": 1}, db=self.db)
+                                    item=await _get_item(self.db, item["id"]))
         self.assertIn("immutable", response.headers["cache-control"])
 
     async def test_a_page_asked_for_without_one_revalidates(self):
         item = await self._item()
-        response = await comic_page(item["id"], 0, _request(), v=None, user={"id": 1}, db=self.db)
+        response = await comic_page(item["id"], 0, _request(), v=None, item=await _get_item(self.db, item["id"]))
         self.assertNotIn("immutable", response.headers["cache-control"])
         # The validator is still there, so revalidating is one round trip
         # with no body rather than the page again.
@@ -155,7 +155,7 @@ class TheRouteAnswersWithThem(PageDimensionsCase):
         item = await self._item()
         etag = f'"{item["file_hash"]}-0"'
         response = await comic_page(item["id"], 0, _request({"if-none-match": etag}),
-                                    v=None, user={"id": 1}, db=self.db)
+                                    v=None, item=await _get_item(self.db, item["id"]))
         self.assertEqual(response.status_code, 304)
 
     async def test_an_epub_resource_follows_the_same_rule(self):
@@ -173,10 +173,10 @@ class TheRouteAnswersWithThem(PageDimensionsCase):
             "SELECT id, file_hash FROM items WHERE file_format = 'epub'")).fetchone()
 
         current = await epub_resource(item["id"], "ch1.xhtml", _request(), v=item["file_hash"],
-                                      user={"id": 1}, db=self.db)
+                                      item=await _get_item(self.db, item["id"]))
         self.assertIn("immutable", current.headers["cache-control"])
         stale = await epub_resource(item["id"], "ch1.xhtml", _request(), v="other",
-                                    user={"id": 1}, db=self.db)
+                                    item=await _get_item(self.db, item["id"]))
         self.assertNotIn("immutable", stale.headers["cache-control"])
 
 

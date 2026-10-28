@@ -7,8 +7,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 
 from app.templating import templates
-from app.auth.dependencies import get_current_user
-from app.database import get_db, write_transaction
+from app.auth.dependencies import get_current_user, get_streaming_user
+from app.database import get_db, read_connection, write_transaction
 from app.http_utils import (
     back_target, is_htmx, json_object, one_of, optional_index, percent, safe_redirect_target, UNTRUSTED_CONTENT_HEADERS,
 )
@@ -68,6 +68,13 @@ async def _get_item(db, item_id: int):
     if item is None:
         raise HTTPException(404, "Item not found")
     return item
+
+
+async def _get_stream_item(item_id: int, user=Depends(get_streaming_user)):
+    # Return the pool connection before a potentially slow client starts
+    # receiving the response body.
+    async with read_connection() as db:
+        return await _get_item(db, item_id)
 
 
 async def _next_item(db, series_id: int | None, item_id: int):
@@ -159,7 +166,7 @@ async def comic_chapter_info(item_id: int, user=Depends(get_current_user), db=De
 
 @router.get("/{item_id}/page/{page_index}")
 async def comic_page(item_id: int, page_index: int, request: Request, v: str | None = None,
-                     user=Depends(get_current_user), db=Depends(get_db)):
+                     item=Depends(_get_stream_item)):
     """One page's image.
 
     `v` is the item's own file hash, put there by the reader (see
@@ -176,29 +183,20 @@ async def comic_page(item_id: int, page_index: int, request: Request, v: str | N
     opening each page in Pillow on the way out, per page turn, for a number
     already known.
     """
-    item = await _get_item(db, item_id)
     etag = f'"{item["file_hash"]}-{page_index}"'
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304)
 
     try:
-        # In a thread: this reads the CBZ's central directory and
-        # decompresses one page, and an `async def` handler runs ON the
-        # event loop -- so every page turn froze the whole app for the
-        # duration, SSE and progress saves included. Measured at 7.5 ms per
-        # page for a 1.2 MB page here, and the reader asks for several at
-        # once (it preloads around the current one). With four in flight, an
-        # unrelated endpoint went from 3.9 ms to 37.9 ms median; in a thread
-        # it stays at 16.3 ms. The scanner and the thumbnail pipeline
-        # already do this -- the reader, the hottest path in the app, was
-        # the one that did not.
-        data, mime = await asyncio.to_thread(
-            streaming.comic_page_bytes, item["file_path"], page_index, item["file_hash"])
+        # Open the archive off the event loop; each subsequent chunk is
+        # also read in a worker so decompression cannot block requests.
+        resource = await streaming.open_in_thread(
+            streaming.open_comic_page, item["file_path"], page_index, item["file_hash"])
     except IndexError:
         raise HTTPException(404, "Page out of range")
 
-    return Response(content=data, media_type=mime,
-                    headers={"ETag": etag, **_content_cache_headers(v, item["file_hash"])})
+    return streaming.ZipStreamingResponse(
+        resource, headers={"ETag": etag, **_content_cache_headers(v, item["file_hash"])})
 
 
 @router.get("/{item_id}/dimensions")
@@ -256,7 +254,7 @@ async def epub_manifest(item_id: int, user=Depends(get_current_user), db=Depends
 
 @router.get("/{item_id}/resource/{resource_path:path}")
 async def epub_resource(item_id: int, resource_path: str, request: Request, v: str | None = None,
-                        user=Depends(get_current_user), db=Depends(get_db)):
+                        item=Depends(_get_stream_item)):
     """One file out of the EPUB.
 
     `v` carries the item's file hash, for the reason comic_page gives. The
@@ -266,23 +264,19 @@ async def epub_resource(item_id: int, resource_path: str, request: Request, v: s
     Those get the short-lived answer and revalidate against the ETag, which
     is the honest one for a URL whose content can change.
     """
-    item = await _get_item(db, item_id)
     etag = _resource_etag(item["file_hash"], resource_path)
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=UNTRUSTED_CONTENT_HEADERS)
 
     try:
-        data, mime = await asyncio.to_thread(
-            streaming.epub_resource_bytes, item["file_path"], resource_path)
+        resource = await streaming.open_in_thread(
+            streaming.open_epub_resource, item["file_path"], resource_path)
     except KeyError:
         raise HTTPException(404, "Resource not found in the EPUB")
 
-    return Response(
-        content=data,
-        media_type=mime,
-        headers={"ETag": etag, **_content_cache_headers(v, item["file_hash"]),
-                 **UNTRUSTED_CONTENT_HEADERS},
-    )
+    return streaming.ZipStreamingResponse(
+        resource, headers={"ETag": etag, **_content_cache_headers(v, item["file_hash"]),
+                           **UNTRUSTED_CONTENT_HEADERS})
 
 
 # ---------- Progress ----------
