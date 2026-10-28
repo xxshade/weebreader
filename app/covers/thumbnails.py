@@ -118,7 +118,7 @@ async def save_custom_series_cover(cover_bytes: bytes, series_id: int) -> str:
 
     The name carries a hash of the ENCODED bytes for the same reason item
     thumbnails carry the source file's (see write_cover_thumbnail): /covers is
-    revalidated privately, and a different URL makes replacements unambiguous.
+    cached privately, and a different URL makes replacements unambiguous.
     Hashing the output rather than the upload also means re-uploading the same
     picture reuses the same name instead of leaving an orphan behind.
     """
@@ -201,7 +201,7 @@ async def migrate_legacy_thumbnail(cover_path: str | None) -> str | None:
 # encoder, same content-addressed name, same directory. It lives under
 # covers_dir rather than getting a mount of its own because that directory
 # is not really "covers" any more -- it is this app's one content-addressed
-# image store, with authenticated requests and private revalidation. A second mount, a second config value
+# image store, with authenticated requests and private immutable caching. A second mount, a second config value
 # and a second entrypoint chown, all for one file per user, would be more
 # machinery than the naming costs.
 #

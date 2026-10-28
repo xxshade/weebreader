@@ -40,8 +40,10 @@ class CoverCache(unittest.TestCase):
         cls.fixture, cls.data, cls.base = fixture.fixture, fixture.data, fixture.base
         cls.cover = (cls.data / 'covers' / 'series-1-fixture.webp').read_bytes()
         cls.version = hashlib.sha256(cls.cover).hexdigest()
+        (cls.data / 'covers' / 'avatar-1-fixture.webp').write_bytes(cls.cover)
         with closing(sqlite3.connect(cls.data / 'library.db')) as db, db:
             db.execute('UPDATE items SET cover_path=(SELECT cover_path FROM series WHERE series.id=items.series_id)')
+            db.execute("UPDATE users SET avatar_path='avatar-1-fixture.webp' WHERE id=1")
             db.execute("INSERT INTO novels(id,title,source_url,active,cover_image,cover_image_content_type,cover_image_hash) VALUES(1,'Cache fixture','https://example.invalid/cache',0,?,'image/webp',?)",
                        (cls.cover, cls.version))
             db.execute('INSERT INTO volumes(id,novel_id,number) VALUES(1,1,1)')
@@ -81,15 +83,10 @@ class CoverCache(unittest.TestCase):
         return [line for line in (self.fixture / 'server.log').read_text().splitlines()
                 if re.search(r'"GET /(?:covers/|novels/\d+/cover)', line)]
 
-    def assert_revalidated(self, previous):
+    def assert_cached(self, previous):
         new = self.image_requests()[previous:]
-        for line in new:
-            if '"GET /covers/' in line:
-                self.assertIn('" 304 ', line, 'Private covers must revalidate without retransmitting')
-                self.private_revalidations += 1
-            else:
-                self.fail('Unchanged novel cover should remain in browser cache: ' + line)
-        return previous + len(new)
+        self.assertEqual(new, [], 'Unchanged covers and avatars must be reused without requests')
+        return previous
 
     def images_ready(self):
         BrowserChecks.load_all_covers(self, 'img[src^="/covers/"], img[src^="/novels/"]')
@@ -111,20 +108,21 @@ class CoverCache(unittest.TestCase):
                         'Private image URLs must bypass previously cached public images')
         expected = self.base + f'/novels/1/cover?v={self.version}'
         self.assertEqual(self.js("return document.querySelector('#series-grid [data-novel-id=\"1\"] img').src"), expected)
+        self.assertTrue(self.js("return !!document.querySelector('img.avatar[src*=\"avatar-1-fixture.webp\"]')"),
+                        'An avatar must participate in the cache check')
         cold = len(self.image_requests())
         self.assertGreater(cold, 0, 'The cold-cache control must transfer image bodies')
-        self.private_revalidations = 0
         checked = cold
         for path in ('/series/1', '/novels/1', '/'):
             driver.get(self.base + path)
             self.images_ready()
-            checked = self.assert_revalidated(checked)
+            checked = self.assert_cached(checked)
         self.quit_driver()
         driver = self.launch()  # Same on-disk profile, including the session cookie.
         for path in ('/series/1', '/novels/1', '/'):
             driver.get(self.base + path)
             self.images_ready()
-            checked = self.assert_revalidated(checked)
+            checked = self.assert_cached(checked)
         self.wait_for("document.getElementById('library-events')?.libraryEventsBound")
         home = driver.current_window_handle
         driver.switch_to.new_window('tab')
@@ -136,8 +134,7 @@ class CoverCache(unittest.TestCase):
         self.wait_for('!!document.querySelector(\'#reading-grid [data-novel-id="1"] img\')')
         self.images_ready()
         self.assertEqual(self.js('return document.querySelector(\'#reading-grid [data-novel-id="1"] img\').src'), expected)
-        checked = self.assert_revalidated(checked)
-        self.assertGreater(self.private_revalidations, 0, 'Private covers must contact the server after initial loading')
+        checked = self.assert_cached(checked)
         # A changed cover must still transfer its new bytes. Old versions
         # intentionally remain cached under their own distinct URL.
         buffer = io.BytesIO()
@@ -156,11 +153,34 @@ class CoverCache(unittest.TestCase):
         self.assertIn('" 200 ', novel_transfers[0])
         for line in new_requests:
             if '"GET /covers/' in line:
-                self.assertIn('" 304 ', line)
+                self.fail('Unchanged private images should remain cached: ' + line)
         with session.get(new_url) as response:
             self.assertEqual(response.content, updated)
             self.assertIn('immutable', response.headers['Cache-Control'])
-        print(self.browser + ': private covers revalidate; unchanged novel cover remains cached; changed cover transfers new content', flush=True)
+        # A changed avatar has a new content-addressed URL and must be fetched.
+        (self.data / 'covers' / 'avatar-1-new.webp').write_bytes(updated)
+        (self.data / 'covers' / 'series-1-new.webp').write_bytes(updated)
+        with closing(sqlite3.connect(self.data / 'library.db')) as db, db:
+            db.execute("UPDATE users SET avatar_path='avatar-1-new.webp' WHERE id=1")
+            db.execute("UPDATE series SET cover_path='series-1-new.webp' WHERE id=1")
+        driver.get(self.base + '/')
+        self.images_ready()
+        self.assertTrue(self.js("return document.querySelector('img.avatar').src.includes('avatar-1-new.webp')"))
+        self.assertTrue(any('avatar-1-new.webp' in line and '" 200 ' in line for line in self.image_requests()))
+        self.assertTrue(any('series-1-new.webp' in line and '" 200 ' in line for line in self.image_requests()))
+        # Requests which reach the server require a valid session even after a
+        # cached copy exists. Browser reuse after logout can vary by engine.
+        session.post(self.base + '/logout', allow_redirects=False)
+        for name in ('avatar-1-new.webp', 'series-1-fixture.webp'):
+            self.assertEqual(requests.get(self.base + '/covers/' + name + '?private=1').status_code, 401)
+        driver.get(self.base + '/login')
+        status = driver.execute_async_script("""
+            const done = arguments[0];
+            fetch('/covers/avatar-1-new.webp?private=1', {cache:'reload'})
+                .then(response => done(response.status)).catch(() => done(0));
+        """)
+        self.assertEqual(status, 401, 'The revoked session must fail when the browser contacts the server')
+        print(self.browser + ': cached images reused; changed images fetched; server denies signed-out requests', flush=True)
 
 
 if __name__ == '__main__':

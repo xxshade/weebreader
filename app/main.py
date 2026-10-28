@@ -242,17 +242,17 @@ app.mount("/static", VersionedStaticFiles(directory="app/static"), name="static"
 
 
 class PrivateImageFiles(StaticFiles):
-    """Authenticate each image request, including conditional requests.
+    """Authenticate server requests and allow private caching of image URLs.
 
-    Private revalidation prevents a cached image from bypassing logout while
-    keeping conditional responses available for unchanged thumbnails.
+    Names are content-addressed, so a changed image receives a new URL.
+    A cached copy may remain accessible after logout or session revocation.
     """
 
     async def get_response(self, path, scope):
         request = Request(scope)
         await get_streaming_user(session=request.cookies.get("session"))
         response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "private, no-cache"
+        response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
         response.headers.add_vary_header("Cookie")
         return response
 
