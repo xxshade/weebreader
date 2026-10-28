@@ -8,6 +8,7 @@ it's still being copied.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
 from pathlib import Path
@@ -45,6 +46,7 @@ class _DebouncedHandler(FileSystemEventHandler):
         self.root_path = root_path
         self.loop = loop
         self._pending: dict[str, threading.Timer] = {}
+        self._generations: dict[str, object] = {}
         self._sizes: dict[str, tuple | None] = {}   # stat at scheduling time, to spot a file still growing
         self._settle_attempts: dict[str, int] = {}
         # dest path -> the path it was renamed from, for an import that is a
@@ -69,27 +71,37 @@ class _DebouncedHandler(FileSystemEventHandler):
         async with self._import_slots:
             await work()
 
-    def _schedule(self, path_str: str):
+    def _schedule(self, path_str: str, expected=None):
         path = Path(path_str)
         if not self._wanted(path):
             return
 
         with self._lock:
+            if expected is not None and self._generations.get(path_str) is not expected:
+                return
             existing = self._pending.pop(path_str, None)
             if existing:
                 existing.cancel()
             self._sizes[path_str] = _stat_signature(path)
-            timer = threading.Timer(settings.watcher_debounce_seconds, self._fire, args=(path,))
+            generation = object()
+            self._generations[path_str] = generation
+            timer = threading.Timer(settings.watcher_debounce_seconds, self._fire, args=(path, generation))
             self._pending[path_str] = timer
             timer.start()
 
-    def _fire(self, path: Path):
+    def _fire(self, path: Path, generation):
         path_str = str(path)
         with self._lock:
+            if self._generations.get(path_str) is not generation:
+                return
             self._pending.pop(path_str, None)
             scheduled_signature = self._sizes.pop(path_str, None)
         if not path.exists():
             with self._lock:
+                if self._generations.get(path_str) is not generation:
+                    return
+                self._generations.pop(path_str, None)
+                self._settle_attempts.pop(path_str, None)
                 moved_from = self._moved_from.pop(path_str, None)
             if moved_from is not None:
                 self._schedule_delete(moved_from)
@@ -105,15 +117,21 @@ class _DebouncedHandler(FileSystemEventHandler):
         # writer that pauses for longer than the debounce looks exactly
         # like one that finished).
         if scheduled_signature is not None and _stat_signature(path) != scheduled_signature:
-            attempts = self._settle_attempts.get(path_str, 0) + 1
-            if attempts <= _MAX_SETTLE_ATTEMPTS:
+            with self._lock:
+                if self._generations.get(path_str) is not generation:
+                    return
+                attempts = self._settle_attempts.get(path_str, 0) + 1
                 self._settle_attempts[path_str] = attempts
+            if attempts <= _MAX_SETTLE_ATTEMPTS:
                 logger.info("Still being written, waiting: %s", path)
-                self._schedule(path_str)
+                self._schedule(path_str, expected=generation)
                 return
             logger.info("Still changing after %d checks, processing anyway: %s", attempts, path)
-        self._settle_attempts.pop(path_str, None)
         with self._lock:
+            if self._generations.get(path_str) is not generation:
+                return
+            self._generations.pop(path_str, None)
+            self._settle_attempts.pop(path_str, None)
             moved_from = self._moved_from.pop(path_str, None)
 
         async def work():
@@ -126,7 +144,20 @@ class _DebouncedHandler(FileSystemEventHandler):
             if imported and moved_from is not None and not Path(moved_from).exists():
                 await mark_missing(self.library_id, moved_from)
 
-        asyncio.run_coroutine_threadsafe(self._with_a_slot(work), self.loop)
+        self._submit(self._with_a_slot(work))
+
+    @staticmethod
+    def _log_future_failure(future):
+        try:
+            future.result()
+        except concurrent.futures.CancelledError:
+            return
+        except Exception:
+            logger.exception("Watcher background operation failed")
+
+    def _submit(self, coro):
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        future.add_done_callback(self._log_future_failure)
 
     # Same debounce/lock as _schedule/_fire (create/modify) -- using the
     # SAME `_pending` dict, keyed by the same path, is what makes a pending
@@ -145,18 +176,21 @@ class _DebouncedHandler(FileSystemEventHandler):
                 existing.cancel()
             self._sizes.pop(path_str, None)
             self._settle_attempts.pop(path_str, None)
-            timer = threading.Timer(settings.watcher_debounce_seconds, self._fire_delete, args=(path,))
+            generation = object()
+            self._generations[path_str] = generation
+            timer = threading.Timer(settings.watcher_debounce_seconds, self._fire_delete, args=(path, generation))
             self._pending[path_str] = timer
             timer.start()
 
-    def _fire_delete(self, path: Path):
+    def _fire_delete(self, path: Path, generation):
         with self._lock:
+            if self._generations.get(str(path)) is not generation:
+                return
             self._pending.pop(str(path), None)
+            self._generations.pop(str(path), None)
         if path.exists() and not _inside_ignored_folder(path, Path(self.root_path)):
             return  # reappeared before the debounce fired -- nothing to do
-        asyncio.run_coroutine_threadsafe(
-            self._with_a_slot(lambda: mark_missing(self.library_id, str(path))), self.loop
-        )
+        self._submit(self._with_a_slot(lambda: mark_missing(self.library_id, str(path))))
 
     # A FOLDER deleted or moved. inotify reports a folder moved out of the
     # library (or to the trash) as the folder deleted, with no event for
@@ -170,14 +204,19 @@ class _DebouncedHandler(FileSystemEventHandler):
             existing = self._pending.pop(key, None)
             if existing:
                 existing.cancel()
+            generation = object()
+            self._generations[key] = generation
             timer = threading.Timer(settings.watcher_debounce_seconds, self._fire_folder,
-                                    args=(key, src, dest))
+                                    args=(key, src, dest, generation))
             self._pending[key] = timer
             timer.start()
 
-    def _fire_folder(self, key: str, src: str, dest: str | None):
+    def _fire_folder(self, key: str, src: str, dest: str | None, generation):
         with self._lock:
+            if self._generations.get(key) is not generation:
+                return
             self._pending.pop(key, None)
+            self._generations.pop(key, None)
         root = Path(self.root_path)
 
         async def work():
@@ -192,7 +231,7 @@ class _DebouncedHandler(FileSystemEventHandler):
             if imported:
                 await mark_folder_missing(self.library_id, src)
 
-        asyncio.run_coroutine_threadsafe(self._with_a_slot(work), self.loop)
+        self._submit(self._with_a_slot(work))
 
     def on_created(self, event):
         if not event.is_directory:
@@ -212,6 +251,7 @@ class _DebouncedHandler(FileSystemEventHandler):
             with self._lock:
                 self._moved_from[event.dest_path] = event.src_path
                 pending = self._pending.pop(event.src_path, None)
+                self._generations.pop(event.src_path, None)
                 if pending:
                     pending.cancel()
             self._schedule(event.dest_path)
