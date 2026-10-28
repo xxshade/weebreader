@@ -282,7 +282,7 @@ class ItsVolumesOnTheHomePage(_Case):
                                     self.user, self.db)
 
     def _img(self, html):
-        return html.split('src="/covers/v1.webp"', 1)[1].split(">", 1)[0]
+        return html.split('src="/covers/v1.webp?private=1"', 1)[1].split(">", 1)[0]
 
     async def _strip(self):
         response = await reading_grid(_request(), self.reader, self.db)

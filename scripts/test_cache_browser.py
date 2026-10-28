@@ -107,6 +107,8 @@ class CoverCache(unittest.TestCase):
             driver.add_cookie({'name': name, 'value': value, 'expiry': int(time.time()) + 3600})
         driver.get(self.base + '/')
         self.images_ready()
+        self.assertTrue(self.js("return [...document.querySelectorAll('img[src^=\"/covers/\"]')].every(i=>new URL(i.src).searchParams.get('private')==='1')"),
+                        'Private image URLs must bypass previously cached public images')
         expected = self.base + f'/novels/1/cover?v={self.version}'
         self.assertEqual(self.js("return document.querySelector('#series-grid [data-novel-id=\"1\"] img').src"), expected)
         cold = len(self.image_requests())

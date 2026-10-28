@@ -25,7 +25,7 @@
         <a href="/reader/{{ item.id }}" class="block group"{% if item.series_id %} data-series-id="{{ item.series_id }}"{% endif %}>
             <div class="cover">
                 {% if item.cover_path %}
-                <img src="/covers/{{ item.cover_path }}" class="w-full h-full object-cover{{ ' cover-blur' if item.blur_cover else '' }}">
+                <img src="/covers/{{ item.cover_path }}?private=1" class="w-full h-full object-cover{{ ' cover-blur' if item.blur_cover else '' }}">
                 {% endif %}
             </div>
             <p title="{{ item.title }}" class="card-title">{{ item.title }}</p>

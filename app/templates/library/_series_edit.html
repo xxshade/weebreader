@@ -52,7 +52,7 @@
            choice is abandoned. #}
         <div id="series-cover-slot" class="cover flex-shrink-0" style="width: 6rem;">
             {% if series.cover_path %}
-            <img data-cover-current src="/covers/{{ series.cover_path }}" alt=""
+            <img data-cover-current src="/covers/{{ series.cover_path }}?private=1" alt=""
                  class="w-full h-full object-cover">
             {% else %}
             <div data-cover-current class="w-full h-full bg-neutral-800"></div>
