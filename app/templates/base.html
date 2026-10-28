@@ -281,7 +281,7 @@
                    theme.css, which is capped to the header's content height
                    so adding it cannot make the header taller. #}
                 {% if user.avatar_path %}
-                <img src="/covers/{{ user.avatar_path }}" alt="{{ user.username }}"
+                <img src="/covers/{{ user.avatar_path }}?private=1" alt="{{ user.username }}"
                      class="avatar rounded-full object-cover flex-shrink-0">
                 {% else %}
                 <span data-account-name>{{ user.username }}</span>

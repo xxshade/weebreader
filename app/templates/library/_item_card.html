@@ -31,7 +31,7 @@
     <a href="/reader/{{ item.id }}" class="block group" {% if series.manual_sort_editing %}draggable="false"{% endif %}>
         <div class="cover">
             {% if item.cover_path %}
-            <img loading="lazy" src="/covers/{{ item.cover_path }}" class="w-full h-full object-cover">
+            <img loading="lazy" src="/covers/{{ item.cover_path }}?private=1" class="w-full h-full object-cover">
             {% endif %}
             {% if is_read %}
             <span class="absolute top-1 right-1 bg-green-600 text-xs rounded px-1.5 py-0.5">Read</span>

@@ -45,7 +45,7 @@
         <div class="flex items-center gap-4 mb-3">
             <div class="avatar-preview rounded-full overflow-hidden bg-neutral-800 flex-shrink-0 flex items-center justify-center">
                 {% if user.avatar_path %}
-                <img src="/covers/{{ user.avatar_path }}" alt="" class="w-full h-full object-cover">
+                <img src="/covers/{{ user.avatar_path }}?private=1" alt="" class="w-full h-full object-cover">
                 {% else %}
                 <span class="text-sm text-neutral-500">{{ user.username[:1]|upper }}</span>
                 {% endif %}
@@ -351,7 +351,7 @@
             {% if blur_preview_cover %}
             <div id="cover-blur-preview" class="cover flex-shrink-0"
                  style="--cover-blur: {{ user.cover_blur_px }}px; width: 2.5rem;">
-                <img src="/covers/{{ blur_preview_cover }}" alt="" class="cover-blur">
+                <img src="/covers/{{ blur_preview_cover }}?private=1" alt="" class="cover-blur">
             </div>
             {% endif %}
             <noscript><button class="btn">Save</button></noscript>
