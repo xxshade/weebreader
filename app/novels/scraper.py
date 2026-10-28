@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 import bleach
 import httpx
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -179,7 +180,7 @@ def _collapse_exact_duplicate(text: str) -> str:
     return t
 
 
-def _parse_chapter_list_html(list_html: str) -> list[ScrapedChapterRef]:
+def _parse_chapter_list_html(list_html: str | Tag) -> list[ScrapedChapterRef]:
     """Parse the rendered contents of #episodeNime into chapter refs.
 
     Volume/chapter numbers are read primarily from each entry's own listing
@@ -197,8 +198,11 @@ def _parse_chapter_list_html(list_html: str) -> list[ScrapedChapterRef]:
     from DOM structure. Results are returned sorted by (volume, chapter)
     ascending.
     """
-    soup = BeautifulSoup(list_html, "lxml")
-    container = soup.select_one(CHAPTER_LIST_CONTAINER) or soup
+    if isinstance(list_html, str):
+        soup = BeautifulSoup(list_html, "lxml")
+        container = soup.select_one(CHAPTER_LIST_CONTAINER) or soup
+    else:
+        container = list_html
 
     chapters: list[ScrapedChapterRef] = []
 
@@ -211,7 +215,9 @@ def _parse_chapter_list_html(list_html: str) -> list[ScrapedChapterRef]:
 
         raw_text = a.get_text(separator=" ", strip=True)
         parent = a.find_parent(["li", "tr"])
-        if parent is not None:
+        # Reusing the page tree must not include a surrounding list or table
+        # outside the chapter container, which was absent from the old parse.
+        if parent is not None and (parent is container or any(node is container for node in parent.parents)):
             parent_text = parent.get_text(separator=" ", strip=True)
             if len(parent_text) > len(raw_text):
                 raw_text = parent_text
@@ -442,7 +448,7 @@ def _parse_novel_page(full_html: str, novel_url: str) -> ScrapedNovelMeta:
             f"devtools and update CHAPTER_LIST_CONTAINER in app/novels/scraper.py."
         )
 
-    chapters = _parse_chapter_list_html(str(list_container))
+    chapters = _parse_chapter_list_html(list_container)
     logger.info("Parsed %d chapter link(s) from %s.", len(chapters), CHAPTER_LIST_CONTAINER)
     if not chapters:
         raise RuntimeError(
