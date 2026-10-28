@@ -13,6 +13,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.responses import RedirectResponse, Response
 
 from app.auth.router import router as auth_router
+from app.auth.dependencies import get_streaming_user
 from app.asset_versioning import STATIC_DIR, digest_for
 from app.config import settings
 from app.database import close_pool, get_connection, init_db, write_transaction
@@ -240,29 +241,23 @@ class VersionedStaticFiles(StaticFiles):
 app.mount("/static", VersionedStaticFiles(directory="app/static"), name="static")
 
 
-class ImmutableStaticFiles(StaticFiles):
-    """StaticFiles that lets the browser keep a cover for good.
+class PrivateImageFiles(StaticFiles):
+    """Authenticate each image request, including conditional requests.
 
-    Every generated thumbnail's name carries the hash of the file it came
-    from (see covers/thumbnails.py), so a given URL always answers with the
-    same bytes: a cover that CHANGES gets a new name, and so does a series
-    whose first item was removed -- its `cover_path` becomes the next item's
-    file, a different URL, and the card that carries it is re-rendered by
-    the server. Nothing under here is ever rewritten in place, which is what
-    makes `immutable` safe.
-
-    Without it, StaticFiles still sent an ETag, so a grid of 60 covers cost
-    60 conditional requests on every page load -- 304s with no body, but a
-    round trip each, which is what is actually felt on a phone.
+    Private revalidation prevents a cached image from bypassing logout while
+    keeping conditional responses available for unchanged thumbnails.
     """
 
-    def file_response(self, *args, **kwargs):
-        response = super().file_response(*args, **kwargs)
-        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    async def get_response(self, path, scope):
+        request = Request(scope)
+        await get_streaming_user(session=request.cookies.get("session"))
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "private, no-cache"
+        response.headers.add_vary_header("Cookie")
         return response
 
 
-app.mount("/covers", ImmutableStaticFiles(directory=str(settings.covers_dir)), name="covers")
+app.mount("/covers", PrivateImageFiles(directory=str(settings.covers_dir)), name="covers")
 
 
 @app.middleware("http")
