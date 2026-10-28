@@ -81,6 +81,16 @@ class CoverCache(unittest.TestCase):
         return [line for line in (self.fixture / 'server.log').read_text().splitlines()
                 if re.search(r'"GET /(?:covers/|novels/\d+/cover)', line)]
 
+    def assert_revalidated(self, previous):
+        new = self.image_requests()[previous:]
+        for line in new:
+            if '"GET /covers/' in line:
+                self.assertIn('" 304 ', line, 'Private covers must revalidate without retransmitting')
+                self.private_revalidations += 1
+            else:
+                self.fail('Unchanged novel cover should remain in browser cache: ' + line)
+        return previous + len(new)
+
     def images_ready(self):
         BrowserChecks.load_all_covers(self, 'img[src^="/covers/"], img[src^="/novels/"]')
         self.wait_for('[...document.images].filter(i=>/\\/covers\\/|\\/novels\\/\\d+\\/cover/.test(i.src)).length>0 && '
@@ -101,16 +111,18 @@ class CoverCache(unittest.TestCase):
         self.assertEqual(self.js("return document.querySelector('#series-grid [data-novel-id=\"1\"] img').src"), expected)
         cold = len(self.image_requests())
         self.assertGreater(cold, 0, 'The cold-cache control must transfer image bodies')
+        self.private_revalidations = 0
+        checked = cold
         for path in ('/series/1', '/novels/1', '/'):
             driver.get(self.base + path)
             self.images_ready()
-            self.assertEqual(len(self.image_requests()), cold)
+            checked = self.assert_revalidated(checked)
         self.quit_driver()
         driver = self.launch()  # Same on-disk profile, including the session cookie.
         for path in ('/series/1', '/novels/1', '/'):
             driver.get(self.base + path)
             self.images_ready()
-            self.assertEqual(len(self.image_requests()), cold, 'Restart must reuse retained disk cache')
+            checked = self.assert_revalidated(checked)
         self.wait_for("document.getElementById('library-events')?.libraryEventsBound")
         home = driver.current_window_handle
         driver.switch_to.new_window('tab')
@@ -122,7 +134,8 @@ class CoverCache(unittest.TestCase):
         self.wait_for('!!document.querySelector(\'#reading-grid [data-novel-id="1"] img\')')
         self.images_ready()
         self.assertEqual(self.js('return document.querySelector(\'#reading-grid [data-novel-id="1"] img\').src'), expected)
-        self.assertEqual(len(self.image_requests()), cold, 'Reading must reuse the cached, versioned cover')
+        checked = self.assert_revalidated(checked)
+        self.assertGreater(self.private_revalidations, 0, 'Private covers must contact the server after initial loading')
         # A changed cover must still transfer its new bytes. Old versions
         # intentionally remain cached under their own distinct URL.
         buffer = io.BytesIO()
@@ -135,11 +148,17 @@ class CoverCache(unittest.TestCase):
         self.images_ready()
         new_url = self.base + f'/novels/1/cover?v={version}'
         self.assertEqual(self.js("return document.querySelector('main img').src"), new_url)
-        self.assertEqual(len(self.image_requests()), cold + 1)
+        new_requests = self.image_requests()[checked:]
+        novel_transfers = [line for line in new_requests if '"GET /novels/1/cover' in line]
+        self.assertEqual(len(novel_transfers), 1)
+        self.assertIn('" 200 ', novel_transfers[0])
+        for line in new_requests:
+            if '"GET /covers/' in line:
+                self.assertIn('" 304 ', line)
         with session.get(new_url) as response:
             self.assertEqual(response.content, updated)
             self.assertIn('immutable', response.headers['Cache-Control'])
-        print(self.browser + ': retained cache survives restart and SSE; changed cover transfers new content', flush=True)
+        print(self.browser + ': private covers revalidate; unchanged novel cover remains cached; changed cover transfers new content', flush=True)
 
 
 if __name__ == '__main__':
