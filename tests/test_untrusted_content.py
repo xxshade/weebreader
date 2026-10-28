@@ -7,6 +7,7 @@ with the reader's session: measured in Chromium and Firefox, a book's page
 fetched /settings/security and got 200, and so did an SVG cover. The answer
 is `Content-Security-Policy: sandbox` (no `allow-scripts`).
 """
+from app.reader.router import _get_item
 import unittest
 from pathlib import Path
 
@@ -48,7 +49,7 @@ class TheRoutesSendThem(PageDimensionsCase):
     async def test_a_file_out_of_an_epub(self):
         item = await self._book()
         response = await epub_resource(item["id"], "ch1.xhtml", _request(), v=None,
-                                       user={"id": 1}, db=self.db)
+                                       item=await _get_item(self.db, item["id"]))
         self.assertEqual(response.status_code, 200)
         self.assertSandboxed(response)
 
@@ -57,10 +58,10 @@ class TheRoutesSendThem(PageDimensionsCase):
         # before this change picks the sandbox up on its next revalidation.
         item = await self._book()
         first = await epub_resource(item["id"], "ch1.xhtml", _request(), v=None,
-                                    user={"id": 1}, db=self.db)
+                                    item=await _get_item(self.db, item["id"]))
         again = await epub_resource(item["id"], "ch1.xhtml",
                                     _request({"if-none-match": first.headers["etag"]}),
-                                    v=None, user={"id": 1}, db=self.db)
+                                    v=None, item=await _get_item(self.db, item["id"]))
         self.assertEqual(again.status_code, 304)
         self.assertSandboxed(again)
 
