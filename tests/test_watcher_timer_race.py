@@ -38,6 +38,7 @@ class WatcherTimers(unittest.TestCase):
         handler = watcher._DebouncedHandler(1, '/tmp', None)
         future = concurrent.futures.Future()
         future.set_exception(RuntimeError('synthetic failure'))
-        with self.assertLogs('watcher', level='ERROR') as logs:
-            handler._log_future_failure(future)
+        with patch.object(asyncio, 'run_coroutine_threadsafe', return_value=future), \
+             self.assertLogs('watcher', level='ERROR') as logs:
+            handler._submit(object())
         self.assertIn('synthetic failure', '\n'.join(logs.output))
