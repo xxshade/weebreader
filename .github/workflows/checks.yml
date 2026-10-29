@@ -21,6 +21,8 @@ env:
 
 jobs:
   backend:
+    needs: docker
+    if: ${{ always() && (needs.docker.result == 'success' || (!inputs.build_image && needs.docker.result == 'skipped')) }}
     name: Backend and static checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -72,6 +74,8 @@ jobs:
           if-no-files-found: ignore
 
   versions:
+    needs: docker
+    if: ${{ always() && (needs.docker.result == 'success' || (!inputs.build_image && needs.docker.result == 'skipped')) }}
     name: Select stable browsers
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -113,6 +117,7 @@ jobs:
   browsers:
     name: ${{ matrix.browser }} / ${{ matrix.suite }}
     needs: versions
+    if: ${{ always() && needs.versions.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -218,13 +223,13 @@ jobs:
             type=docker,name=weebreader-ci:validation
           cache-from: type=gha,scope=ci
           cache-to: type=gha,scope=ci,mode=min
-      - name: Verify image startup, non-root data access and real Chromium
-        run: python scripts/test_container_runtime.py --image weebreader-ci:validation
       - name: Scan the built runtime image before accepting validation
         uses: ./.github/actions/container-scan
         with:
           archive: ${{ runner.temp }}/ci-image.tar
           reports: ${{ runner.temp }}/container-security
+      - name: Verify image startup, non-root data access and real Chromium
+        run: python scripts/test_container_runtime.py --image weebreader-ci:validation
       - name: Retain vulnerability diagnostics
         uses: actions/upload-artifact@v7
         if: always()
