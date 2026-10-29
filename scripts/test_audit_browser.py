@@ -204,6 +204,45 @@ class AuditChecks(unittest.TestCase):
         self.fail('Reader did not reach its end')
 
 
+    def test_epub_stylesheets_resolve_without_extra_requests(self):
+        from tests.test_archives import PNG_1PX
+        with sqlite3.connect(self.fixture.data / 'library.db') as db:
+            original = db.execute('SELECT file_path FROM items WHERE id=100').fetchone()[0]
+            with zipfile.ZipFile(original) as book:
+                files = {name: book.read(name) for name in book.namelist()}
+            files['OEBPS/content.opf'] = files['OEBPS/content.opf'].replace(b'href="ch0.xhtml"', b'href="Text/ch0.xhtml"')
+            links = (b'<link rel="stylesheet" href="../Styles/styles.css">'
+                     b'<link rel="stylesheet" href="../Styles/with%20space.css">'
+                     b'<link rel="stylesheet" href="/reader/103/resource/OEBPS/Styles/absolute.css">'
+                     b'<link rel="stylesheet"><link rel="stylesheet" href="http://[invalid">'
+                     b'<base href="/ignored-book-base/">')
+            files['OEBPS/Text/ch0.xhtml'] = files.pop('OEBPS/ch0.xhtml').replace(b'<head>', b'<head>' + links)
+            files['OEBPS/Styles/styles.css'] = b'@import "nested/import.css";p{text-align:justify;background-image:url("../Images/dot.png")}'
+            files['OEBPS/Styles/nested/import.css'] = b'p{letter-spacing:2px}'
+            files['OEBPS/Styles/with space.css'] = b'p{border-top:7px solid red}'
+            files['OEBPS/Styles/absolute.css'] = b'p{word-spacing:3px}'
+            files['OEBPS/Images/dot.png'] = PNG_1PX
+            archive = self.fixture.fixture / 'stylesheet-fixture.epub'
+            with zipfile.ZipFile(archive, 'w') as book:
+                for name, content in files.items():
+                    book.writestr(name, content)
+            db.execute("INSERT INTO series(id,library_id,name,sort_name,folder_path) VALUES(103,1,'Styles','styles',?)", (str(archive.parent),))
+            db.execute("INSERT INTO items(id,series_id,library_id,title,sort_title,file_path,file_hash,file_size,file_format) VALUES(103,103,1,'Styles','styles',?,'styles',?,'epub')", (str(archive), archive.stat().st_size))
+        log = self.fixture.fixture / 'server.log'
+        start = len(log.read_text())
+        self.open_reader('/reader/103')
+        state = self.js("""const f=document.querySelector('#paginated-viewer iframe'),d=f.contentDocument;
+            const s=f.contentWindow.getComputedStyle(d.querySelector('p'));
+            return {styles:[s.textAlign,s.letterSpacing,s.borderTopWidth,s.wordSpacing],
+                links:[...d.querySelectorAll('link[rel~=stylesheet]')].map(l=>l.getAttribute('href'))};""")
+        self.assertEqual(state['styles'], ['justify', '2px', '7px', '3px'])
+        self.assertIn(None, state['links'], 'A link without href must not acquire a URL')
+        self.assertIn('http://[invalid', state['links'], 'Malformed URLs must not prevent reading')
+        logs = log.read_text()[start:]
+        self.assertNotIn('404 Not Found', logs, 'Stylesheets must not request a path outside the EPUB resource directory')
+        for path in ('Styles/styles.css', 'Styles/nested/import.css', 'Styles/with%20space.css', 'Styles/absolute.css', 'Images/dot.png'):
+            self.assertIn('/reader/103/resource/OEBPS/' + path, logs)
+
     def test_bulk_completion_reopens_epub_at_the_beginning(self):
         self.open_reader('/reader/101')
         for _ in range(40):
@@ -276,6 +315,7 @@ if __name__ == '__main__':
         mobile = type(browser.title() + 'MobileAudit', (AuditChecks,), {
             'browser': browser, 'viewport_width': 320})
         suite.addTest(mobile('test_bulk_completion_reopens_epub_at_the_beginning'))
+        suite.addTest(mobile('test_epub_stylesheets_resolve_without_extra_requests'))
     expected = suite.countTestCases()
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     unittest_failures(result)

@@ -535,6 +535,18 @@
         const doc = new DOMParser().parseFromString(rawHtml, 'text/html');
         applyChapterLanguage(doc);
         doc.head.insertAdjacentHTML('afterbegin', injected);
+        // Relative CSS in srcdoc can trigger an extra request despite <base>.
+        // Resolve EPUB stylesheets before attaching the document to avoid it;
+        // imports and images still resolve against the CSS URL.
+        if (source === "epub") {
+            for (const link of doc.querySelectorAll('link[rel~="stylesheet"][href]')) {
+                try {
+                    link.setAttribute('href', new URL(link.getAttribute('href'), baseHref).href);
+                } catch {
+                    // An invalid source URL must not prevent opening the chapter.
+                }
+            }
+        }
         return doc.documentElement.outerHTML;
     }
 
