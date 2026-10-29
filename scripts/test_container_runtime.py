@@ -22,6 +22,10 @@ def run(image):
 import os, pathlib, tempfile
 from lxml import etree
 from selenium import webdriver
+import selenium.webdriver.common
+common = pathlib.Path(selenium.webdriver.common.__file__).parent
+assert not list(common.glob("*/selenium-manager*")), "Unused Selenium Manager binary shipped"
+assert not (common / "selenium-manager.cdx.json").exists(), "Removed manager inventory shipped"
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 assert etree.LIBXML_VERSION >= (2,11,0), etree.LIBXML_VERSION

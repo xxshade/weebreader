@@ -5,7 +5,6 @@ from pathlib import Path
 import sqlite3
 import sys
 import unittest
-from unittest.mock import patch
 
 import requests
 
@@ -272,8 +271,8 @@ class HomePreload(audit.AuditChecks):
         self.down(link)
         self.up()
         self.arrived('/settings')
-        self.assertEqual(self.js('return document.getElementById("app-theme-select").value'), 'amoled',
-                         'Settings assertions must wait for appearance initialization')
+        self.assertEqual(self.js('return document.documentElement.dataset.appTheme'), 'amoled',
+                         'AMOLED must already be present in the document')
         self.assertEqual(self.js('return preloadProbe.requests'), 2)
         self.home()
         self.delay_appearance()
@@ -285,7 +284,7 @@ class HomePreload(audit.AuditChecks):
         self.down(link)
         self.up()
         self.arrived('/settings')
-        self.assertEqual(self.js('return document.getElementById("app-theme-select").value'), 'dark',
+        self.assertEqual(self.js('return document.documentElement.dataset.appTheme'), 'amoled',
                          'Changed device cookies must not reuse old HTML')
         self.assertEqual(self.js('return preloadProbe.requests'), 2,
                          'Changed device cookies must not reuse old HTML')
@@ -370,14 +369,3 @@ if __name__ == '__main__':
             print(output.getvalue())
             raise AssertionError('Every selected browser must reject the broken preload rule')
         print('Selected browsers rejected broken preload behavior: ' + test, flush=True)
-    # Removing this test synchronization must reproduce the observed assertion,
-    # rather than merely timing out or breaking a different preload invariant.
-    with patch.object(HomePreload, 'appearance_ready', lambda self: None):
-        output = io.StringIO()
-        control = unittest.TextTestRunner(stream=output, verbosity=2).run(suite(
-            ['test_device_preferences_and_reconnection_discard_account_preloads'], (320,)))
-    if not mutation_rejected(control, selected_browsers(audit.ARGS), 'HomePreload',
-                             'Settings assertions must wait for appearance initialization'):
-        print(output.getvalue())
-        raise AssertionError('Every selected browser must reject missing appearance synchronization')
-    print('Selected browsers reproduced the appearance initialization race without synchronization', flush=True)

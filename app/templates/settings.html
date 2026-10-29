@@ -80,20 +80,8 @@
     <section id="appearance" class="border-t border-neutral-800">
         <div class="tip-row">
             <h2 class="text-lg font-semibold mt-4 mb-2">Appearance</h2>
-            {% call tip.help("What the app theme covers") %}
-                AMOLED paints the background pure black instead of near-black,
-                switching those pixels off entirely on an OLED screen. This is the
-                app itself — each reader has its own theme in its “Aa” panel.
-            {% endcall %}
         </div>
-        <label class="flex items-center gap-2 text-sm mb-3">
-            Theme
-            <select autocomplete="off" id="app-theme-select"
-                    class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-300">
-                <option value="dark">Dark</option>
-                <option value="amoled">AMOLED (pure black)</option>
-            </select>
-        </label>
+        <p class="text-sm text-neutral-400 mb-3">AMOLED uses a pure black background throughout the app and readers.</p>
         {# On by default on a phone or tablet, which is the whole point of
            it; here so it can be turned off without hunting for the
            reader's own toggle. Hidden where the browser has no Fullscreen

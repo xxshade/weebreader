@@ -56,23 +56,18 @@ window.uiPrefs = (() => {
         return `${UNREAD}:${novelId}`;
     }
 
-    // One-time carry-over for a browser that stored these before the move.
-    // Without it the switch silently resets everyone's theme and cover
-    // size: the server cannot read localStorage, so it would render the
-    // defaults and nothing would ever say why.
-    //
-    // A cookie that already exists is left alone -- that is the server's
-    // copy, and it is newer than anything localStorage still holds.
+    // Retire old theme storage while retaining thumbnail migration.
     function migrate() {
-        const root = document.documentElement;
+        document.documentElement.dataset.appTheme = "amoled";
+        if (read(THEME) !== null) remove(THEME);
+        try { localStorage.removeItem(THEME); } catch { /* unavailable storage */ }
         const pageThumb = document.querySelector("main")?.dataset.thumbSizeKey
             || HOME_THUMB;
         // The one cookie "Unread only" used to be for EVERY novel. It
         // cannot be carried to any one of them, so it goes: it would
         // otherwise sit there saying nothing, sent with every request.
         if (read(UNREAD) !== null) remove(UNREAD);
-        const carried = {};
-        for (const name of new Set([THEME, HOME_THUMB, pageThumb])) {
+        for (const name of new Set([HOME_THUMB, pageThumb])) {
             if (read(name) !== null) continue;
             let stored = null;
             try {
@@ -82,17 +77,8 @@ window.uiPrefs = (() => {
             }
             if (stored === null) continue;
             write(name, stored);
-            carried[name] = stored;
         }
-        if (Object.keys(carried).length === 0) return;
 
-        // This load already painted without them, so what is worth fixing
-        // up is only what nothing else will. The theme is applied here
-        // because no script applies it away from the settings page. The
-        // thumbnail size is NOT: thumbnail-size.js runs later in this same
-        // document order and reads the cookie this just wrote.
-        const theme = carried[THEME];
-        if (theme && theme !== "dark") root.dataset.appTheme = theme;
     }
 
     migrate();

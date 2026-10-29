@@ -15,8 +15,7 @@
     now (app/ui_prefs.py reads them, static/js/ui-prefs.js writes them), so
     the server renders <html> already correct: no script, no flash, and
     nothing that a <head> left behind by a body swap could get wrong.
-    `data-app-theme` is absent for the default theme, which is what
-    appearance.js means by deleting it. #}
+    AMOLED is rendered for every request, including legacy theme cookies. #}
 <html lang="en" class="h-full"
   {%- set app_theme = ui_theme(request) %}{% if app_theme %} data-app-theme="{{ app_theme }}"{% endif %}>
 <head>

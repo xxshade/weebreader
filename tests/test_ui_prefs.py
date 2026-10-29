@@ -75,27 +75,14 @@ class TheThemeIsValidatedNotEchoed(unittest.TestCase):
     def test_a_real_choice_comes_back(self):
         self.assertEqual(ui_prefs.theme(_Request(**{"app-theme": "amoled"})), "amoled")
 
-    def test_the_default_theme_renders_nothing(self):
-        # "dark" is the stylesheet's own default and is expressed as the
-        # ABSENCE of the attribute -- appearance.js deletes it rather than
-        # setting a value, and the server has to mean the same thing.
-        self.assertEqual(ui_prefs.theme(_Request(**{"app-theme": "dark"})), "")
+    def test_legacy_missing_and_hostile_cookies_use_amoled(self):
+        for value in ('dark', 'light', 'amoled', 'x" onload="alert(1)', '', 'AMOLED'):
+            self.assertEqual(ui_prefs.theme(_Request(**{"app-theme": value})), "amoled")
+        self.assertEqual(ui_prefs.theme(_Request()), "amoled")
 
-    def test_no_cookie_renders_nothing(self):
-        self.assertEqual(ui_prefs.theme(_Request()), "")
-
-    def test_anything_not_on_the_menu_is_dropped(self):
-        for hostile in ('x" onload="alert(1)', "amoled ", "AMOLED", "", "../../etc"):
-            self.assertEqual(ui_prefs.theme(_Request(**{"app-theme": hostile})), "",
-                             f"{hostile!r} came back")
-
-    def test_the_menu_matches_the_one_the_user_picks_from(self):
-        # A theme added to settings.html and not here would be stored and
-        # then silently ignored on every later load.
-        settings = (ROOT / "app/templates/settings.html").read_text()
-        block = settings.split('id="app-theme-select"', 1)[1].split("</select>", 1)[0]
-        offered = set(re.findall(r'<option value="([^"]+)"', block))
-        self.assertEqual(offered, set(ui_prefs.THEMES))
+    def test_theme_controls_are_removed(self):
+        self.assertNotIn('id="app-theme-select"', (ROOT / "app/templates/settings.html").read_text())
+        self.assertNotIn('id="theme-select"', (ROOT / "app/templates/reader/_settings_panel.html").read_text())
 
 
 class TheThumbnailSizeIsValidatedNotEchoed(unittest.TestCase):
@@ -255,7 +242,7 @@ class TheUnreadFilterIsPerNovel(unittest.TestCase):
     def test_the_old_cookie_is_deleted_not_carried(self):
         source = JS.read_text()
         self.assertIn("if (read(UNREAD) !== null) remove(UNREAD);", source)
-        self.assertIn("new Set([THEME, HOME_THUMB, pageThumb])", source)
+        self.assertIn("new Set([HOME_THUMB, pageThumb])", source)
 
 
 class TheTwoSidesAgree(unittest.TestCase):
@@ -269,7 +256,7 @@ class TheTwoSidesAgree(unittest.TestCase):
     def test_the_owners_persist_through_the_one_writer(self):
         # Each owner used to call localStorage directly. Going through
         # window.uiPrefs is what puts the value somewhere the server reads.
-        for name in ("appearance.js", "thumbnail-size.js", "novel-chapters.js"):
+        for name in ("thumbnail-size.js", "novel-chapters.js"):
             source = (JS_DIR / name).read_text()
             self.assertIn("window.uiPrefs.write(", source, f"{name} never persists a preference")
 
@@ -417,7 +404,7 @@ class NoScriptRacesThePaintAnyMore(unittest.TestCase):
     def test_the_three_keys_are_gone_from_localstorage_entirely(self):
         # Not just out of <head>: an owner still writing to localStorage
         # would leave two stores disagreeing, and the server reads only one.
-        for name in ("appearance.js", "thumbnail-size.js", "novel-chapters.js"):
+        for name in ("thumbnail-size.js", "novel-chapters.js"):
             source = (JS_DIR / name).read_text()
             self.assertNotIn("localStorage", source,
                              f"{name} still uses localStorage for a server-rendered preference")

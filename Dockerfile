@@ -29,6 +29,17 @@ COPY --from=python-builder /install /usr/local
 # Package installation is complete; do not ship pip and its bundled dependencies.
 RUN python -m pip uninstall --yes pip
 
+# Alpine provides Chromium and its matching driver at explicit runtime paths.
+# Do not ship Selenium Manager's unused driver downloader or its Rust dependencies.
+RUN python - <<'PYTHON'
+from pathlib import Path
+import selenium.webdriver.common
+common = Path(selenium.webdriver.common.__file__).parent
+for binary in common.glob("*/selenium-manager*"):
+    binary.unlink()
+(common / "selenium-manager.cdx.json").unlink(missing_ok=True)
+PYTHON
+
 COPY app/ /app/app/
 
 RUN mkdir -p /app/data && chown -R app:app /app
