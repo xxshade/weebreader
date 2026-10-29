@@ -22,6 +22,8 @@ Release preparation also scans the exact archive or immutable recovery image bef
 
 The same scripts run locally for development and diagnosis.
 
+The audit suite checks EPUB stylesheet URLs in both engines at desktop and narrow widths. Relative and absolute stylesheets, encoded spaces, imports and CSS image URLs must load with no extra 404s and retain their computed styles. Missing or malformed stylesheet links must not stop the chapter from opening.
+
 `test_statistics_layout_browser.py` verifies the three Reading indicators at
 desktop and 320px widths, bounded help bubbles, capped window totals, custom
 dates and accessible chart tabs retained across date swaps. Controls restore
