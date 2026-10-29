@@ -40,7 +40,7 @@ class HyphenationChecks(pagination.PaginationChecks):
 
     def open_hyphen_reader(self, path):
         self.driver.get(self.base + '/')
-        self.js("localStorage.setItem('text-reader-prefs',JSON.stringify({flow:'paginated',font:'original',fontSize:100,lineHeight:1.6,width:720,bottomGap:0}))")
+        self.js("localStorage.setItem('text-reader-prefs',JSON.stringify({hyphenation:false,flow:'paginated',font:'original',fontSize:100,lineHeight:1.6,width:720,bottomGap:0}))")
         self.driver.get(self.base + path)
         self.wait("document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'")
 
@@ -101,6 +101,21 @@ class HyphenationChecks(pagination.PaginationChecks):
                                 'Retain the preference for this work on this device')
                 self.assertNotIn('\u00ad', self.frame_state()['text'], 'Visual hyphens must never rewrite text')
         print(f'{self.browser} {self.viewport_width}px: EPUB and novel toggle, metadata/manual language and resume passed', flush=True)
+
+    def test_global_toggle_migrates_once_and_keeps_work_languages(self):
+        self.driver.get(self.base + '/')
+        self.js("localStorage.removeItem('text-reader-prefs');localStorage.setItem('text-work-prefs:1:epub:100',JSON.stringify({hyphenation:true,language:'en-US'}));localStorage.setItem('text-work-prefs:1:novel:100',JSON.stringify({hyphenation:false,language:'pt-BR'}))")
+        for path, language in (('/reader/100', 'en-US'), ('/novels/100/read/1/1', 'pt-BR')):
+            self.driver.get(self.base + path)
+            self.wait("document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'")
+            self.assertTrue(self.driver.find_element('id', 'hyphenation-enabled').is_selected(), 'Shared toggle must migrate once and survive another work')
+            self.assertEqual(self.frame_state()['language'], language, 'Language overrides must remain work-specific')
+        self.driver.find_element('id', 'btn-settings').click()
+        self.change('hyphenation-enabled', lambda element: element.click())
+        self.driver.get(self.base + '/reader/100')
+        self.wait("document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'")
+        self.assertFalse(self.driver.find_element('id', 'hyphenation-enabled').is_selected(), 'Shared explicit false must override legacy true')
+        self.assertEqual(self.frame_state()['language'], 'en-US')
 
     def test_continuous_reflow_remeasures_without_changing_saved_position(self):
         from selenium.webdriver.support.ui import Select
@@ -248,10 +263,12 @@ def suite(*, controls=False, test=None):
 
 def run_mutation_controls():
     controls = (
+        ('app/static/js/reader-text.js', "if (typeof prefs.hyphenation !== 'boolean')", 'if (true)',
+         'test_global_toggle_migrates_once_and_keeps_work_languages', 'Shared toggle must migrate once'),
         ('app/static/js/reader-text.js', 'const from = readable.offsetAt(i === start.index ? start.offset || 0 : 0);',
          'const from = Math.min(readable.text.length, i === start.index ? start.offset || 0 : 0);',
          'test_readable_offsets_skip_media_without_moving_source_anchor', 'Reading evidence must map DOM offsets'),
-        ('app/static/js/reader-text.js', "hyphenation: saved.hyphenation === true", 'hyphenation: true',
+        ('app/static/js/reader-text.js', "if (typeof prefs.hyphenation !== 'boolean') prefs.hyphenation = legacyHyphenation;", 'prefs.hyphenation = true;',
          'test_work_language_toggle_and_resume_preserve_source_anchors', 'Hyphenation must default off'),
         ('app/static/js/reader-pagination.js', 'if (hyphenCharacter && to < size)', 'if (false)',
          'test_native_hyphenated_page_edges_keep_visible_glyphs_and_original_text', 'genuinely hyphenate'),
