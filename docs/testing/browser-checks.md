@@ -11,12 +11,14 @@ check. `scripts/ci_validation.py` lists the suites and preserves each runner's
 exit status. Native Android and standalone comparison tools remain optional. Warm reload
 performance checks are required as part of the text ETA suite.
 
-PRs run this workflow plus a Docker build without registry publication. Release
+PRs build and scan the runtime image before starting backend and browser checks, without registry publication. A failed or unavailable scan prevents these checks from starting. Release
 runs on pushes to `main` and manual dispatches validate the exact planned source
 commit before image publication or recovery. There is no daily schedule.
 Summaries record the commit and outcomes; diagnostic artifacts are uploaded only
 on failure, retained for seven days. Browser profiles are not uploaded. Browser
 caches use version-specific keys and the repository's default storage cap.
+
+Release preparation also scans the exact archive or immutable recovery image before validation. Publication verifies and transfers the scanned archive without rebuilding; reconciliation rechecks the scanned digest before changing aliases. This ordering saves test execution when scanning fails and increases elapsed time when every check passes.
 
 The same scripts run locally for development and diagnosis.
 

@@ -153,6 +153,8 @@ class SecurityWorkflow(unittest.TestCase):
         build = next(i for i, step in enumerate(steps) if step.get('uses', '').startswith('docker/build-push-action@'))
         scanner = next(i for i, step in enumerate(steps) if step.get('uses') == './.github/actions/container-scan')
         self.assertLess(build, scanner)
+        smoke = next(i for i, step in enumerate(steps) if 'test_container_runtime.py' in step.get('run', ''))
+        self.assertLess(scanner, smoke)
         self.assertEqual(steps[build]['with']['push'], 'false')
         self.assertIn('type=oci,dest=${{ runner.temp }}/ci-image.tar', steps[build]['with']['outputs'])
         self.assertIn('type=docker,name=weebreader-ci:validation', steps[build]['with']['outputs'])
@@ -162,40 +164,51 @@ class SecurityWorkflow(unittest.TestCase):
         self.assertIn('docker', checks['jobs']['passed']['needs'])
         self.assertEqual(checks['permissions'], {'contents': 'read'})
 
-    def test_publication_scans_exact_artifact_and_recovery_before_any_delivery(self):
-        steps = self.workflow('release.yml')['jobs']['publish']['steps']
+    def test_publication_scans_before_checks_and_reuses_exact_artifact(self):
+        jobs = self.workflow('release.yml')['jobs']
+        self.assertIn('security', jobs['validate']['needs'])
+        self.assertIn('security', jobs['publish']['needs'])
+        steps = jobs['security']['steps']
         build = next(i for i, step in enumerate(steps) if step.get('id') == 'build')
-        scans = [(i, step) for i, step in enumerate(steps) if step.get('uses') == './.github/actions/container-scan']
-        upload = next(i for i, step in enumerate(steps) if 'skopeo copy' in step.get('run', ''))
-        finish = next(i for i, step in enumerate(steps) if 'release_publication finish' in step.get('run', ''))
+        scans = [step for step in steps if step.get('uses') == './.github/actions/container-scan']
         self.assertEqual(steps[build]['with']['push'], 'false')
         self.assertEqual(steps[build]['with']['outputs'], 'type=oci,dest=${{ runner.temp }}/release-image.tar')
-        self.assertEqual(len(scans), 2)
-        archive, recovery = scans
-        self.assertLess(build, archive[0])
-        self.assertLess(archive[0], upload)
-        self.assertLess(recovery[0], upload)
-        self.assertLess(upload, finish)
-        self.assertEqual(archive[1]['if'], "steps.stage.outputs.build == 'true'")
-        self.assertEqual(recovery[1]['if'], "steps.stage.outputs.build != 'true'")
-        self.assertEqual(archive[1]['with']['archive'], '${{ runner.temp }}/release-image.tar')
-        self.assertEqual(recovery[1]['with']['image'], '${{ needs.prepare.outputs.image }}@${{ steps.stage.outputs.digest }}')
-        self.assertIn('--all --preserve-digests', steps[upload]['run'])
-        self.assertIn('verify-archive', steps[upload]['run'])
-        self.assertIn('oci-archive:$RUNNER_TEMP/release-image.tar', steps[upload]['run'])
-        for _, scanner in scans:
-            self.assertNotIn('continue-on-error', scanner)
+        self.assertEqual(len(scans), 3)
+        self.assertEqual(scans[0]['with']['archive'], '${{ runner.temp }}/release-image.tar')
+        self.assertEqual(scans[1]['with']['image'], '${{ needs.prepare.outputs.image }}@${{ steps.stage.outputs.digest }}')
+        self.assertEqual(scans[2]['with']['image'], '${{ steps.image.outputs.image }}')
+        for step in scans:
+            self.assertNotIn('continue-on-error', step)
+        publish = jobs['publish']['steps']
+        self.assertFalse(any(step.get('uses', '').startswith('docker/build-push-action@') for step in publish))
+        copy = next(step for step in publish if 'skopeo copy' in step.get('run', ''))
+        self.assertIn('verify-archive', copy['run'])
+        self.assertIn('--all --preserve-digests', copy['run'])
+        self.assertIn('scanned-image/container-security/identity.txt', copy['run'])
+        self.assertIn('scanned-image/release-image.tar', copy['run'])
+        finish = next(step for step in publish if 'release_publication finish' in step.get('run', ''))
+        self.assertEqual(finish['env']['IMAGE_DIGEST'], '${{ needs.security.outputs.digest }}')
+        self.assertTrue(any(step.get('with', {}).get('name') == 'scanned-release-image' for step in publish))
+        guard = next(step for step in publish if 'SCANNED_STAGE_DIGEST' in step.get('env', {}))
+        self.assertIn('test "$CURRENT_DIGEST" = "$SCANNED_STAGE_DIGEST"', guard['run'])
 
-    def test_reconciliation_scans_verified_digest_and_checks_it_again_before_alias_changes(self):
-        steps = self.workflow('release.yml')['jobs']['reconcile']['steps']
+    def test_reconciliation_rechecks_scanned_digest_after_validation(self):
+        jobs = self.workflow('release.yml')['jobs']
+        self.assertIn('security', jobs['reconcile']['needs'])
+        steps = jobs['security']['steps']
         resolve = next(i for i, step in enumerate(steps) if 'release_publication security-target' in step.get('run', ''))
-        scanner = next(i for i, step in enumerate(steps) if step.get('uses') == './.github/actions/container-scan')
-        reconcile = next(i for i, step in enumerate(steps) if 'release_publication reconcile' in step.get('run', ''))
+        scanner = next(i for i, step in enumerate(steps) if step.get('with', {}).get('image') == '${{ steps.image.outputs.image }}')
         self.assertLess(resolve, scanner)
-        self.assertLess(scanner, reconcile)
-        self.assertEqual(steps[scanner]['with']['image'], '${{ steps.image.outputs.image }}')
-        self.assertEqual(steps[reconcile]['env']['SCANNED_IMAGE_DIGEST'], '${{ steps.image.outputs.digest }}')
-        self.assertNotIn('if', steps[scanner])
+        reconcile = next(step for step in jobs['reconcile']['steps'] if 'release_publication reconcile' in step.get('run', ''))
+        self.assertEqual(reconcile['env']['SCANNED_IMAGE_DIGEST'], '${{ needs.security.outputs.digest }}')
+
+    def test_pr_checks_wait_for_security_but_release_uses_its_external_gate(self):
+        jobs = self.workflow('checks.yml')['jobs']
+        for name in ('backend', 'versions'):
+            self.assertEqual(jobs[name]['needs'], 'docker')
+            self.assertIn("needs.docker.result == 'success'", jobs[name]['if'])
+            self.assertIn("!inputs.build_image && needs.docker.result == 'skipped'", jobs[name]['if'])
+        self.assertEqual(jobs['browsers']['needs'], 'versions')
 
     def test_installer_uses_literal_pinned_official_version_and_checksum(self):
         action = yaml.load((ROOT / '.github/actions/container-scan/action.yml').read_text(), Loader=yaml.BaseLoader)
