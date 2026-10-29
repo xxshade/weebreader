@@ -39,6 +39,7 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Widow line | The last line of a paragraph left alone at the top of the next reading page. |
 | Original typography | The book's intended fonts, relative text sizes, emphasis, and spacing, as distinct from adjustments made by the reader or browser. |
 | Visual hyphenation | Displaying a word across lines with a hyphen where the language permits, without inserting characters into the underlying text. |
+| Hyphenation preference | The reader’s choice to enable visual hyphenation for all text books in one browser. It is distinct from each work’s language. |
 | Work language | The language used to interpret one book or web novel, supplied by its metadata or chosen by the reader for that work. |
 | Remaining reading time | An approximate duration for the text still ahead of the saved reading position, based on valid pace evidence. It is distinct from the time already recorded and from a promise about wall-clock completion. |
 | Last valid estimate | The most recent successful reading-time prediction for the same account, content, reading position and text replacements. It remains useful while reading pace is refreshed. |

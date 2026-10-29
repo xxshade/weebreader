@@ -333,7 +333,6 @@
         }
     }
     const prefs = loadPrefs();
-    savePrefs(prefs);
 
     // These are work-specific, unlike the device-wide font/theme controls.
     // Never add discretionary hyphen characters: text offsets and verified
@@ -346,11 +345,16 @@
             return /^(und|mul|zxx)(-|$)/i.test(tag) ? '' : tag;
         } catch { return ''; }
     }
-    let workPrefs = {hyphenation: false, language: ''};
+    let workPrefs = {language: ''};
+    let legacyHyphenation = false;
     try {
         const saved = JSON.parse(localStorage.getItem(workPrefsKey)) || {};
-        workPrefs = {hyphenation: saved.hyphenation === true, language: canonicalLanguage(saved.language)};
+        workPrefs = {language: canonicalLanguage(saved.language)};
+        legacyHyphenation = saved.hyphenation === true;
     } catch { /* unavailable storage or an older malformed preference */ }
+    // Seed the shared toggle once, from the first work opened after upgrade.
+    if (typeof prefs.hyphenation !== 'boolean') prefs.hyphenation = legacyHyphenation;
+    savePrefs(prefs);
     let metadataLanguage = '';
     let currentChapterLanguage = '';
     function saveWorkPrefs() {
@@ -369,7 +373,7 @@
         if (workPrefs.language) doc.body.setAttribute('lang', workPrefs.language);
         else if (html.dataset.readerSourceBodyLanguage) doc.body.setAttribute('lang', html.dataset.readerSourceBodyLanguage);
         else doc.body.removeAttribute('lang');
-        if (workPrefs.hyphenation) html.dataset.readerHyphenation = language ? 'auto' : 'manual';
+        if (prefs.hyphenation) html.dataset.readerHyphenation = language ? 'auto' : 'manual';
         else delete html.dataset.readerHyphenation;
         currentChapterLanguage = language;
         renderWorkPrefs();
@@ -380,10 +384,10 @@
         const language = document.getElementById("hyphenation-language");
         const status = document.getElementById("hyphenation-status");
         if (!enabled || !language || !status) return;
-        enabled.checked = workPrefs.hyphenation;
+        enabled.checked = prefs.hyphenation;
         if (document.activeElement !== language) language.value = workPrefs.language;
         const effective = workPrefs.language || currentChapterLanguage || metadataLanguage;
-        status.textContent = !workPrefs.hyphenation ? 'Using the book’s original hyphenation rules.'
+        status.textContent = !prefs.hyphenation ? 'Using the book’s original hyphenation rules.'
             : effective ? `Language: ${effective}. Hyphenation depends on this browser’s dictionary.`
                 : 'Set a language above to enable automatic hyphenation.';
     }
@@ -2027,8 +2031,8 @@
     lineHeightInput.addEventListener("input", (e) => { prefs.lineHeight = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
     widthInput.addEventListener("input", (e) => { prefs.width = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
     document.getElementById("hyphenation-enabled").addEventListener('change', (event) => {
-        workPrefs.hyphenation = event.target.checked;
-        saveWorkPrefs();
+        prefs.hyphenation = event.target.checked;
+        savePrefs(prefs);
         renderWorkPrefs();
         reapplyPrefsToCurrentView();
     });

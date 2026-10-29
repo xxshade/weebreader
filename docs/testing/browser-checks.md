@@ -56,7 +56,7 @@ adaptation, legacy history, content removal, cache invalidation and backfill.
 
 `test_hyphenation_browser.py` exercises native dictionary hyphenation, glyphs at
 page boundaries, original text preservation, language preferences, reflow and
-resume in both text readers. Narrow desktop viewports are simulations; neither
+resume in both text readers. The shared hyphenation toggle migrates once from the first opened work; later works retain their own language override without resetting the shared choice. Narrow desktop viewports are simulations; neither
 these checks nor the browser's dictionary availability imply native Android or
 LibreWolf-specific coverage.
 
