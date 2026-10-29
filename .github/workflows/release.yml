@@ -66,24 +66,20 @@ jobs:
           path: ${{ runner.temp }}/release-plan.json
           retention-days: 7
 
-  validate:
-    name: Release validation
+  security:
+    name: Build and scan release image
     needs: prepare
-    permissions:
-      contents: read
-    uses: ./.github/workflows/checks.yml
-    with:
-      commit: ${{ needs.prepare.outputs.commit }}
-
-  publish:
-    needs: [prepare, validate]
-    if: needs.prepare.outputs.eligible == 'true'
+    if: needs.prepare.outputs.eligible == 'true' || needs.prepare.outputs.reconcile == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
       contents: write
       pull-requests: read
       packages: write
+    outputs:
+      build: ${{ steps.stage.outputs.build }}
+      stage_digest: ${{ steps.stage.outputs.digest }}
+      digest: ${{ steps.build.outputs.digest || steps.stage.outputs.digest || steps.image.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -93,10 +89,12 @@ jobs:
         with:
           python-version: '3.14'
       - uses: actions/download-artifact@v8
+        if: needs.prepare.outputs.eligible == 'true'
         with:
           name: release-plan
           path: ${{ runner.temp }}
       - name: Revalidate the publication plan or recover its original image
+        if: needs.prepare.outputs.eligible == 'true'
         id: stage
         run: python -m scripts.release_publication stage
         env:
@@ -132,31 +130,36 @@ jobs:
           archive: ${{ runner.temp }}/release-image.tar
           reports: ${{ runner.temp }}/container-security
       - name: Scan the original immutable image during recovery
-        if: steps.stage.outputs.build != 'true'
+        if: needs.prepare.outputs.eligible == 'true' && steps.stage.outputs.build != 'true'
         uses: ./.github/actions/container-scan
         with:
           image: ${{ needs.prepare.outputs.image }}@${{ steps.stage.outputs.digest }}
           reports: ${{ runner.temp }}/container-security
-      - name: Publish the scanned archive without rebuilding or changing its digest
-        if: steps.stage.outputs.build == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends skopeo
-          python scripts/container_security.py verify-archive \
-            --archive "$RUNNER_TEMP/release-image.tar" \
-            --identity-file "$RUNNER_TEMP/container-security/identity.txt"
-          skopeo copy --all --preserve-digests \
-            --authfile "${DOCKER_CONFIG:-$HOME/.docker}/config.json" \
-            "oci-archive:$RUNNER_TEMP/release-image.tar" "docker://$IMAGE_REFERENCE"
+      - name: Resolve the verified immutable stable image before changing aliases
+        if: needs.prepare.outputs.reconcile == 'true'
+        id: image
+        run: python -m scripts.release_publication security-target
         env:
-          IMAGE_REFERENCE: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
-      - name: Complete release and verify all three image aliases
-        run: python -m scripts.release_publication finish
-        env:
-          RELEASE_PLAN: ${{ runner.temp }}/release-plan.json
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest || steps.stage.outputs.digest }}
+          RELEASE_PLAN: ${{ runner.temp }}/unused-plan.json
           GH_TOKEN: ${{ github.token }}
+      - name: Scan the stable image before reconciling aliases
+        if: needs.prepare.outputs.reconcile == 'true'
+        uses: ./.github/actions/container-scan
+        with:
+          image: ${{ steps.image.outputs.image }}
+          reports: ${{ runner.temp }}/container-security
+      - name: Retain scanned image for publication without rebuilding
+        if: steps.stage.outputs.build == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: scanned-release-image
+          compression-level: 0
+          path: |
+            ${{ runner.temp }}/release-image.tar
+            ${{ runner.temp }}/container-security/identity.txt
+          retention-days: 1
+          if-no-files-found: error
       - name: Retain vulnerability diagnostics
         uses: actions/upload-artifact@v7
         if: always()
@@ -166,9 +169,86 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  validate:
+    name: Release validation
+    needs: [prepare, security]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml
+    with:
+      commit: ${{ needs.prepare.outputs.commit }}
+
+  publish:
+    needs: [prepare, security, validate]
+    if: needs.prepare.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      pull-requests: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}
+      - name: Revalidate the publication plan or recover its original image
+        id: stage
+        run: python -m scripts.release_publication stage
+        env:
+          RELEASE_PLAN: ${{ runner.temp }}/release-plan.json
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+      - name: Require the staged image to match the scanned plan
+        run: |
+          test "$CURRENT_BUILD" = "$SCANNED_BUILD"
+          test "$CURRENT_DIGEST" = "$SCANNED_STAGE_DIGEST"
+        env:
+          CURRENT_BUILD: ${{ steps.stage.outputs.build }}
+          CURRENT_DIGEST: ${{ steps.stage.outputs.digest }}
+          SCANNED_BUILD: ${{ needs.security.outputs.build }}
+          SCANNED_STAGE_DIGEST: ${{ needs.security.outputs.stage_digest }}
+      - uses: actions/download-artifact@v8
+        if: needs.security.outputs.build == 'true'
+        with:
+          name: scanned-release-image
+          path: ${{ runner.temp }}/scanned-image
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish the scanned archive without rebuilding or changing its digest
+        if: steps.stage.outputs.build == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
+          python scripts/container_security.py verify-archive \
+            --archive "$RUNNER_TEMP/scanned-image/release-image.tar" \
+            --identity-file "$RUNNER_TEMP/scanned-image/container-security/identity.txt"
+          skopeo copy --all --preserve-digests \
+            --authfile "${DOCKER_CONFIG:-$HOME/.docker}/config.json" \
+            "oci-archive:$RUNNER_TEMP/scanned-image/release-image.tar" "docker://$IMAGE_REFERENCE"
+        env:
+          IMAGE_REFERENCE: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
+      - name: Complete release and verify all three image aliases
+        run: python -m scripts.release_publication finish
+        env:
+          RELEASE_PLAN: ${{ runner.temp }}/release-plan.json
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          IMAGE_DIGEST: ${{ needs.security.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+
   reconcile:
     name: Verify current stable aliases
-    needs: [prepare, validate]
+    needs: [prepare, security, validate]
     if: needs.prepare.outputs.reconcile == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -183,38 +263,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
-      - name: Resolve the verified immutable stable image before changing aliases
-        id: image
-        run: python -m scripts.release_publication security-target
-        env:
-          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
-          RELEASE_PLAN: ${{ runner.temp }}/unused-plan.json
-          GH_TOKEN: ${{ github.token }}
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Scan the stable image before reconciling aliases
-        uses: ./.github/actions/container-scan
-        with:
-          image: ${{ steps.image.outputs.image }}
-          reports: ${{ runner.temp }}/container-security
       - name: Reuse the current stable image without building or versioning
         run: python -m scripts.release_publication reconcile
         env:
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_PLAN: ${{ runner.temp }}/unused-plan.json
           GH_TOKEN: ${{ github.token }}
-          SCANNED_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
-      - name: Retain vulnerability diagnostics
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: container-security-reconcile-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/container-security/
-          retention-days: 7
-          if-no-files-found: ignore
+          SCANNED_IMAGE_DIGEST: ${{ needs.security.outputs.digest }}
 
   advance:
     name: Queue changes left after publication or recovery
