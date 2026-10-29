@@ -1,43 +1,13 @@
-"""The display preferences the SERVER has to know before it renders.
+"""Server-rendered AMOLED, thumbnail size and unread-only display state.
 
-Three settings have to be on the document BEFORE the first paint, not
-after: a
-theme applied late flashes the default surface, a thumbnail size applied
-late paints the grid at the stylesheet's 140px first, and a chapter list
-filtered late shows a screenful of read rows for a frame (measured, on the
-novel page: 365/365 rows visible at the first animation frame).
-
-They lived in `localStorage`, which the server cannot see, so each one
-needed an inline `<script>` in `<head>` racing the parser. A cookie is sent
-with the document request, so the server renders the attribute already
-correct and no script is involved at all.
-
-WHERE it renders them is the other half. The theme is the browser's
-choice, so it goes on `<html>`; the other two are per PAGE, so they go on
-`<main>` -- inside what an `hx-boost`-style navigation replaces, where
-`<html>` and the whole of `<head>` are not (measured boosting home ->
-/series/1: the grid stayed at the home page's 140px under its own key,
-against 300px on a full load).
-
-Everything here is attacker-controlled: it is whatever the request's own
-cookie says, and it lands in an HTML attribute or a CSS custom property.
-So each value is validated against what the UI can actually produce rather
-than echoed back. That is cheap, and the alternative is a cookie of
-`1px; background: url(...)` painting itself into every page.
-
-The writer of all three is `static/js/ui-prefs.js`; the names have to agree
-and a test pins that they do.
+AMOLED is fixed across the application. Remaining cookie preferences are
+validated before being rendered into HTML attributes or styles.
 """
 from urllib.parse import unquote
 
 THEME_COOKIE = "app-theme"
 THUMB_COOKIE = "thumbnail-size"
 UNREAD_COOKIE = "novel-chapters-unread-only"
-
-# "dark" is the stylesheet's own default and is expressed as the ABSENCE of
-# data-app-theme (see appearance.js), so it is a valid choice that renders
-# nothing. Keep in step with the <select> in settings.html.
-THEMES = frozenset({"dark", "amoled"})
 
 # The slider's own bounds (_thumb_size_control.html: min=110 max=400) and
 # the stylesheet's fallback, which is what "no inline style" already means.
@@ -78,11 +48,8 @@ def _cookie(request, name: str) -> str | None:
 
 
 def theme(request) -> str:
-    """The value for `data-app-theme`, or "" when nothing should be set."""
-    chosen = _cookie(request, THEME_COOKIE) or ""
-    if chosen not in THEMES or chosen == "dark":
-        return ""
-    return chosen
+    """AMOLED is the only application theme, including legacy cookies."""
+    return "amoled"
 
 
 def thumb_size(request, key: str) -> int | None:

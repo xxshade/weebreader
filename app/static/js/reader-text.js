@@ -320,7 +320,7 @@
 
     function loadPrefs() {
         try {
-            return Object.assign({}, PREF_DEFAULTS, JSON.parse(localStorage.getItem(PREFS_KEY)) || {});
+            return Object.assign({}, PREF_DEFAULTS, JSON.parse(localStorage.getItem(PREFS_KEY)) || {}, { theme: "amoled" });
         } catch {
             return Object.assign({}, PREF_DEFAULTS);
         }
@@ -333,6 +333,7 @@
         }
     }
     const prefs = loadPrefs();
+    savePrefs(prefs);
 
     // These are work-specific, unlike the device-wide font/theme controls.
     // Never add discretionary hyphen characters: text offsets and verified
@@ -399,8 +400,6 @@
     // every page (measured: 4.4% of the viewport, 17.2% with the settings
     // panel open).
     const THEMES = {
-        light: { background: "#ffffff", color: "#111111", shell: "#0a0a0a" },
-        dark: { background: "#1a1a1a", color: "#e5e5e5", shell: "#0a0a0a" },
         // true black -- real savings on OLED screens
         amoled: { background: "#000000", color: "#d0d0d0", shell: "#000000" },
     };
@@ -1973,7 +1972,6 @@
     const fontSelect = document.getElementById("font-select");
     const lineHeightInput = document.getElementById("line-height");
     const widthInput = document.getElementById("reader-width");
-    const themeSelect = document.getElementById("theme-select");
     const flowSelect = document.getElementById("flow-select");
     const bottomGapInput = document.getElementById("bottom-gap");
     const bottomGapValue = document.getElementById("bottom-gap-value");
@@ -2028,7 +2026,6 @@
     fontSelect.addEventListener("change", (e) => { prefs.font = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
     lineHeightInput.addEventListener("input", (e) => { prefs.lineHeight = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
     widthInput.addEventListener("input", (e) => { prefs.width = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
-    themeSelect.addEventListener("change", (e) => { prefs.theme = e.target.value; savePrefs(prefs); reapplyPrefsToCurrentView(); });
     document.getElementById("hyphenation-enabled").addEventListener('change', (event) => {
         workPrefs.hyphenation = event.target.checked;
         saveWorkPrefs();
@@ -2058,7 +2055,6 @@
     renderFontSize();
     lineHeightInput.value = prefs.lineHeight;
     widthInput.value = prefs.width;
-    themeSelect.value = prefs.theme;
     flowSelect.value = prefs.flow;
     renderWorkPrefs();
     // The reported total, not just the manual part -- what the reader wants
