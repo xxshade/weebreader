@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # INFO, WARNING, ERROR, CRITICAL (case-insensitive).
     log_level: str = "INFO"
 
+    # Temporary home-page phase diagnostics; no logs or database writes.
+    detailed_server_timing: bool = False
+
     # File watcher debounce window (seconds)
     watcher_debounce_seconds: float = 2.5
 

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import Cookie, Depends, HTTPException, status
 
+from app import request_timing
 from app.auth.service import hash_token
 from app.database import get_db, read_connection, write_transaction
 
@@ -19,6 +20,7 @@ def _parse_utc(timestamp: str) -> datetime:
 
 
 async def get_current_user(session: str | None = Cookie(default=None), db=Depends(get_db)):
+    started = request_timing.start()
     if session is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
 
@@ -63,7 +65,7 @@ async def get_current_user(session: str | None = Cookie(default=None), db=Depend
     # renders as NOTHING rather than failing -- `--cover-blur: px` is a
     # declaration the browser drops in silence, taking the blur with it
     # (measured, adding this very column).
-    return {
+    user = {
         "id": row["user_id"],
         "username": row["username"],
         "avatar_path": row["avatar_path"],
@@ -71,6 +73,8 @@ async def get_current_user(session: str | None = Cookie(default=None), db=Depend
         "text_time_cap_seconds": row["text_time_cap_seconds"],
         "cover_blur_px": row["cover_blur_px"],
     }
+    request_timing.finish("auth", started)
+    return user
 
 
 async def get_streaming_user(session: str | None = Cookie(default=None)):

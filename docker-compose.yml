@@ -9,6 +9,7 @@ services:
       # logs (see entrypoint.sh). One of: DEBUG, INFO, WARNING, ERROR,
       # CRITICAL. Optional -- defaults to INFO when unset.
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      APP_DETAILED_SERVER_TIMING: ${APP_DETAILED_SERVER_TIMING:-false}
       # MyAnimeList tracking (optional -- leave unset and the MyAnimeList
       # section simply cannot be connected; MangaUpdates needs none of
       # this). Register an app at https://myanimelist.net/apiconfig and

@@ -35,6 +35,7 @@ from app.novels.sync import backfill_chapter_content_size, backfill_novel_cover_
 from app.novels.sync import start_scheduler as start_novel_scheduler
 from app.novels.sync import stop_scheduler as stop_novel_scheduler
 from app.reader.router import router as reader_router
+from app import request_timing
 from app.account_events import AccountChangeNotifications
 from app.stats.router import router as stats_router
 from app.tracking import service as tracking
@@ -263,7 +264,8 @@ app.mount("/covers", PrivateImageFiles(directory=str(settings.covers_dir)), name
 
 def _time_page(response: Response, started: float) -> Response:
     """Report elapsed application time, excluding network and body transfer."""
-    metric = f"app;dur={(perf_counter() - started) * 1000:.3f}"
+    total = (perf_counter() - started) * 1000
+    metric = ", ".join([f"app;dur={total:.3f}", *request_timing.headers(total)])
     existing = response.headers.get("Server-Timing")
     response.headers["Server-Timing"] = f"{existing}, {metric}" if existing else metric
     return response
@@ -313,6 +315,12 @@ async def revalidate_pages(request: Request, call_next):
     chosen its own policy -- the reader's own pages, the SSE stream --
     keeps it.
     """
+    enabled = settings.detailed_server_timing and request.method == "GET" and request.url.path == "/"
+    with request_timing.collect(enabled):
+        return await _revalidate_page(request, call_next)
+
+
+async def _revalidate_page(request, call_next):
     started = perf_counter()
     response = await call_next(request)
     if "text/html" not in response.headers.get("content-type", ""):
@@ -328,6 +336,7 @@ async def revalidate_pages(request: Request, call_next):
     # chunks, even one the route built whole; `.body` is the shape a
     # Response has when nothing wrapped it, which is what a direct call
     # hands over. Both, so this reads the same either way.
+    validation_started = request_timing.start()
     body = getattr(response, "body", None)
     if body is None:
         body = b"".join([chunk async for chunk in response.body_iterator])
@@ -337,8 +346,12 @@ async def revalidate_pages(request: Request, call_next):
     if request.headers.get("if-none-match") == etag:
         # A 304 carries no body, so its Content-Length would be a lie.
         del headers["content-length"]
-        return _time_page(Response(status_code=304, headers=dict(headers.items())), started)
-    return _time_page(Response(content=body, status_code=200, headers=dict(headers.items())), started)
+        response = Response(status_code=304, headers=dict(headers.items()))
+        request_timing.finish("revalidate", validation_started)
+        return _time_page(response, started)
+    response = Response(content=body, status_code=200, headers=dict(headers.items()))
+    request_timing.finish("revalidate", validation_started)
+    return _time_page(response, started)
 
 
 @app.exception_handler(StarletteHTTPException)
