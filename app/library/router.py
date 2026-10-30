@@ -927,6 +927,7 @@ async def home(request: Request, user=Depends(get_current_user), db=Depends(get_
         return redirect
 
     data_started = request_timing.start()
+    phase_started = request_timing.start()
     cursor = await db.execute("SELECT * FROM libraries ORDER BY name")
     libraries = await cursor.fetchall()
 
@@ -1012,14 +1013,24 @@ async def home(request: Request, user=Depends(get_current_user), db=Depends(get_
     # 110 ms for this handler before they existed, 182 ms after, of which
     # 46 ms is the series pass and 24 ms the novel one. The estimator they
     # share is 2 ms of that, and would have been 4 building it twice.
+    request_timing.finish("home_queries", phase_started)
+    phase_started = request_timing.start()
     estimator = await build_estimator(db, user["id"], cached_only=True)
+    request_timing.finish("home_estimator", phase_started)
+    phase_started = request_timing.start()
     series_reading = await _series_reading(db, user["id"], estimator)
+    request_timing.finish("home_series", phase_started)
+    phase_started = request_timing.start()
     novel_reading = await _novel_reading(db, user["id"], estimator)
+    request_timing.finish("home_novels", phase_started)
+    phase_started = request_timing.start()
 
     # How many tracking services each card is tied to, for the dot on its
     # cover. Per user, like the statuses above: a link belongs to a reader,
     # not to the shelf. One grouped query for the whole grid.
     series_links, novel_links = await tracker_store.link_counts(db, user["id"])
+    request_timing.finish("home_tracking", phase_started)
+    phase_started = request_timing.start()
 
     cards = []
     tracker_total = len(tracker_models.registry())
@@ -1047,7 +1058,10 @@ async def home(request: Request, user=Depends(get_current_user), db=Depends(get_
     # too just gives JS a sane starting order before it runs on page load.
     cards.sort(key=lambda c: c["name"].lower())
 
+    request_timing.finish("home_cards", phase_started)
+    phase_started = request_timing.start()
     reading_items = await _reading_items(db, user["id"], estimator)
+    request_timing.finish("home_reading", phase_started)
 
     context = {
         "user": user,
