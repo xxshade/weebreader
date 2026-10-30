@@ -103,3 +103,27 @@ SQL execution or CPU. No extra option is needed: keep
 five comparable normal home reloads with their statuses and complete headers.
 Compare medians across requests before selecting an optimization; disable the
 option and recreate the container after diagnosis.
+
+### Inside series reading indicators
+
+The same opt-in home diagnostic further divides `home_series` into:
+
+| Metric | Interval |
+| --- | --- |
+| `series_query` | Querying and fetching unfinished items and their reading progress. Includes driver/row conversion and waiting; not SQL execution time alone. |
+| `series_prepare` | `prepare_items`: preparing cached item estimates, including its queries, replacement rules, file checks and snapshot lookups. This is distinct from preparing the shared pace estimator (`home_estimator`). |
+| `series_aggregate` | Grouping items by series and constructing unread counts, remaining time, missing-estimate counts and estimate states. |
+| `series_other` | Residual of `home_series` after these three parts, including gaps between their boundaries. |
+
+These parts are already included in `home_series`, `home_data` and `app`.
+Compare their sum with `home_series`; keep using only direct children when
+checking the other two levels. None of the three measures CPU alone. They do
+not change which queries run, how estimates are calculated or when caches are
+invalidated, and do not introduce background work.
+
+Keep `APP_DETAILED_SERVER_TIMING=true` when recreating the updated application
+container. Capture the complete header and status of five comparable normal
+home reloads. If `series_prepare` dominates, its internal queries, file checks
+and snapshot lookups are candidates for a subsequent diagnostic; this header
+does not yet separate them. Disable the option and recreate the container when
+finished.
