@@ -15,7 +15,7 @@ from app.stats import estimate_snapshots as snapshots
 
 from lxml.etree import XMLSyntaxError
 
-from app import text_replacements
+from app import request_timing, text_replacements
 from app.stats.text_inventory import inventory_epub, inventory_html, inventory_epub_total, inventory_html_total
 
 from collections import namedtuple
@@ -138,7 +138,8 @@ class ReadingEstimator:
 
     async def _cached_estimate(self, scope, fingerprint, rate):
         if self._snapshot_rows is None:
-            self._snapshot_rows = await asyncio.to_thread(snapshots.read)
+            with request_timing.item_phase("items_index"):
+                self._snapshot_rows = await asyncio.to_thread(snapshots.read)
         counts = snapshots.load(scope, fingerprint, rows=self._snapshot_rows)
         if isinstance(counts, snapshots.WordCounts):
             return Estimate(counts.remaining * rate, counts.total * rate, 0)
@@ -158,90 +159,97 @@ class ReadingEstimator:
 
     async def prepare_items(self, items):
         """Parse only requested text items; warm inventory work is cache hits."""
-        ids = {item['id'] for item in items if item['file_format'] == 'epub'}
-        requested = list(ids - self.item_estimates.keys())
-        rows = {}
-        for start in range(0, len(requested), 500):
-            batch = requested[start:start + 500]
-            placeholders = ','.join('?' for _ in batch)
-            fetched = await (await self.db.execute(
-                f"""SELECT items.*, reading_progress.status, reading_progress.current_page,
+        with request_timing.item_phase("items_positions"):
+            ids = {item['id'] for item in items if item['file_format'] == 'epub'}
+            requested = list(ids - self.item_estimates.keys())
+        with request_timing.item_phase("items_query"):
+            rows = {}
+            for start in range(0, len(requested), 500):
+                batch = requested[start:start + 500]
+                placeholders = ','.join('?' for _ in batch)
+                fetched = await (await self.db.execute(
+                    f"""SELECT items.*, reading_progress.status, reading_progress.current_page,
                           reading_progress.current_location, reading_progress.progress_percent
                      FROM items LEFT JOIN reading_progress ON reading_progress.item_id=items.id
                       AND reading_progress.user_id=? WHERE items.id IN ({placeholders})""",
-                (self.user_id, *batch))).fetchall()
-            rows.update((row['id'], row) for row in fetched)
-        prepared = []
-        for identity in requested:
-            self.item_estimates[identity] = None
-            rate = self.text_rate('epub', identity)
-            self.item_states[identity] = 'collecting' if rate is None else 'calculating'
-            row = rows.get(identity)
-            if row is None:
-                continue
-            if row['status'] == 'completed':
-                self.completed_items.add(identity)
-                self.item_states[identity] = 'complete'
-                continue
-            if rate is None:
-                continue
-            section, block, offset = row['current_page'] or 0, 0, 0
-            if row['current_location']:
-                anchor = re.fullmatch(r'elidx:(\d+)(?::(\d+))?', row['current_location'])
-                if anchor is None:
-                    self.item_states[identity] = 'position_unavailable'
+                    (self.user_id, *batch))).fetchall()
+                rows.update((row['id'], row) for row in fetched)
+        with request_timing.item_phase("items_positions"):
+            prepared = []
+            for identity in requested:
+                self.item_estimates[identity] = None
+                rate = self.text_rate('epub', identity)
+                self.item_states[identity] = 'collecting' if rate is None else 'calculating'
+                row = rows.get(identity)
+                if row is None:
                     continue
-                block, offset = int(anchor[1]), int(anchor[2] or 0)
-            elif row['progress_percent']:
-                self.item_states[identity] = 'position_unavailable'
-                continue  # Old percentages cannot identify remaining words.
-            prepared.append((row, rate, section, block, offset))
-        pending_series = {row['series_id'] for row, *_ in prepared
-                          if row['series_id'] is not None
-                          and (row['series_id'], None) not in self._replacement_rules}
-        # Keep the original lazy query for one series. Multiple requested
-        # series share bounded queries; nothing survives this estimator.
-        if len(pending_series) > 1:
-            rules = await text_replacements.rules_for_series(self.db, self.user_id, pending_series)
-            self._replacement_rules.update(((identity, None), values) for identity, values in rules.items())
+                if row['status'] == 'completed':
+                    self.completed_items.add(identity)
+                    self.item_states[identity] = 'complete'
+                    continue
+                if rate is None:
+                    continue
+                section, block, offset = row['current_page'] or 0, 0, 0
+                if row['current_location']:
+                    anchor = re.fullmatch(r'elidx:(\d+)(?::(\d+))?', row['current_location'])
+                    if anchor is None:
+                        self.item_states[identity] = 'position_unavailable'
+                        continue
+                    block, offset = int(anchor[1]), int(anchor[2] or 0)
+                elif row['progress_percent']:
+                    self.item_states[identity] = 'position_unavailable'
+                    continue  # Old percentages cannot identify remaining words.
+                prepared.append((row, rate, section, block, offset))
+        with request_timing.item_phase("items_rules"):
+            pending_series = {row['series_id'] for row, *_ in prepared
+                              if row['series_id'] is not None
+                              and (row['series_id'], None) not in self._replacement_rules}
+            # Keep the original lazy query for one series. Multiple requested
+            # series share bounded queries; nothing survives this estimator.
+            if len(pending_series) > 1:
+                rules = await text_replacements.rules_for_series(self.db, self.user_id, pending_series)
+                self._replacement_rules.update(((identity, None), values) for identity, values in rules.items())
         for start in range(0, len(prepared), FILE_STAT_BATCH_SIZE):
             batch = prepared[start:start + FILE_STAT_BATCH_SIZE]
             # Keep checks off the loop, without one thread round trip per file.
             # Results belong only to this batch; a new request checks again.
-            stats = await asyncio.to_thread(_stat_epub_files, [entry[0] for entry in batch])
+            with request_timing.item_phase("items_stat"):
+                stats = await asyncio.to_thread(_stat_epub_files, [entry[0] for entry in batch])
             for row, rate, section, block, offset in batch:
                 identity = row['id']
-                rules = await self._rules_for(series_id=row['series_id'])
-                scope = (self.cache_account, 'item', identity)
-                try:
-                    stat = stats[identity]
-                    if isinstance(stat, (OSError, ValueError)):
-                        raise stat
-                    fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
-                        stat.st_mtime_ns, section, block, offset, rules, 1))
-                    saved = await self._cached_estimate(scope, fingerprint, rate)
-                    if saved is not None:
-                        self.item_estimates[identity] = saved
-                        self.item_states[identity] = 'available'
+                with request_timing.item_phase("items_rules"):
+                    rules = await self._rules_for(series_id=row['series_id'])
+                with request_timing.item_phase("items_snapshots"):
+                    scope = (self.cache_account, 'item', identity)
+                    try:
+                        stat = stats[identity]
+                        if isinstance(stat, (OSError, ValueError)):
+                            raise stat
+                        fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
+                            stat.st_mtime_ns, section, block, offset, rules, 1))
+                        saved = await self._cached_estimate(scope, fingerprint, rate)
+                        if saved is not None:
+                            self.item_estimates[identity] = saved
+                            self.item_states[identity] = 'available'
+                            continue
+                        if self.cached_only:
+                            continue  # HTML renders never wait for a cold inventory.
+                        if section == block == offset == 0:
+                            total = remaining = await asyncio.to_thread(inventory_epub_total, row['file_path'], row['file_hash'], rules)
+                        else:
+                            inventory = await asyncio.to_thread(inventory_epub, row['file_path'], row['file_hash'], rules)
+                            total, remaining = inventory.total_words, inventory.remaining(section, block, offset)
+                    except (OSError, ValueError, KeyError, AttributeError, IndexError, XMLSyntaxError, zipfile.BadZipFile) as exc:
+                        self.item_states[identity] = 'content_unavailable'
+                        log.info('reading_estimate user=%s item=%s state=content_unavailable error=%s',
+                                 self.user_id, identity, type(exc).__name__)
                         continue
-                    if self.cached_only:
-                        continue  # HTML renders never wait for a cold inventory.
-                    if section == block == offset == 0:
-                        total = remaining = await asyncio.to_thread(inventory_epub_total, row['file_path'], row['file_hash'], rules)
+                    if remaining is not None:
+                        self.item_estimates[identity] = Estimate(remaining * rate, total * rate, 0)
+                        self.item_states[identity] = 'available'
+                        await asyncio.to_thread(snapshots.save, scope, fingerprint, snapshots.WordCounts(remaining, total))
                     else:
-                        inventory = await asyncio.to_thread(inventory_epub, row['file_path'], row['file_hash'], rules)
-                        total, remaining = inventory.total_words, inventory.remaining(section, block, offset)
-                except (OSError, ValueError, KeyError, AttributeError, IndexError, XMLSyntaxError, zipfile.BadZipFile) as exc:
-                    self.item_states[identity] = 'content_unavailable'
-                    log.info('reading_estimate user=%s item=%s state=content_unavailable error=%s',
-                             self.user_id, identity, type(exc).__name__)
-                    continue
-                if remaining is not None:
-                    self.item_estimates[identity] = Estimate(remaining * rate, total * rate, 0)
-                    self.item_states[identity] = 'available'
-                    await asyncio.to_thread(snapshots.save, scope, fingerprint, snapshots.WordCounts(remaining, total))
-                else:
-                    self.item_states[identity] = 'position_unavailable'
+                        self.item_states[identity] = 'position_unavailable'
 
     async def prepare_novel(self, novel_id, volume_id=None):
         key = novel_id, volume_id
