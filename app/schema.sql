@@ -219,6 +219,19 @@ CREATE TABLE IF NOT EXISTS page_dimensions (
 
 -- ===== Reading progress =====
 
+-- One high-water mark per reader opening, not one row per page turn.
+-- Independent of reading_progress so marking unread does not revive old saves.
+-- Kept across restarts; removing the account or item removes its watermarks.
+CREATE TABLE IF NOT EXISTS item_progress_saves (
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item_id       INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    save_session  TEXT NOT NULL,
+    save_sequence INTEGER NOT NULL CHECK(save_sequence > 0),
+    PRIMARY KEY(user_id,item_id,save_session)
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_progress_saves_item ON item_progress_saves(item_id);
+
 CREATE TABLE IF NOT EXISTS reading_progress (
     user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     item_id             INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,

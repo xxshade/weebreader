@@ -85,7 +85,7 @@ class AuditChecks(unittest.TestCase):
             ('A disposable book exercises the ordinary reader with real page turns. ' * 9) + '</p>'
             for i in range(1, total + 1))
         with sqlite3.connect(cls.fixture.data / 'library.db') as db:
-            for item, count in ((100, 1), (101, 2), (102, 1)):
+            for item, count in ((100, 1), (101, 2), (102, 1), (104, 1)):
                 folder = cls.fixture.fixture / f'epub-{item}'
                 folder.mkdir()
                 archive = folder / 'book.epub'
@@ -304,6 +304,41 @@ class AuditChecks(unittest.TestCase):
         self.read_to_end()
         WebDriverWait(self.driver, 5).until(lambda _: self.row('SELECT status FROM reading_progress WHERE item_id=102') == {'status': 'completed'})
 
+    def test_late_epub_page_save_does_not_undo_completion_or_rereading(self):
+        self.open_reader('/reader/104')
+        self.js("""const original=fetch;
+            audit.progressOrder={};window.fetch=async(...args)=>{
+                if(String(args[0])!=='/reader/104/progress')return original(...args);
+                const payload=JSON.parse(args[1].body),probe=audit.progressOrder;
+                const hold=payload.status==='reading'&&!probe.held;
+                if(hold){probe.held=true;probe.oldPayload=payload;
+                    await new Promise(resolve=>probe.release=resolve);}
+                const response=await original(...args);await response.clone().text();
+                if(hold)probe.lateSaved=response.ok;
+                if(payload.status==='completed')probe.completionSaved=response.ok;
+                return response;
+            };""")
+        self.next_page()
+        self.wait('audit.progressOrder.held')
+        self.read_to_end()
+        self.wait('audit.progressOrder.completionSaved')
+        self.assertEqual(self.row('SELECT status FROM reading_progress WHERE item_id=104'),
+                         {'status': 'completed'})
+        self.js('audit.progressOrder.release()')
+        self.wait('audit.progressOrder.lateSaved')
+        self.assertEqual(self.row('SELECT status FROM reading_progress WHERE item_id=104'),
+                         {'status': 'completed'}, 'A late page save must not undo completion')
+        self.driver.find_element('xpath', "//div[text()='End of series']").click()
+        self.js("audit.oldFrame=document.querySelector('#paginated-viewer iframe')")
+        self.driver.find_element('id', 'btn-prev').click()
+        self.wait("document.querySelector('#paginated-viewer iframe')!==audit.oldFrame && document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'")
+        WebDriverWait(self.driver, 5).until(lambda _: self.row(
+            'SELECT status FROM reading_progress WHERE item_id=104') == {'status': 'reading'})
+        self.assertLess(self.row('SELECT progress_percent FROM reading_progress WHERE item_id=104')['progress_percent'], 100,
+                        'A newer backward turn must remain a valid reading action')
+        self.assertEqual(self.js('return audit.errors'), [])
+
+
     def test_explicit_end_completes_epub_and_survives_exit(self):
         self.open_reader('/reader/100')
         self.assertIsNone(self.row('SELECT status FROM reading_progress WHERE item_id=100'))
@@ -383,6 +418,7 @@ if __name__ == '__main__':
             'browser': browser, 'viewport_width': 320})
         suite.addTest(mobile('test_bulk_completion_reopens_epub_at_the_beginning'))
         suite.addTest(mobile('test_epub_stylesheets_resolve_without_extra_requests'))
+        suite.addTest(mobile('test_late_epub_page_save_does_not_undo_completion_or_rereading'))
         suite.addTest(mobile('test_html_server_timing_survives_cache_revalidation'))
         for width in (1280, 320):
             detailed = type(browser.title() + 'DetailedTiming' + str(width), (DetailedTimingChecks,), {

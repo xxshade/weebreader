@@ -16,7 +16,7 @@ from app.library import events
 from app.library.parsers.epub import list_spine_resources
 from app.library.router import automatic_item_rank
 from app.library.series_scope import items_order
-from app.reader import streaming
+from app.reader import progress_order, streaming
 from app.reading_progress import mark_item_read, mark_item_unread
 from app.tracking import service as tracking
 from app import text_replacements
@@ -360,6 +360,7 @@ async def save_progress(
         raise
     except Exception:
         raise HTTPException(400, "Expected a JSON body")
+    order = progress_order.parse_order(body)
     current_page = optional_index(body.get("current_page"), "current_page")
     current_location = body.get("current_location")
     if current_location is not None and not isinstance(current_location, str):
@@ -374,6 +375,8 @@ async def save_progress(
     item = await _get_item(db, item_id)
 
     async with write_transaction() as wdb:
+        if not await progress_order.accept(wdb, user["id"], item_id, order):
+            return {"status": "ok"}
         # Whether this save is the one that FINISHES the book. The readers
         # post `completed` on every save from the last page on (the comic
         # reader on each turn there and on leaving, the text reader past
@@ -388,6 +391,8 @@ async def save_progress(
         # Ordinary page-turn saves can still reopen a completed book.
         if (body.get("on_exit") is True and status == "reading"
                 and before is not None and before["status"] == "completed"):
+            # Persist this newer watermark even though the exit does not reopen.
+            await wdb.commit()
             return {"status": "ok"}
         finishing = status == "completed" and (before is None or before["status"] != "completed")
         await wdb.execute(

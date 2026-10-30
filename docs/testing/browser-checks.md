@@ -201,3 +201,22 @@ and mutation suites must not overlap in one checkout.
 The audit suite also verifies HTML Server-Timing on navigation and conditional
 304 responses in both engines and viewport widths, with static responses excluded.
 See [the measurement guide](../performance/server-timing.md) for scope and interpretation.
+
+## EPUB progress request ordering
+
+The audit suite holds a real page-progress request until a later explicit
+completion has committed, then releases it and verifies that completion remains
+stored. A subsequent real backward page turn must reopen reading normally.
+Chrome and Firefox run this at desktop and 320px viewport widths. Controls
+remove ordering metadata or bypass the server watermark check; each engine must
+reject the late-save defect.
+
+Updated EPUB readers number saves within each opening, including exit beacons.
+The server persists one watermark per account, item and opening in the same
+transaction as progress. It rejects older and repeated saves from that opening;
+this is action order, not the numerical direction of page movement. Restarting
+the server does not erase watermarks. Deleting an item or account cascades its
+watermarks. Different openings keep independent counters; this does not impose
+a new winner between devices or tabs. Clients without metadata keep their
+previous protocol, so already-open older tabs need a reload to gain protection.
+Novels and comics retain their current save protocol in this change.

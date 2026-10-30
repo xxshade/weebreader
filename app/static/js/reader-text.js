@@ -1753,12 +1753,21 @@
 
     // ---------- Progress persistence (shared by both modes) ----------
 
+    // Request arrival order is not reading action order. Keep a counter for
+    // this opening, including exit beacons; a later backward turn is still new.
+    const progressSaveSession = crypto.randomUUID ? crypto.randomUUID() :
+        Array.from(crypto.getRandomValues(new Uint8Array(16)), value =>
+            value.toString(16).padStart(2, "0")).join("").replace(
+                /(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5");
+    let progressSaveSequence = 0;
+
     function saveProgress(spineIndex, entry, location, percentage, chapterFraction, useBeacon = false) {
         const {index: elidx, offset} = pagination.position(location);
         if (!entry || root.dataset.resumePending === "true" || !root.isConnected) return;
         const payload = JSON.stringify(
             { ...adapter.buildProgressPayload(spineIndex, entry, elidx, percentage || 0, chapterFraction || 0, offset),
-              on_exit: useBeacon });
+              on_exit: useBeacon,
+              ...(source === "epub" ? {save_session: progressSaveSession, save_sequence: ++progressSaveSequence} : {}) });
         // The baseline a restored page measures the server against -- see
         // reader-resume.js. The WHOLE-book fraction, not the chapter's:
         // 90% of chapter 2 is behind 10% of chapter 40, and the two ends
