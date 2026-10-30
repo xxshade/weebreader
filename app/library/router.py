@@ -262,6 +262,7 @@ async def _series_reading(db, user_id: int, estimator, series_ids=None):
         scope = ("AND items.series_id = ?" if len(selected) == 1 else
                  "AND items.series_id IN (" + ','.join('?' for _ in selected) + ")")
         params = (user_id, *selected)
+    phase_started = request_timing.start()
     rows = await (await db.execute(f"""
         SELECT items.id, items.series_id, items.file_format,
                items.text_size, items.page_count,
@@ -275,16 +276,23 @@ async def _series_reading(db, user_id: int, estimator, series_ids=None):
            {scope}
     """, params)).fetchall()
 
+    request_timing.finish("series_query", phase_started)
+    phase_started = request_timing.start()
     await estimator.prepare_items(rows)
+    request_timing.finish("series_prepare", phase_started)
+    phase_started = request_timing.start()
     by_series: dict[int, list] = {}
     for row in rows:
         by_series.setdefault(row["series_id"], []).append(row)
-    return {
+    result = {
         sid: ShelfReading(unread=len(items), remaining=estimator.total_remaining(items),
                           text_eta=any(item["file_format"] == "epub" for item in items),
                           missing=estimator.missing_items(items), state=estimator.series_state(items))
         for sid, items in by_series.items()
     }
+
+    request_timing.finish("series_aggregate", phase_started)
+    return result
 
 
 async def _novel_reading(db, user_id: int, estimator, novel_id: int | None = None):
