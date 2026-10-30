@@ -19,9 +19,15 @@ from ci_report import unittest_failures
 
 
 class HomePreload(audit.AuditChecks):
+    # Installed before navigation: the stream can connect before home() runs.
+    probe = "() => { (" + audit.PROBE + """)();
+        window.preloadStreamConnections = 0;
+        document.addEventListener('htmx:sse:after:connection', () => preloadStreamConnections++);
+    }"""
+
     def home(self):
         self.driver.get(self.base + '/')
-        self.wait("window.libraryGrid?.isLive() && document.getElementById('library-events')?.libraryEventsBound")
+        self.wait("window.libraryGrid?.isLive() && document.getElementById('library-events')?.libraryEventsBound && window.preloadStreamConnections > 0")
         if self.browser == 'chrome':
             self.driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride',
                 {'width': self.width, 'height': 800, 'deviceScaleFactor': 1, 'mobile': False})
@@ -29,7 +35,8 @@ class HomePreload(audit.AuditChecks):
             self.driver.browsing_context.set_viewport(context=self.driver.current_window_handle,
                 viewport={'width': self.width, 'height': 800})
         self.assertEqual(self.js('return innerWidth'), self.width)
-        self.js('''window.preloadProbe={requests:0,hold:false,fault:null};
+        self.js('''window.preloadProbe={requests:0,hold:false,fault:null,accountChanges:0};
+            document.getElementById('library-events').addEventListener('account_updated',()=>preloadProbe.accountChanges++);
             document.addEventListener('load',e=>{
                 if(e.target.tagName==='SCRIPT' && e.target.src.includes('/js/appearance.js'))
                     preloadProbe.appearanceLoaded=true;
@@ -60,7 +67,7 @@ class HomePreload(audit.AuditChecks):
                     probe.held=true;
                     if(mode==='body') return new Response(new ReadableStream({start(controller){
                         probe.release=()=>{controller.enqueue(new TextEncoder().encode(html));controller.close()};
-                    }}),{status:response.status,headers:response.headers});
+                    },pull(){probe.bodyRead=true;}},{highWaterMark:0}),{status:response.status,headers:response.headers});
                     await new Promise(resolve=>probe.release=resolve);
                     return new Response(html,{status:response.status,headers:response.headers});
                 }
@@ -237,7 +244,10 @@ class HomePreload(audit.AuditChecks):
                 self.down(link)
                 self.wait('preloadProbe.held')
                 self.up()
-                seen = self.js('return window.libraryEventsSeen || 0')
+                # Consume the held response before mutating; an invalidated
+                # press could otherwise navigate before the write commits.
+                self.wait('preloadProbe.bodyRead === true')
+                seen = self.js('return preloadProbe.accountChanges')
                 if path == '/stats':
                     response = other.post(self.base + '/reading-time', json={
                         'spans': [{'item_id': 1, 'page_index': 0, 'seconds': 5, 'ago': 0}]})
@@ -247,7 +257,7 @@ class HomePreload(audit.AuditChecks):
                         data={'cap_seconds': 240}, headers={'HX-Request': 'true'})
                 response.raise_for_status()
                 try:
-                    self.wait(f'(window.libraryEventsSeen || 0)>{seen}')
+                    self.wait(f'preloadProbe.accountChanges>{seen}')
                 except TimeoutException:
                     self.fail(signal)
                 self.js('preloadProbe.release()')

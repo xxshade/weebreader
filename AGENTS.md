@@ -722,6 +722,9 @@ AVIF cost 2x decode on a phone).
 
 **Write pull request titles and descriptions in English.**
 
+**After creating or updating a PR, monitor every required CI check to completion.**
+Investigate and fix failures before handing back; report any genuine blocker explicitly.
+
 **A merged pull request is finished — never push follow-up work at it.** Check
 before every push whether the branch's PR is still open, and open a NEW one when
 it is not.
