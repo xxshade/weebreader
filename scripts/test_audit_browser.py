@@ -344,7 +344,9 @@ class DetailedTimingChecks(AuditChecks):
     def test_home_phases_are_exposed_on_200_and_304(self):
         self.driver.get(self.base + '/')
         names = self.js("return performance.getEntriesByType('navigation')[0].serverTiming.map(t=>t.name)")
-        expected = {'app', 'db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other'}
+        expected = {'app', 'db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other',
+                    'home_queries', 'home_estimator', 'home_series', 'home_novels',
+                    'home_tracking', 'home_cards', 'home_reading', 'home_other'}
         self.assertEqual(set(names), expected, 'Detailed home phases must be visible to DevTools')
         result = self.driver.execute_async_script("""const done=arguments[0];
             (async()=>{
@@ -359,7 +361,10 @@ class DetailedTimingChecks(AuditChecks):
                   (part.strip().split(';') for part in result['timing'].split(','))}
         self.assertEqual(set(values), expected)
         self.assertTrue(all(value >= 0 for value in values.values()))
-        self.assertAlmostEqual(values['app'], sum(value for key, value in values.items() if key != 'app'), delta=0.01)
+        for key in expected - {'app', 'other'}:
+            self.assertGreater(values[key], 0, key)
+        self.assertAlmostEqual(values['home_data'], sum(value for key, value in values.items() if key.startswith('home_') and key != 'home_data'), delta=0.01)
+        self.assertAlmostEqual(values['app'], sum(value for key, value in values.items() if key not in ('app', 'home_queries', 'home_estimator', 'home_series', 'home_novels', 'home_tracking', 'home_cards', 'home_reading', 'home_other')), delta=0.01)
 
 
 if __name__ == '__main__':

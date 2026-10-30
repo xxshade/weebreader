@@ -62,7 +62,7 @@ The response keeps the total `app` metric and adds the following elapsed phases:
 | `revalidate` | Collecting the HTML body, hashing it and preparing the 200/304 response. |
 | `other` | The nonnegative residual of `app` after subtracting those phases, including framework handling and gaps between measured phases. |
 
-These phases are sequential and must not be added to `app`: together with
+These top-level phases are sequential and must not be added to `app`: together with
 `other`, they account for that total, within rounding precision. They are not
 nested SQL spans or CPU measurements. Initial pool and template warming can
 change the distribution; distinguish the first access from repeated 304s.
@@ -75,3 +75,31 @@ normal home reloads. The largest phase directs the next investigation; a large
 Then disable the option and recreate the container again. No history, SQL,
 credentials, user identifiers or file names are recorded by these phases, and
 no per-request diagnostic logs or database writes are added.
+
+### Inside home data preparation
+
+The same option also reports these sequential parts of `home_data`:
+
+| Metric | Interval |
+| --- | --- |
+| `home_queries` | Initial library, series, novel, status, hidden-status and reading-recency queries, including fetching rows and building lookup maps. This is not SQL engine time alone. |
+| `home_estimator` | Preparing the shared cached-only reading pace estimator. |
+| `home_series` | Preparing series reading indicators, including its queries, cached estimates and file checks. |
+| `home_novels` | Preparing novel reading indicators. |
+| `home_tracking` | Fetching tracking-service link counts. |
+| `home_cards` | Constructing series and novel cards and sorting their combined list. |
+| `home_reading` | Preparing the Reading shortcut section. |
+| `home_other` | Residual inside `home_data`, including final template context construction and gaps between subphases. |
+
+**These children are already included in `home_data` and `app`.** Add the
+children and `home_other` to compare with `home_data`; add only the original
+top-level phases and `other` to compare with `app`. Adding every header value
+would count home data twice. Rounding can produce small differences.
+
+The added boundaries do not change queries, calculations, file checks or cache
+invalidation. They measure elapsed time, including waits, rather than per-query
+SQL execution or CPU. No extra option is needed: keep
+`APP_DETAILED_SERVER_TIMING=true`, recreate the updated container and capture
+five comparable normal home reloads with their statuses and complete headers.
+Compare medians across requests before selecting an optimization; disable the
+option and recreate the container after diagnosis.

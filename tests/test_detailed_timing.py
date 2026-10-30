@@ -52,8 +52,12 @@ class HomePhases(unittest.IsolatedAsyncioTestCase):
         settings.detailed_server_timing = True
         detailed = await self.client.get('/')
         phase = metrics(detailed)
-        self.assertEqual(set(phase), {'app', 'db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other'})
-        for key in ('db_acquire', 'auth', 'home_data', 'render', 'revalidate'):
+        self.assertEqual(set(phase), {'app', 'db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other',
+                    'home_queries', 'home_estimator', 'home_series', 'home_novels',
+                    'home_tracking', 'home_cards', 'home_reading', 'home_other'})
+        for key in ('db_acquire', 'auth', 'home_data', 'render', 'revalidate',
+                    'home_queries', 'home_estimator', 'home_series', 'home_novels',
+                    'home_tracking', 'home_cards', 'home_reading', 'home_other'):
             self.assertGreater(phase[key], 0, key)
         self.assertEqual(normal.content, detailed.content)
         self.assertEqual(normal.headers['etag'], detailed.headers['etag'])
@@ -65,7 +69,8 @@ class HomePhases(unittest.IsolatedAsyncioTestCase):
         for response in (detailed, cached):
             values = metrics(response)
             self.assertTrue(all(value >= 0 for value in values.values()))
-            self.assertAlmostEqual(values['app'], sum(value for key, value in values.items() if key != 'app'), delta=0.01)
+            self.assertAlmostEqual(values['home_data'], sum(value for key, value in values.items() if key.startswith('home_') and key != 'home_data'), delta=0.01)
+            self.assertAlmostEqual(values['app'], sum(value for key, value in values.items() if key not in ('app', 'home_queries', 'home_estimator', 'home_series', 'home_novels', 'home_tracking', 'home_cards', 'home_reading', 'home_other')), delta=0.01)
         other_page = await self.client.get('/settings')
         self.assertEqual(set(metrics(other_page)), {'app'})
         self.assertEqual(timing.headers(0), [], 'Request context must be reset after every response')
@@ -96,6 +101,21 @@ class PhaseIsolation(unittest.IsolatedAsyncioTestCase):
             with timing.collect(True):
                 raise RuntimeError('fixture')
         self.assertEqual(timing.headers(100), [])
+
+    async def test_nested_phases_are_not_counted_twice_in_residuals(self):
+        with timing.collect(True):
+            with patch('app.request_timing.perf_counter', return_value=1.0):
+                parent = timing.start()
+                child = timing.start()
+            with patch('app.request_timing.perf_counter', return_value=1.025):
+                timing.finish('home_series', child)
+            with patch('app.request_timing.perf_counter', return_value=1.1):
+                timing.finish('home_data', parent)
+            values = dict(entry.split(';dur=') for entry in timing.headers(150))
+            self.assertEqual(values['home_series'], '25.000')
+            self.assertEqual(values['home_data'], '100.000')
+            self.assertEqual(values['home_other'], '75.000')
+            self.assertEqual(values['other'], '50.000')
 
     async def test_disabled_phases_do_not_read_the_clock(self):
         with patch('app.request_timing.perf_counter', side_effect=AssertionError('disabled clock read')):
