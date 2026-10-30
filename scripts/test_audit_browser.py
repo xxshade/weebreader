@@ -328,6 +328,40 @@ class AuditChecks(unittest.TestCase):
 
 
 
+class DetailedTimingChecks(AuditChecks):
+    @classmethod
+    def setUpClass(cls):
+        previous = os.environ.get('APP_DETAILED_SERVER_TIMING')
+        os.environ['APP_DETAILED_SERVER_TIMING'] = 'true'
+        try:
+            super().setUpClass()
+        finally:
+            if previous is None:
+                os.environ.pop('APP_DETAILED_SERVER_TIMING', None)
+            else:
+                os.environ['APP_DETAILED_SERVER_TIMING'] = previous
+
+    def test_home_phases_are_exposed_on_200_and_304(self):
+        self.driver.get(self.base + '/')
+        names = self.js("return performance.getEntriesByType('navigation')[0].serverTiming.map(t=>t.name)")
+        expected = {'app', 'db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other'}
+        self.assertEqual(set(names), expected, 'Detailed home phases must be visible to DevTools')
+        result = self.driver.execute_async_script("""const done=arguments[0];
+            (async()=>{
+                const first=await fetch('/',{cache:'no-store'});await first.text();
+                const second=await fetch('/',{cache:'no-store',headers:{'If-None-Match':first.headers.get('etag')}});
+                const body=await second.text();
+                done({status:second.status,length:body.length,timing:second.headers.get('server-timing')});
+            })().catch(error=>done({error:String(error)}));""")
+        self.assertEqual(result['status'], 304)
+        self.assertEqual(result['length'], 0)
+        values = {name: float(value.removeprefix('dur=')) for name, value in
+                  (part.strip().split(';') for part in result['timing'].split(','))}
+        self.assertEqual(set(values), expected)
+        self.assertTrue(all(value >= 0 for value in values.values()))
+        self.assertAlmostEqual(values['app'], sum(value for key, value in values.items() if key != 'app'), delta=0.01)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     add_browser_argument(parser)
@@ -345,6 +379,10 @@ if __name__ == '__main__':
         suite.addTest(mobile('test_bulk_completion_reopens_epub_at_the_beginning'))
         suite.addTest(mobile('test_epub_stylesheets_resolve_without_extra_requests'))
         suite.addTest(mobile('test_html_server_timing_survives_cache_revalidation'))
+        for width in (1280, 320):
+            detailed = type(browser.title() + 'DetailedTiming' + str(width), (DetailedTimingChecks,), {
+                'browser': browser, 'viewport_width': width})
+            suite.addTest(detailed('test_home_phases_are_exposed_on_200_and_304'))
     expected = suite.countTestCases()
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     unittest_failures(result)

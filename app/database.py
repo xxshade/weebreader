@@ -15,6 +15,7 @@ from pathlib import Path
 import aiosqlite
 from starlette.exceptions import HTTPException
 
+from app import request_timing
 from app.config import settings
 from app.stats.recording import rebuild_read_totals
 from app.stats.pace_totals import PACE_TRIGGER, ensure_pace_totals
@@ -512,7 +513,9 @@ async def get_db():
     four open /library/events streams held all four connections and every
     other request waited for one forever (measured).
     """
+    started = request_timing.start()
     async with read_connection() as db:
+        request_timing.finish("db_acquire", started)
         yield db
 
 

@@ -37,7 +37,7 @@ from app.tracking import store as tracker_store
 from app.tracking.router import handle_oauth_callback
 from app.tracking.router import panel_context as tracker_panel_context
 from app.status_labels import STATUS_LABELS as SERIES_STATUS_LABELS
-from app import text_replacements
+from app import text_replacements, request_timing
 
 logger = logging.getLogger("library")
 
@@ -926,6 +926,7 @@ async def home(request: Request, user=Depends(get_current_user), db=Depends(get_
     if redirect is not None:
         return redirect
 
+    data_started = request_timing.start()
     cursor = await db.execute("SELECT * FROM libraries ORDER BY name")
     libraries = await cursor.fetchall()
 
@@ -1048,28 +1049,30 @@ async def home(request: Request, user=Depends(get_current_user), db=Depends(get_
 
     reading_items = await _reading_items(db, user["id"], estimator)
 
-    return templates.TemplateResponse(
-        request, "library/index.html",
-        {
-            "user": user,
-            "libraries": libraries,
-            "cards": cards,
-            "status_labels": SERIES_STATUS_LABELS,
-            "publication_labels": PUBLICATION_STATUS_LABELS,
-            # What "linked to everything" means, so the grid does not have
-            # to hardcode two -- a third service would otherwise turn every
-            # green dot into a lie.
-            "tracker_total": tracker_total,
-            "hidden_statuses": hidden_statuses,
-            "reading_items": reading_items,
-            "library_form": _library_form(
-                LIBRARY_CREATE_ERRORS.get(request.query_params.get("library_error") or ""),
-                request.query_params.get("library_name"),
-                request.query_params.get("library_path"),
-                request.query_params.get("library_type"),
-            ),
-        },
-    )
+    context = {
+        "user": user,
+        "libraries": libraries,
+        "cards": cards,
+        "status_labels": SERIES_STATUS_LABELS,
+        "publication_labels": PUBLICATION_STATUS_LABELS,
+        # What "linked to everything" means, so the grid does not have
+        # to hardcode two -- a third service would otherwise turn every
+        # green dot into a lie.
+        "tracker_total": tracker_total,
+        "hidden_statuses": hidden_statuses,
+        "reading_items": reading_items,
+        "library_form": _library_form(
+            LIBRARY_CREATE_ERRORS.get(request.query_params.get("library_error") or ""),
+            request.query_params.get("library_name"),
+            request.query_params.get("library_path"),
+            request.query_params.get("library_type"),
+        ),
+    }
+    request_timing.finish("home_data", data_started)
+    render_started = request_timing.start()
+    response = templates.TemplateResponse(request, "library/index.html", context)
+    request_timing.finish("render", render_started)
+    return response
 
 
 # Why "New library" refused, keyed by what travels in the query string of

@@ -40,3 +40,38 @@ Only the total `app` duration is reported initially. Detailed query, rendering
 and CPU diagnostics should be added only if this measurement points to relevant
 application work; per-process CPU time cannot reliably be attributed to one
 concurrent request.
+
+## Optional home-page phases
+
+To investigate a recurring home-page cost, set
+`APP_DETAILED_SERVER_TIMING=true` in the application container's environment and
+recreate that container. The sample Compose file forwards this variable from
+its environment or `.env`; it defaults to `false`. This option does not change
+calculations, queries or cache decisions. It affects only GET requests to `/`,
+including its query-string variants, and is controlled by installation settings,
+not a request parameter.
+
+The response keeps the total `app` metric and adds the following elapsed phases:
+
+| Metric | Interval |
+| --- | --- |
+| `db_acquire` | Acquiring the primary request read connection, including waiting for a pool slot and opening/configuring a connection when needed. This is not the time spent executing all SQL. |
+| `auth` | Session and account validation after acquiring that connection, including its query. |
+| `home_data` | Preparing home data and cards, including queries, cached estimate preparation and file checks. |
+| `render` | Rendering the home template after preparing its context. |
+| `revalidate` | Collecting the HTML body, hashing it and preparing the 200/304 response. |
+| `other` | The nonnegative residual of `app` after subtracting those phases, including framework handling and gaps between measured phases. |
+
+These phases are sequential and must not be added to `app`: together with
+`other`, they account for that total, within rounding precision. They are not
+nested SQL spans or CPU measurements. Initial pool and template warming can
+change the distribution; distinguish the first access from repeated 304s.
+Diagnostics themselves add some overhead, so detailed results should not be
+compared as if this option were free.
+
+After deploying, record the entire Server-Timing header and status from five
+normal home reloads. The largest phase directs the next investigation; a large
+`other` value calls for finer measurement rather than guessing its cause.
+Then disable the option and recreate the container again. No history, SQL,
+credentials, user identifiers or file names are recorded by these phases, and
+no per-request diagnostic logs or database writes are added.
