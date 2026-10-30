@@ -127,3 +127,36 @@ home reloads. If `series_prepare` dominates, its internal queries, file checks
 and snapshot lookups are candidates for a subsequent diagnostic; this header
 does not yet separate them. Disable the option and recreate the container when
 finished.
+
+### Inside EPUB estimate preparation
+
+The same opt-in diagnostic also divides `series_prepare` into exclusive item
+phases, accumulated across all items and batches in that series pass:
+
+| Metric | Interval |
+| --- | --- |
+| `items_query` | Fetching the requested EPUB rows and saved progress in the existing batches, including row materialization. |
+| `items_positions` | Selecting unprepared EPUBs and determining their pace, state and saved text anchors in memory. |
+| `items_rules` | Preparing replacement-rule scopes, fetching rules in batches and looking up any remaining per-series rules. |
+| `items_stat` | Awaiting the existing batches of file checks in a worker thread, including scheduling and filesystem waits. |
+| `items_index` | The initial snapshot-index read for this estimator, including the worker wait. Zero when no index read is needed in this scope. |
+| `items_snapshots` | File-stat error handling, fingerprint construction, snapshot validation/decoding, application of the current pace and assignment of estimates/states. Excludes `items_index`. |
+| `items_other` | Residual of `series_prepare`, including loop and instrumentation boundaries outside the timed blocks. |
+
+The index is loaded inside a snapshot lookup. Its nested elapsed interval is
+subtracted from the snapshot interval so these item phases do not overlap.
+Their sum, including `items_other`, can be compared with `series_prepare`;
+all are already included in `home_series`, `home_data` and `app`.
+
+Only the series preparation pass in the home diagnostic contributes to these
+item metrics. Later novel/Reading preparation and the estimate-refresh endpoint
+do not add to them. In the home pass, cached-only preparation still does not
+parse cold EPUB inventories or save new snapshots. Queries, cache invalidation,
+file checks and their ordering are unchanged.
+
+These finer probes add measurement overhead, especially per item. Treat them as
+diagnostic elapsed times, not CPU measurements or an exact uninstrumented
+baseline. Recreate the updated container with
+`APP_DETAILED_SERVER_TIMING=true`, collect complete headers and HTTP statuses
+from five comparable normal home reloads, then disable the option and recreate
+the container again. No SQL text, file names or account identifiers are emitted.

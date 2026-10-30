@@ -56,7 +56,9 @@ class HomePhases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(phase), {'app', 'db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other',
                     'home_queries', 'home_estimator', 'home_series', 'home_novels',
                     'home_tracking', 'home_cards', 'home_reading', 'home_other',
-                    'series_query', 'series_prepare', 'series_aggregate', 'series_other'})
+                    'series_query', 'series_prepare', 'series_aggregate', 'series_other',
+                    'items_query', 'items_positions', 'items_rules', 'items_stat',
+                    'items_index', 'items_snapshots', 'items_other'})
         for key in ('db_acquire', 'auth', 'home_data', 'render', 'revalidate',
                     'home_queries', 'home_estimator', 'home_series', 'home_novels',
                     'home_tracking', 'home_cards', 'home_reading', 'home_other'):
@@ -71,6 +73,7 @@ class HomePhases(unittest.IsolatedAsyncioTestCase):
         for response in (detailed, cached):
             values = metrics(response)
             self.assertTrue(all(value >= 0 for value in values.values()))
+            self.assertAlmostEqual(values['series_prepare'], sum(value for key, value in values.items() if key.startswith('items_')), delta=0.01)
             self.assertAlmostEqual(values['home_series'], sum(value for key, value in values.items() if key.startswith('series_')), delta=0.01)
             self.assertAlmostEqual(values['home_data'], sum(value for key, value in values.items() if key.startswith('home_') and key != 'home_data'), delta=0.01)
             self.assertAlmostEqual(values['app'], sum(value for key, value in values.items() if key in ('db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other')), delta=0.01)
@@ -136,4 +139,59 @@ class PhaseIsolation(unittest.IsolatedAsyncioTestCase):
             with timing.collect(False):
                 self.assertIsNone(timing.start())
                 timing.finish('auth', None)
+                with timing.item_preparation(), timing.item_phase('items_index'):
+                    pass
                 self.assertEqual(timing.headers(100), [])
+
+
+class ItemPhaseIsolation(unittest.IsolatedAsyncioTestCase):
+    async def test_index_time_is_excluded_from_snapshot_time_and_repeated_calls_accumulate(self):
+        clock = [1.0]
+        with patch('app.request_timing.perf_counter', side_effect=lambda: clock[0]):
+            with timing.collect(True):
+                started = timing.start()
+                with timing.item_preparation():
+                    with timing.item_phase('items_snapshots'):
+                        clock[0] = 1.010
+                        with timing.item_phase('items_index'):
+                            clock[0] = 1.040
+                        clock[0] = 1.050
+                    clock[0] = 1.060
+                    with timing.item_phase('items_snapshots'):
+                        clock[0] = 1.070
+                clock[0] = 1.080
+                timing.finish('series_prepare', started)
+                values = dict(entry.split(';dur=') for entry in timing.headers(100))
+                self.assertEqual(values['items_index'], '30.000')
+                self.assertEqual(values['items_snapshots'], '30.000')
+                self.assertEqual(values['items_other'], '20.000')
+                with patch('app.request_timing.perf_counter', side_effect=AssertionError('outside item scope')):
+                    with timing.item_phase('items_index'):
+                        pass
+                self.assertEqual(dict(entry.split(';dur=') for entry in timing.headers(100)), values)
+
+    async def test_item_scopes_are_isolated_across_tasks_and_reset_after_exceptions(self):
+        clock = ContextVar('item_test_clock', default=0)
+        ready = [asyncio.Event(), asyncio.Event()]
+        async def measure(index, name, elapsed):
+            with timing.collect(True):
+                with self.assertRaises(RuntimeError):
+                    with timing.item_preparation():
+                        with timing.item_phase(name):
+                            ready[index].set()
+                            await ready[1-index].wait()
+                            clock.set(elapsed)
+                            raise RuntimeError('fixture')
+                values = timing.headers(100)
+                with patch('app.request_timing.perf_counter', side_effect=AssertionError('leaked scope')):
+                    with timing.item_phase(name):
+                        pass
+                return values
+        with patch('app.request_timing.perf_counter', side_effect=lambda: clock.get()):
+            first, second = await asyncio.gather(
+                measure(0, 'items_index', .05), measure(1, 'items_rules', .09))
+        self.assertIn('items_index;dur=50.000', first)
+        self.assertIn('items_rules;dur=0.000', first)
+        self.assertIn('items_index;dur=0.000', second)
+        self.assertIn('items_rules;dur=90.000', second)
+        self.assertEqual(timing.headers(0), [])

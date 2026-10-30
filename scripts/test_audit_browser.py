@@ -365,6 +365,21 @@ class AuditChecks(unittest.TestCase):
 
 class DetailedTimingChecks(AuditChecks):
     @classmethod
+    def seed_readers(cls):
+        super().seed_readers()
+        with sqlite3.connect(cls.fixture.data / 'library.db') as db:
+            db.execute("INSERT INTO page_reads(user_id,kind,started_at,seconds,cap_seconds,visit_id,pace_words,pace_seconds,pace_samples) VALUES(1,'epub',datetime('now'),300,300,'timing-pace',1000,300,3)")
+        # Warm real estimates before checking stable HTML/ETags; browser
+        # background ETA refreshes must not race this conditional request.
+        with requests.Session() as client:
+            client.post(cls.base + '/login', data={
+                'username': 'probe', 'password': 'disposable-browser-test-password'},
+                allow_redirects=False, timeout=15).raise_for_status()
+            client.post(cls.base + '/library/reading-estimates', json={'targets':
+                [{'kind': 'series', 'id': identity} for identity in (100,101,102,104)]
+                + [{'kind': 'novel', 'id': 100}]}, timeout=30).raise_for_status()
+
+    @classmethod
     def setUpClass(cls):
         previous = os.environ.get('APP_DETAILED_SERVER_TIMING')
         os.environ['APP_DETAILED_SERVER_TIMING'] = 'true'
@@ -382,7 +397,9 @@ class DetailedTimingChecks(AuditChecks):
         expected = {'app', 'db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other',
                     'home_queries', 'home_estimator', 'home_series', 'home_novels',
                     'home_tracking', 'home_cards', 'home_reading', 'home_other',
-                    'series_query', 'series_prepare', 'series_aggregate', 'series_other'}
+                    'series_query', 'series_prepare', 'series_aggregate', 'series_other',
+                    'items_query', 'items_positions', 'items_rules', 'items_stat',
+                    'items_index', 'items_snapshots', 'items_other'}
         self.assertEqual(set(names), expected, 'Detailed home phases must be visible to DevTools')
         result = self.driver.execute_async_script("""const done=arguments[0];
             (async()=>{
@@ -397,8 +414,9 @@ class DetailedTimingChecks(AuditChecks):
                   (part.strip().split(';') for part in result['timing'].split(','))}
         self.assertEqual(set(values), expected)
         self.assertTrue(all(value >= 0 for value in values.values()))
-        for key in expected - {'app', 'other', 'series_other'}:
+        for key in expected - {'app', 'other', 'series_other', 'items_other'}:
             self.assertGreater(values[key], 0, key)
+        self.assertAlmostEqual(values['series_prepare'], sum(value for key, value in values.items() if key.startswith('items_')), delta=0.01)
         self.assertAlmostEqual(values['home_series'], sum(value for key, value in values.items() if key.startswith('series_')), delta=0.01)
         self.assertAlmostEqual(values['home_data'], sum(value for key, value in values.items() if key.startswith('home_') and key != 'home_data'), delta=0.01)
         self.assertAlmostEqual(values['app'], sum(value for key, value in values.items() if key in ('db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other')), delta=0.01)

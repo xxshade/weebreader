@@ -278,7 +278,8 @@ async def _series_reading(db, user_id: int, estimator, series_ids=None):
 
     request_timing.finish("series_query", phase_started)
     phase_started = request_timing.start()
-    await estimator.prepare_items(rows)
+    with request_timing.item_preparation():
+        await estimator.prepare_items(rows)
     request_timing.finish("series_prepare", phase_started)
     phase_started = request_timing.start()
     by_series: dict[int, list] = {}
