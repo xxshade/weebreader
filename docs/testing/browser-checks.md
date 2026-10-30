@@ -197,3 +197,7 @@ after real commits, error/GET exclusions and the successful OAuth GET callback.
 The optional measurement command and cold/warm-cache protocol are documented in
 [Account page measurements](../performance/account-preload.md). Measurement runs
 and mutation suites must not overlap in one checkout.
+
+The audit suite also verifies HTML Server-Timing on navigation and conditional
+304 responses in both engines and viewport widths, with static responses excluded.
+See [the measurement guide](../performance/server-timing.md) for scope and interpretation.
