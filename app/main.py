@@ -3,6 +3,7 @@ import hashlib
 import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from time import perf_counter
 from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, Request
@@ -260,6 +261,14 @@ class PrivateImageFiles(StaticFiles):
 app.mount("/covers", PrivateImageFiles(directory=str(settings.covers_dir)), name="covers")
 
 
+def _time_page(response: Response, started: float) -> Response:
+    """Report elapsed application time, excluding network and body transfer."""
+    metric = f"app;dur={(perf_counter() - started) * 1000:.3f}"
+    existing = response.headers.get("Server-Timing")
+    response.headers["Server-Timing"] = f"{existing}, {metric}" if existing else metric
+    return response
+
+
 @app.middleware("http")
 async def revalidate_pages(request: Request, call_next):
     """A page is KEPT, and asked about before it is used.
@@ -304,6 +313,7 @@ async def revalidate_pages(request: Request, call_next):
     chosen its own policy -- the reader's own pages, the SSE stream --
     keeps it.
     """
+    started = perf_counter()
     response = await call_next(request)
     if "text/html" not in response.headers.get("content-type", ""):
         return response
@@ -312,7 +322,7 @@ async def revalidate_pages(request: Request, call_next):
     # Only a plain GET is worth a validator, and only a 200 has a body
     # whose hash means anything. A redirect or an error is answered again.
     if request.method != "GET" or response.status_code != 200:
-        return response
+        return _time_page(response, started)
 
     # Under BaseHTTPMiddleware every response arrives as a stream of
     # chunks, even one the route built whole; `.body` is the shape a
@@ -327,8 +337,8 @@ async def revalidate_pages(request: Request, call_next):
     if request.headers.get("if-none-match") == etag:
         # A 304 carries no body, so its Content-Length would be a lie.
         del headers["content-length"]
-        return Response(status_code=304, headers=dict(headers.items()))
-    return Response(content=body, status_code=200, headers=dict(headers.items()))
+        return _time_page(Response(status_code=304, headers=dict(headers.items())), started)
+    return _time_page(Response(content=body, status_code=200, headers=dict(headers.items())), started)
 
 
 @app.exception_handler(StarletteHTTPException)

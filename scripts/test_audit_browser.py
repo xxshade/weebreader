@@ -204,6 +204,34 @@ class AuditChecks(unittest.TestCase):
         self.fail('Reader did not reach its end')
 
 
+    def test_html_server_timing_survives_cache_revalidation(self):
+        self.driver.get(self.base + '/settings')
+        navigation = self.js("return performance.getEntriesByType('navigation')[0].serverTiming.map(t=>({name:t.name,duration:t.duration}))")
+        self.assertTrue(any(t['name'] == 'app' and t['duration'] >= 0 for t in navigation),
+                        'Navigation must expose application timing to DevTools')
+        result = self.driver.execute_async_script("""const done=arguments[0];
+            (async()=>{
+                const first=await fetch('/settings',{cache:'no-store'}),body=await first.text();
+                const etag=first.headers.get('etag');
+                const cached=await fetch('/settings',{cache:'no-store',headers:{'If-None-Match':etag}});
+                const empty=await cached.text();
+                const asset=await fetch('/static/js/ui-prefs.js');await asset.text();
+                done({status:first.status,timing:first.headers.get('server-timing'),etag,
+                    cachedStatus:cached.status,cachedTiming:cached.headers.get('server-timing'),
+                    cachedEtag:cached.headers.get('etag'),policy:cached.headers.get('cache-control'),
+                    length:body.length,cachedLength:empty.length,assetTiming:asset.headers.get('server-timing')});
+            })().catch(error=>done({error:String(error)}));""")
+        self.assertEqual(result['status'], 200)
+        self.assertGreater(result['length'], 0)
+        self.assertEqual(result['cachedStatus'], 304)
+        self.assertEqual(result['cachedLength'], 0)
+        self.assertEqual(result['etag'], result['cachedEtag'])
+        self.assertEqual(result['policy'], 'private, no-cache')
+        for key in ('timing', 'cachedTiming'):
+            self.assertRegex(result[key] or '', r'^app;dur=[0-9]+\.[0-9]{3}$',
+                             'Every HTML response must include application timing')
+        self.assertIsNone(result['assetTiming'])
+
     def test_epub_stylesheets_resolve_without_extra_requests(self):
         from tests.test_archives import PNG_1PX
         with sqlite3.connect(self.fixture.data / 'library.db') as db:
@@ -316,6 +344,7 @@ if __name__ == '__main__':
             'browser': browser, 'viewport_width': 320})
         suite.addTest(mobile('test_bulk_completion_reopens_epub_at_the_beginning'))
         suite.addTest(mobile('test_epub_stylesheets_resolve_without_extra_requests'))
+        suite.addTest(mobile('test_html_server_timing_survives_cache_revalidation'))
     expected = suite.countTestCases()
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     unittest_failures(result)
