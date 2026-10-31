@@ -145,6 +145,22 @@ class PhaseIsolation(unittest.IsolatedAsyncioTestCase):
 
 
 class ItemPhaseIsolation(unittest.IsolatedAsyncioTestCase):
+    async def test_inactive_item_phases_do_not_allocate_generator_contexts(self):
+        # Enter the request scopes before blocking generator construction.
+        # This catches per-item overhead independently of elapsed-time noise.
+        for enabled in (False, True):
+            with self.subTest(request_diagnostics=enabled), timing.collect(enabled):
+                with patch('contextlib._GeneratorContextManager',
+                           side_effect=AssertionError('inactive generator allocation')):
+                    with timing.item_phase('items_snapshots'):
+                        pass
+        with timing.collect(False), timing.item_preparation():
+            with patch('contextlib._GeneratorContextManager',
+                       side_effect=AssertionError('disabled generator allocation')):
+                with timing.item_phase('items_index'):
+                    pass
+
+
     async def test_index_time_is_excluded_from_snapshot_time_and_repeated_calls_accumulate(self):
         clock = [1.0]
         with patch('app.request_timing.perf_counter', side_effect=lambda: clock[0]):

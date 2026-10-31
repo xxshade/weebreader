@@ -160,3 +160,12 @@ baseline. Recreate the updated container with
 `APP_DETAILED_SERVER_TIMING=true`, collect complete headers and HTTP statuses
 from five comparable normal home reloads, then disable the option and recreate
 the container again. No SQL text, file names or account identifiers are emitted.
+
+### Cost when item diagnostics are inactive
+
+When the detailed item scope is inactive, its per-item timing blocks use a
+lightweight no-op context rather than constructing a generator context manager.
+They still perform a small scope check, but do not read the diagnostic clock or
+create timing spans. Active detailed diagnostics keep the same exclusive phases,
+request isolation and exception cleanup. This does not add a reading-estimate
+cache or change calculations, invalidation or file checks.
