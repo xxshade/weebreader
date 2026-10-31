@@ -36,12 +36,15 @@
     'canceled': 'bg-rose-300',
 } %}
 
+{% set tracking_default = 'bg-neutral-600' %}
+{% set publication_default = 'bg-neutral-300' %}
+
 {% macro tracking_class(status) -%}
-{{ badge_bg.get(status, 'bg-neutral-600') }}
+{{ badge_bg.get(status, tracking_default) }}
 {%- endmacro %}
 
 {% macro publication_class(status) -%}
-{{ pub_bg.get(status, 'bg-neutral-300') }}
+{{ pub_bg.get(status, publication_default) }}
 {%- endmacro %}
 
 {# The reader's own status. Unset is the ordinary state and gets a quiet

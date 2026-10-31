@@ -230,7 +230,7 @@ if __name__=='__main__':
          'Reading ETA must retain its volume scope'),
         ('app/stats/estimates.py', 'if saved is not None:', 'if False and saved is not None:',
          'Reload must show the saved novel estimate before refresh completes'),
-        ('app/templates/library/index.html', '{% if card.eta_missing %}', '{% if false %}',
+        ('app/templates/library/index.html', "{% if card['eta_missing'] %}", '{% if false %}',
          'Series must identify its partial known total'),
         ('app/static/js/library-events.js', 'if (!node.textContent.startsWith("~")) node.textContent = "Estimate failed · retry";',
          'node.textContent = "Estimate failed · retry";', 'Transport failure must retain a known result'),

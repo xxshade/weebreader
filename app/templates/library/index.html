@@ -167,18 +167,18 @@
                before home.js's deferred applyFilters() gets around to
                hiding them, same flash home.js still fixes for
                search/status-filter changes made after load. #}
-            <a id="library-card-{{ card.kind }}-{{ card.id }}" hx-preload="home-card-press" href="{{ card.detail_url }}" class="series-card block group{{ ' hidden' if card.status in hidden_statuses else '' }}"
-               {% if card.kind == 'series' %}data-series-id="{{ card.id }}"{% else %}data-novel-id="{{ card.id }}"{% endif %}
-               data-name="{{ card.name|lower }}" data-status="{{ card.status or '' }}"
-               data-publication="{{ card.publication_status or '' }}"
-               data-added="{{ card.added_at or '' }}" data-modified="{{ card.modified_at or '' }}"
-               data-last-read="{{ card.last_read_at or '' }}" data-library="{{ card.library_id }}"
+            <a id="library-card-{{ card['kind'] }}-{{ card['id'] }}" hx-preload="home-card-press" href="{{ card['detail_url'] }}" class="series-card block group{{ ' hidden' if card['status'] in hidden_statuses else '' }}"
+               {% if card['kind'] == 'series' %}data-series-id="{{ card['id'] }}"{% else %}data-novel-id="{{ card['id'] }}"{% endif %}
+               data-name="{{ card['name']|lower }}" data-status="{{ card['status'] or '' }}"
+               data-publication="{{ card['publication_status'] or '' }}"
+               data-added="{{ card['added_at'] or '' }}" data-modified="{{ card['modified_at'] or '' }}"
+               data-last-read="{{ card['last_read_at'] or '' }}" data-library="{{ card['library_id'] }}"
                {# The same number the badge over the cover shows -- rendered
                   as an attribute as well so the "Unread" sort can read it
                   without parsing the badge (which is absent at zero). #}
-               data-unread-count="{{ card.unread_count }}">
+               data-unread-count="{{ card['unread_count'] }}">
                 <div class="cover">
-                    {% if card.cover_url %}
+                    {% if card['cover_url'] %}
                     {# Blurred on the home page -- here, and on the series'
                        items in the "Reading" strip and the item search --
                        because it is in front of whoever happens to be
@@ -187,8 +187,8 @@
                        cover as it is. The class
                        goes on the IMG and not on .cover, or the badges
                        over it would smear too and stop being readable. #}
-                    <img loading="lazy" src="{{ card.cover_url }}"
-                         class="w-full h-full object-cover{{ ' cover-blur' if card.blur_cover else '' }}">
+                    <img loading="lazy" src="{{ card['cover_url'] }}"
+                         class="w-full h-full object-cover{{ ' cover-blur' if card['blur_cover'] else '' }}">
                     {% endif %}
                     {# The two badges share ONE row rather than being two
                        absolutely-positioned spans, because absolute
@@ -225,21 +225,21 @@
                        page wears -- one place, and literal class names
                        in a template so test_css_classes.py can see
                        them. #}
-                    {% set pub_bg = badges.publication_class(card.publication_status) %}
-                    {% set badge_bg = badges.tracking_class(card.status) %}
-                    {% if card.publication_status or card.status %}
+                    {% set pub_bg = badges.pub_bg.get(card['publication_status'], badges.publication_default) %}
+                    {% set badge_bg = badges.badge_bg.get(card['status'], badges.tracking_default) %}
+                    {% if card['publication_status'] or card['status'] %}
                     <div class="absolute top-1 left-1 right-1 flex flex-wrap items-start justify-between gap-1">
                         {# An empty slot when there is no publication
                            status, so justify-between still puts a lone
                            tracking badge on the right where it has
                            always been. #}
-                        {% if card.publication_status %}
-                        <span class="{{ pub_bg }} text-neutral-900 text-xs rounded px-1.5 py-0.5">{{ publication_labels[card.publication_status] }}</span>
+                        {% if card['publication_status'] %}
+                        <span class="{{ pub_bg }} text-neutral-900 text-xs rounded px-1.5 py-0.5">{{ publication_labels[card['publication_status']] }}</span>
                         {% else %}
                         <span></span>
                         {% endif %}
-                        {% if card.status %}
-                        <span class="{{ badge_bg }} text-xs rounded px-1.5 py-0.5">{{ status_labels[card.status] }}</span>
+                        {% if card['status'] %}
+                        <span class="{{ badge_bg }} text-xs rounded px-1.5 py-0.5">{{ status_labels[card['status']] }}</span>
                         {% endif %}
                     </div>
                     {% endif %}
@@ -252,8 +252,8 @@
                        it. A comic in progress still counts: unread here is
                        NOT COMPLETED (see _series_reading), so an item
                        abandoned at 12% is one the reader still has. #}
-                    {% if card.unread_count %}
-                    <span class="absolute bottom-1 right-1 bg-black/70 text-white text-xs rounded px-1.5 py-0.5">{{ card.unread_count }}</span>
+                    {% if card['unread_count'] %}
+                    <span class="absolute bottom-1 right-1 bg-black/70 text-white text-xs rounded px-1.5 py-0.5">{{ card['unread_count'] }}</span>
                     {% endif %}
                     {# Tracking, in the smallest thing that can say it.
                        This grid is where you go to find the series that
@@ -274,18 +274,18 @@
                        both corner marks on the same cover, and stacking
                        them in one corner would make a lone dot look
                        like part of the number. #}
-                    <span class="track-dot {% if card.tracked_count >= tracker_total %}text-emerald-300{% elif card.tracked_count %}text-sky-300{% else %}text-neutral-500{% endif %}"
-                          title="{% if card.tracked_count %}Tracking: linked to {{ card.tracked_count }} of {{ tracker_total }} services{% else %}Tracking: not linked{% endif %}"></span>
+                    <span class="track-dot {% if card['tracked_count'] >= tracker_total %}text-emerald-300{% elif card['tracked_count'] %}text-sky-300{% else %}text-neutral-500{% endif %}"
+                          title="{% if card['tracked_count'] %}Tracking: linked to {{ card['tracked_count'] }} of {{ tracker_total }} services{% else %}Tracking: not linked{% endif %}"></span>
                 </div>
-                <p title="{{ card.name }}" class="card-title">{{ card.name }}</p>
+                <p title="{{ card['name'] }}" class="card-title">{{ card['name'] }}</p>
                 {# Home text scopes are independently refreshed; no chapter
                    percentage may scale an entire novel or series. #}
-                {% if card.text_eta %}
-                <p class="text-xs text-neutral-500" data-text-eta-kind="{{ card.kind }}" data-text-eta-id="{{ card.id }}" data-estimate-state="{{ card.eta_state }}"
-                   title="{% if card.remaining_seconds is not none %}About {{ card.remaining_seconds | duration }} left, based on measured reading pace{% else %}{{ estimate_details.get(card.eta_state, "") }}{% endif %}">{% if card.remaining_seconds is not none %}~{{ card.remaining_seconds | duration }}{% if card.eta_missing %} known · {{ card.eta_missing }} item{{ "s" if card.eta_missing != 1 else "" }} without estimate{% endif %}{% else %}{{ estimate_labels.get(card.eta_state, "Calculating…") }}{% endif %}</p>
-                {% elif card.remaining_seconds %}
+                {% if card['text_eta'] %}
+                <p class="text-xs text-neutral-500" data-text-eta-kind="{{ card['kind'] }}" data-text-eta-id="{{ card['id'] }}" data-estimate-state="{{ card['eta_state'] }}"
+                   title="{% if card['remaining_seconds'] is not none %}About {{ card['remaining_seconds'] | duration }} left, based on measured reading pace{% else %}{{ estimate_details.get(card['eta_state'], "") }}{% endif %}">{% if card['remaining_seconds'] is not none %}~{{ card['remaining_seconds'] | duration }}{% if card['eta_missing'] %} known · {{ card['eta_missing'] }} item{{ "s" if card['eta_missing'] != 1 else "" }} without estimate{% endif %}{% else %}{{ estimate_labels.get(card['eta_state'], "Calculating…") }}{% endif %}</p>
+                {% elif card['remaining_seconds'] %}
                 <p class="text-xs text-neutral-500 truncate"
-                   title="About {{ card.remaining_seconds | duration }} of this left to read, going by how fast you read">~{{ card.remaining_seconds | duration }}</p>
+                   title="About {{ card['remaining_seconds'] | duration }} of this left to read, going by how fast you read">~{{ card['remaining_seconds'] | duration }}</p>
                 {% endif %}
             </a>
             {% else %}
