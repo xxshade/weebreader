@@ -5,10 +5,14 @@ missed notifications, other workers and restart fall back to validated reads.
 """
 import asyncio
 from collections import OrderedDict, defaultdict
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 import logging
+import os
+from pathlib import Path
 import sqlite3
+from types import MappingProxyType
 import weakref
 
 from app import request_timing
@@ -18,6 +22,48 @@ from app.stats import estimate_snapshots as snapshots
 log = logging.getLogger(__name__)
 MAX_ACCOUNTS = 4
 MAX_ENTRIES = 4096
+PREPARED_FILE_BATCH_SIZE = 128
+
+
+@dataclass(frozen=True, slots=True)
+class _SourcePath:
+    identity: int
+    source: str
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedFiles:
+    rows: tuple[_SourcePath, ...]
+    by_id: Mapping[int, _SourcePath]
+
+
+def _prepare_files(sources, previous=None):
+    """Prepare lexical paths off-loop; never cache filesystem metadata."""
+    if len(sources) > MAX_ENTRIES:
+        return None
+    previous = previous.by_id if previous is not None else {}
+    index = {}
+    for identity, (source, _) in sources.items():
+        row = previous.get(identity)
+        if row is None or row.source != source:
+            path = Path(source)
+            # Path defers string conversion: finish it in this worker too,
+            # rather than adding that work to the first home validation.
+            os.fspath(path)
+            row = _SourcePath(identity, source, path)
+        index[identity] = row
+    return _PreparedFiles(tuple(index.values()), MappingProxyType(index))
+
+
+def _stat_prepared_files(rows):
+    results = {}
+    for row in rows:
+        try:
+            results[row.identity] = row.path.stat()
+        except (OSError, ValueError) as error:
+            results[row.identity] = error
+    return results
 
 
 @asynccontextmanager
@@ -50,6 +96,7 @@ class State:
     snapshot_rows: dict
     items: dict = field(default_factory=dict)
     sources: dict = field(default_factory=dict)
+    file_checks: _PreparedFiles | None = None
     words: dict = field(default_factory=dict)
     item_estimates: dict = field(default_factory=dict)
     item_states: dict = field(default_factory=dict)
@@ -117,17 +164,22 @@ class ReadyEstimates:
 
     async def _files(self, state):
         from app.stats.estimates import FILE_STAT_BATCH_SIZE, _stat_epub_files
-        entries = list(state.sources.items())
+        if state.file_checks is None:
+            # Unprepared states retain the existing bounded check. Oversized
+            # libraries bypass this cache entirely and use the native estimator.
+            rows = tuple({'id': identity, 'file_path': value[0]}
+                         for identity, value in state.sources.items())
+            worker, size = _stat_epub_files, FILE_STAT_BATCH_SIZE
+        else:
+            rows = state.file_checks.rows
+            worker, size = _stat_prepared_files, PREPARED_FILE_BATCH_SIZE
         dirty = set()
-        for start in range(0, len(entries), FILE_STAT_BATCH_SIZE):
-            batch = entries[start:start + FILE_STAT_BATCH_SIZE]
-            rows = [{'id': identity, 'file_path': value[0]} for identity, value in batch]
+        for start in range(0, len(rows), size):
             with request_timing.item_phase('items_stat'):
-                stats = await asyncio.to_thread(_stat_epub_files, rows)
-            for identity, (_, saved) in batch:
-                value = stats[identity]
+                stats = await asyncio.to_thread(worker, rows[start:start + size])
+            for identity, value in stats.items():
                 actual = type(value).__name__ if isinstance(value, (OSError, ValueError)) else (value.st_size, value.st_mtime_ns)
-                if actual != saved:
+                if actual != state.sources[identity][1]:
                     dirty.add(state.items[identity]['series_id'])
         return dirty
 
@@ -218,12 +270,16 @@ class ReadyEstimates:
             fresh.cached_only = old is None or ('novel', novel_id) not in eager_work
             await fresh.prepare_novel(novel_id, volume)
         self._merge(old, fresh, series_ids, novel_ids)
+        # This await stays BEFORE get() rechecks both revisions. Cancellation
+        # can leave the worker finishing local data, but cannot publish it.
+        return await asyncio.to_thread(_prepare_files, fresh.ready_sources,
+                                       old.file_checks if old is not None else None)
 
     @staticmethod
-    def _state(fresh, before, version, rows):
+    def _state(fresh, before, version, rows, file_checks=None):
         from app.library.router import ShelfReading, NovelShelf
         state = State(account=fresh.cache_account, revision=before, snapshot_version=version, snapshot_rows=rows,
-                      items=fresh.ready_items, sources=fresh.ready_sources, words=fresh.word_counts,
+                      items=fresh.ready_items, sources=fresh.ready_sources, file_checks=file_checks, words=fresh.word_counts,
                       item_estimates=fresh.item_estimates, item_states=fresh.item_states,
                       novel_estimates=fresh.novel_estimates, novel_states=fresh.novel_states,
                       pending_novels=fresh.pending_novels, novel_basis=fresh.ready_novel_basis, novel_rows=fresh.ready_novels)
@@ -308,13 +364,13 @@ class ReadyEstimates:
                             dirty_series, dirty_novels = self._retime(state, fresh)
                             series_ids.update(dirty_series)
                             novel_ids.update(dirty_novels)
-                        await self._build(db, uid, fresh, None if full else state, series_ids, novel_ids,
-                                          eager_work if not full else set())
+                        file_checks = await self._build(db, uid, fresh, None if full else state, series_ids, novel_ids,
+                                                       eager_work if not full else set())
                         version_after, rows = await _snapshot(snapshots.versioned_read)
                         after = await revisions(db, uid)
                         if after != before or version_after != version:
                             continue
-                        state = self._state(fresh, after, version_after, rows)
+                        state = self._state(fresh, after, version_after, rows, file_checks)
                     else:
                         # No source work or JSON decode on a stable hit.
                         state.revision = before
