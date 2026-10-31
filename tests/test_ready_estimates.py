@@ -2,12 +2,17 @@
 import asyncio
 from contextlib import ExitStack
 from pathlib import Path
+import os
+import shutil
+import threading
+from types import SimpleNamespace
 import sqlite3
 from unittest.mock import patch
 
 from app.database import get_connection, write_transaction
 from app.library.router import _series_reading_uncached, _novel_reading_uncached, _series_reading
 from app.stats import estimate_snapshots as snapshots
+from app.stats import estimates, ready_estimates as ready
 from app.stats.estimates import build_estimator
 from app.stats.ready_estimates import cache, revisions, ReadyEstimateUpdates
 from tests.test_estimates import EstimateCase
@@ -351,3 +356,176 @@ class ReadyEstimates(EstimateCase):
                 self.assertGreater(cache.states[1].item_estimates[1].remaining, before.item_estimates[1].remaining)
         await asyncio.wait_for(ReadyEstimateUpdates(app)({'type': 'http', 'method': 'POST'}, None, send), 4)
         await self.equivalent()
+
+    async def test_rows_survive_copy_and_progress_rebuild_without_path_recreation(self):
+        creations = []
+        loop_thread = threading.get_ident()
+        def create(source):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            creations.append(source)
+            return Path(source)
+        with patch.object(ready, 'Path', side_effect=create):
+            first = await self.state()
+            self.assertTrue(first.file_checks.rows)
+            before = len(creations)
+            duplicate = cache._copy(first)
+            self.assertIs(first.file_checks, duplicate.file_checks)
+            self.assertIs(first.file_checks.rows, duplicate.file_checks.rows)
+            await self.db.execute("INSERT INTO reading_progress(user_id,item_id,current_location,status) VALUES(1,1,'elidx:0:1','reading') ON CONFLICT(user_id,item_id) DO UPDATE SET current_location='elidx:0:1',status='reading'")
+            await self.db.commit()
+            fresh = await self.state()
+            self.assertIsNot(first, fresh)
+            self.assertEqual(len(creations), before, 'Progress must reuse every unchanged Path')
+            for identity, row in fresh.file_checks.by_id.items():
+                self.assertIs(row, first.file_checks.by_id[identity])
+            with self.assertRaises(TypeError):
+                fresh.file_checks.by_id[100] = None
+            with self.assertRaises(AttributeError):
+                fresh.file_checks.rows[0].source = 'changed'
+
+    async def test_rename_completion_and_removal_prune_prepared_rows(self):
+        first = await self.state()
+        old = first.file_checks.by_id[1]
+        renamed = Path(old.source).with_name('renamed.epub')
+        shutil.copyfile(old.source, renamed)
+        await self.db.execute('UPDATE items SET file_path=? WHERE id=1', (str(renamed),))
+        await self.db.commit()
+        changed = await self.state()
+        self.assertEqual(changed.file_checks.by_id[1].source, str(renamed))
+        self.assertIsNot(changed.file_checks.by_id[1].path, old.path)
+        await self.db.execute("INSERT INTO reading_progress(user_id,item_id,status) VALUES(1,1,'completed') ON CONFLICT(user_id,item_id) DO UPDATE SET status='completed'")
+        await self.db.commit()
+        self.assertNotIn(1, (await self.state()).file_checks.by_id)
+        await self.db.execute('DELETE FROM items WHERE id=2')
+        await self.db.commit()
+        self.assertNotIn(2, (await self.state()).file_checks.by_id)
+
+    async def test_direct_prepare_replaces_reused_id_when_its_source_changes(self):
+        old = await self.state()
+        identity = next(iter(old.sources))
+        source, fingerprint = old.sources[identity]
+        sources = {**old.sources, identity: (source+'.renamed', fingerprint)}
+        converted = []
+        original_fspath = Path.__fspath__
+        loop_thread = threading.get_ident()
+        def fspath(path):
+            value = original_fspath(path)
+            if value == source+'.renamed':
+                converted.append(threading.get_ident())
+            return value
+        with patch.object(Path, '__fspath__', fspath):
+            checks = await asyncio.to_thread(ready._prepare_files, sources, old.file_checks)
+        self.assertTrue(converted, 'Finish lazy Path string conversion during preparation')
+        self.assertNotIn(loop_thread, converted)
+        self.assertEqual(checks.by_id[identity].source, source+'.renamed')
+        self.assertIsNot(checks.by_id[identity], old.file_checks.by_id[identity])
+        self.assertEqual(len(checks.rows), len(sources))
+
+    async def test_every_stable_access_stats_each_source_off_loop(self):
+        state = await self.state()
+        expected = sorted(row.source for row in state.file_checks.rows)
+        seen = []
+        loop_thread = threading.get_ident()
+        original = os.stat
+        def stat(target, *args, **kwargs):
+            path = os.fspath(target)
+            if path in expected:
+                self.assertNotEqual(threading.get_ident(), loop_thread)
+                seen.append(path)
+            return original(target, *args, **kwargs)
+        with patch('os.stat', stat):
+            await self.state()
+        self.assertEqual(sorted(seen), expected, 'Every access must check actual current metadata')
+
+    async def test_revision_committed_during_preparation_retries_before_publication(self):
+        from app.stats.ready_estimates import revisions
+        entered, release = threading.Event(), threading.Event()
+        creations = []
+        def create(source):
+            creations.append(source)
+            if not entered.is_set():
+                entered.set()
+                if not release.wait(3):
+                    raise AssertionError('Worker must be released')
+            return Path(source)
+        with patch.object(ready, 'Path', side_effect=create):
+            task = asyncio.create_task(self.state())
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                await self.db.execute("INSERT INTO reading_progress(user_id,item_id,current_location,status) VALUES(1,1,'elidx:0:1','reading') ON CONFLICT(user_id,item_id) DO UPDATE SET current_location='elidx:0:1',status='reading'")
+                await self.db.commit()
+                release.set()
+                result = await task
+            finally:
+                release.set()
+        self.assertEqual(result.revision, await revisions(self.db, 1))
+        self.assertGreater(len(creations), len(result.sources), 'A stale build must be retried')
+        await self.equivalent()
+
+    async def test_cancelled_validation_finishes_only_the_active_batch(self):
+        base = await self.state()
+        source = next(iter(base.sources.values()))[0]
+        stat = Path(source).stat()
+        sources = {i:(source,(stat.st_size,stat.st_mtime_ns)) for i in range(512)}
+        checks = await asyncio.to_thread(ready._prepare_files, sources)
+        fake = SimpleNamespace(sources=sources, items={i:{'series_id':1} for i in sources},
+                               file_checks=checks)
+        entered, release, done = threading.Event(), threading.Event(), threading.Event()
+        total = 0
+        expected = 128
+        original = os.stat
+        def blocked(target, *args, **kwargs):
+            nonlocal total
+            if os.fspath(target) == source:
+                total += 1
+                if total == 1:
+                    entered.set()
+                    if not release.wait(3):
+                        raise AssertionError('Worker must be released')
+            return original(target, *args, **kwargs)
+        original_worker = ready._stat_prepared_files
+        def worker(rows):
+            try:
+                return original_worker(rows)
+            finally:
+                done.set()
+        with patch('os.stat', blocked), patch.object(ready, '_stat_prepared_files', side_effect=worker):
+            task = asyncio.create_task(cache._files(fake))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            finally:
+                release.set()
+                self.assertTrue(await asyncio.to_thread(done.wait, 3))
+        self.assertEqual(total, expected, 'Cancellation must not dispatch another batch')
+
+    async def test_native_fallback_keeps_original_helper_and_batch_size(self):
+        self.assertEqual(estimates.FILE_STAT_BATCH_SIZE, 32)
+        cache.states.clear()
+        with patch('app.stats.ready_estimates.MAX_ENTRIES', 1), patch.object(cache, '_build', side_effect=AssertionError('Oversized cache must not prepare paths')):
+            self.assertIsNone(await self.state())
+        self.assertNotIn(1, cache.states)
+        self.assertIsNone(ready._prepare_files({i:('/missing',(0,0)) for i in range(4097)}))
+
+    async def test_cancelled_path_preparation_does_not_publish_partial_state(self):
+        entered, release, done = threading.Event(), threading.Event(), threading.Event()
+        def create(source):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('Worker must be released')
+            done.set()
+            return Path(source)
+        with patch.object(ready, 'Path', side_effect=create):
+            task = asyncio.create_task(self.state())
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertNotIn(1, cache.states)
+            finally:
+                release.set()
+                self.assertTrue(await asyncio.to_thread(done.wait, 3))
+        self.assertIsNotNone(await self.state())
