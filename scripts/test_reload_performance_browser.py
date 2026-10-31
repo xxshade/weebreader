@@ -220,15 +220,24 @@ def run(args):
         raise AssertionError('Both viewport scenarios must pass the reload performance checks')
     path=ROOT/'app/stats/estimates.py'
     original=path.read_text()
+    prepared_path=ROOT/'app/stats/ready_estimates.py'
+    prepared_original=prepared_path.read_text()
+    prepared_before='        if not self.enabled or uid not in self.states:'
+    if prepared_original.count(prepared_before)!=1:
+        raise ValueError('Prepared API control must match once')
     before='        if self._snapshot_rows is None:'
     if original.count(before)!=1:
         raise ValueError('Reload performance control must match once')
     try:
+        # Both layers must be disabled to reproduce redundant source work:
+        # otherwise the prepared API correctly bypasses the broken native path.
+        prepared_path.write_text(prepared_original.replace(prepared_before,'        if True:'))
         path.write_text(original.replace(before,'        if not self.cached_only:\n            return None\n'+before))
         output=io.StringIO()
         control=unittest.TextTestRunner(stream=output,verbosity=2).run(suite(args,mobile=False))
     finally:
         path.write_text(original)
+        prepared_path.write_text(prepared_original)
     if not mutation_rejected(control,selected_browsers(args),'ReloadPerformance',
                              'Unchanged reloads must not rewrite estimate snapshots'):
         print(output.getvalue())

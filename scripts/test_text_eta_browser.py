@@ -226,7 +226,7 @@ if __name__=='__main__':
          'if (el.dataset.chapterId !== undefined && data.chapter_id !== undefined && el.dataset.chapterId !== String(data.chapter_id)) {',
          'if (data.chapter_id !== undefined && el.dataset.chapterId !== String(data.chapter_id)) {',
          'Same-chapter progress must preserve the existing Reading card'),
-        ('app/library/router.py','estimator.prepare_novel(identity, volume)','estimator.prepare_novel(identity, None)',
+        ('app/library/router.py','parsed[key] = (kind, identity, volume)','parsed[key] = (kind, identity, None)',
          'Reading ETA must retain its volume scope'),
         ('app/stats/estimates.py', 'if saved is not None:', 'if False and saved is not None:',
          'Reload must show the saved novel estimate before refresh completes'),

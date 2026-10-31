@@ -27,9 +27,21 @@ def _connection():
     path = settings.data_dir / 'cache' / 'reading-estimates.sqlite3'
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path, timeout=1)) as db, db:
+        existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='snapshots'").fetchone()
         db.execute('''CREATE TABLE IF NOT EXISTS snapshots (
             scope TEXT PRIMARY KEY, signature TEXT NOT NULL, payload TEXT NOT NULL,
             touched INTEGER NOT NULL DEFAULT (unixepoch()))''')
+        db.execute("""CREATE TABLE IF NOT EXISTS snapshot_revision (
+            id INTEGER PRIMARY KEY CHECK(id=1), epoch TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 0)""")
+        if db.execute('SELECT 1 FROM snapshot_revision WHERE id=1').fetchone() is None:
+            db.execute('INSERT INTO snapshot_revision(id,epoch) VALUES(1,lower(hex(randomblob(16))))')
+        elif not existed:
+            db.execute('UPDATE snapshot_revision SET epoch=lower(hex(randomblob(16))),revision=0 WHERE id=1')
+        for operation in ('INSERT', 'UPDATE', 'DELETE'):
+            db.execute(f"""CREATE TRIGGER IF NOT EXISTS snapshot_version_{operation}
+                AFTER {operation} ON snapshots BEGIN
+                UPDATE snapshot_revision SET revision=revision+1 WHERE id=1; END""")
         yield db
 
 
@@ -52,6 +64,24 @@ def read():
                 (MAX_ENTRIES,))}
     except (OSError, sqlite3.Error):
         return {}
+
+
+def version():
+    """A failed check must invalidate RAM; unlike read(), errors propagate."""
+    with _connection() as db:
+        return tuple(db.execute('SELECT epoch,revision FROM snapshot_revision WHERE id=1').fetchone())
+
+
+def versioned_read():
+    """Read the generation and bounded index in one SQLite read transaction."""
+    with _connection() as db:
+        if not db.in_transaction:
+            db.execute('BEGIN')
+        generation = tuple(db.execute('SELECT epoch,revision FROM snapshot_revision WHERE id=1').fetchone())
+        rows = {key: (fingerprint, payload) for key, fingerprint, payload in db.execute(
+            'SELECT scope,signature,payload FROM snapshots WHERE length(payload)<=512 LIMIT ?',
+            (MAX_ENTRIES,))}
+        return generation, rows
 
 
 def load(scope, fingerprint, *, rows=None):
@@ -91,5 +121,7 @@ def save(scope, fingerprint, payload):
             db.execute('''DELETE FROM snapshots WHERE scope IN
                 (SELECT scope FROM snapshots ORDER BY touched DESC, rowid DESC LIMIT -1 OFFSET ?)''',
                        (MAX_ENTRIES,))
+        from app.stats.ready_estimates import cache
+        cache.notify_snapshot()
     except (OSError, sqlite3.Error):
         log.info('estimate_snapshot scope=%s state=cache_unavailable', signature(scope)[:12])

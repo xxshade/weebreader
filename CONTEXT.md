@@ -25,6 +25,9 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Saved reading position | The place in a book from which reading resumes. It is distinct from a page number and from a declaration that the book has been finished. |
 | Page-start position | The place in the text where a reading page begins, including a place within a paragraph. It identifies the displayed passage, not the last word the reader has actually read. |
 | Reflow | Redistribution of the same content across reading pages when the available reading area or reading preferences change. A position in the text remains meaningful even when page boundaries change. |
+| Estimate basis | The known amount of reading remaining at a saved position, distinct from a duration predicted using reading pace. |
+| Effective text reading pace | The estimated speed for one work, combining valid evidence from that work and other text works. It need not be identical for every work. |
+| Prepared estimate | A prediction already calculated for a particular account and reading scope, whose freshness is still subject to changes in its inputs. |
 | Estimated reading pace | An approximate measure of text reading speed, expressed in words per minute rather than rendered pages per unit of time. It uses accumulated valid reading activity, combining EPUBs and web novels. |
 | Rereading | A repeated passage through previously encountered text. Its words and reading time contribute to estimated reading pace independently of advancement through the book. |
 | Legacy reading history | Reading activity recorded before word-based measurement. Its recorded time is retained, but it does not provide a word-based reading pace. |

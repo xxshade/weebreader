@@ -229,3 +229,40 @@ class FailedConnectionRecovery(_Fresh):
                     self.assertEqual(await asyncio.wait_for(borrow(), timeout=1), 1)
         finally:
             settings.data_dir = original
+
+
+class CancelledOpenClosesItsResult(_Fresh):
+    async def test_cancellation_during_worker_connect_does_not_discard_an_open_sqlite_connection(self):
+        import asyncio
+        import sqlite3
+        import threading
+        from unittest.mock import patch
+
+        pending = aiosqlite.connect(settings.db_path, check_same_thread=False)
+        started, release = threading.Event(), threading.Event()
+        native = pending._connector
+        opened = []
+        def delayed():
+            started.set()
+            if not release.wait(2):
+                raise RuntimeError('connection gate timed out')
+            result = native()
+            opened.append(result)
+            return result
+        pending._connector = delayed
+        try:
+            with patch('app.database.aiosqlite.connect', return_value=pending):
+                opening = asyncio.create_task(get_connection())
+                self.assertTrue(await asyncio.to_thread(started.wait, 1))
+                opening.cancel()
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await opening
+            await asyncio.to_thread(pending._thread.join, 1)
+            self.assertEqual(len(opened), 1)
+            with self.assertRaises(sqlite3.ProgrammingError):
+                opened[0].execute('SELECT 1')
+        finally:
+            release.set()
+            for db in opened:
+                db.close()
