@@ -359,8 +359,8 @@ class OneNumberUnderTwoNames(unittest.TestCase):
         self.events_js = (APP / "static/js/library-events.js").read_text()
 
     def test_the_grid_renders_the_unread_count(self):
-        self.assertIn('data-unread-count="{{ card.unread_count }}"', self.index)
-        self.assertIn("{% if card.unread_count %}", self.index)
+        self.assertIn("data-unread-count=\"{{ card['unread_count'] }}\"", self.index)
+        self.assertIn("{% if card['unread_count'] %}", self.index)
 
     def test_the_sort_and_the_live_builder_read_that_same_attribute(self):
         self.assertIn('items: "unreadCount"', self.home_js)
@@ -407,7 +407,7 @@ class TheGridsEstimateIsNotTheStrips(unittest.TestCase):
         # itself -- from the grid it lives in to the endfor that closes the
         # loop -- so this cannot pass on some other part of the page.
         grid = self.index.split('id="series-grid"', 1)[1].split("{% endfor %}", 1)[0]
-        self.assertIn("card.remaining_seconds", grid)
+        self.assertIn("card['remaining_seconds']", grid)
         self.assertNotIn("reading-eta", grid)
         builder = self.events_js.split("function buildCardElement(", 1)[1]
         builder = builder.split("\n    }", 1)[0]

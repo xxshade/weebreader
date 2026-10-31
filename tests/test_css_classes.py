@@ -82,7 +82,8 @@ def _template_class_values(text):
             r"\{\{(.*?)\}\}",
             lambda m: " ".join(
                 re.findall(r"['\"]([^'\"]*)['\"]",
-                           re.sub(r"(==|!=|<=|>=|<|>|\bin\b)\s*['\"][^'\"]*['\"]", " ", m.group(1)))),
+                           re.sub(r"(==|!=|<=|>=|<|>|\bin\b)\s*['\"][^'\"]*['\"]", " ",
+                                  re.sub(r"\[\s*['\"][^'\"]*['\"]\s*\]", "", m.group(1))))),
             value, flags=re.S)
         value = re.sub(r"\{%.*?%\}", " ", value, flags=re.S)
         yield value
@@ -160,6 +161,11 @@ class ExtractorCase(unittest.TestCase):
             '''<div class="a {% if x %}b{% endif %} {{ 'c' if x else 'd' }}">'''
             '''<p class="e {{ 'f' if s == 'error' else 'g' }}">'''))
         self.assertEqual([sorted(v.split()) for v in values], [["a", "b", "c", "d"], ["e", "f", "g"]])
+
+    def test_mapping_keys_in_conditions_are_not_class_names(self):
+        values = list(_template_class_values(
+            """<div class="base {{ ' hidden' if card['status'] in hidden_statuses else '' }} {{ 'blur' if card['blur_cover'] else '' }}">"""))
+        self.assertEqual([sorted(v.split()) for v in values], [["base", "blur", "hidden"]])
 
     def test_it_takes_class_names_and_not_conditions_from_js(self):
         names = set(_js_class_names(
