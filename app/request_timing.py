@@ -1,5 +1,5 @@
 """Optional request-local wall-time phases; never SQL, identifiers or history."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from time import perf_counter
 
@@ -35,8 +35,16 @@ def item_preparation():
         _items_enabled.reset(enabled)
 
 
-@contextmanager
 def item_phase(name):
+    # Most requests never collect these timings. Avoid constructing a
+    # generator for every item when its measurement scope is inactive.
+    if not _items_enabled.get() or _metrics.get() is None:
+        return nullcontext()
+    return _measure_item_phase(name)
+
+
+@contextmanager
+def _measure_item_phase(name):
     metrics = _metrics.get()
     if not _items_enabled.get() or metrics is None:
         yield
