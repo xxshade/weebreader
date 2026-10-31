@@ -107,6 +107,7 @@ def _stat_epub_files(rows):
 
 class ReadingEstimator:
     cached_only = False
+    collect_ready = False
     def __init__(self, *, spent_by_item, rate_by_series, comic_fallback_rate=None,
                  db=None, user_id=None, samples=None):
         self.spent_by_item = spent_by_item
@@ -115,6 +116,14 @@ class ReadingEstimator:
         self.db, self.user_id = db, user_id
         self.cache_account = user_id
         self._snapshot_rows = None
+        self.word_counts = {}
+        self.comic_estimates = {}
+        self.ready_sources = {}
+        self.ready_items = {}
+        self.ready_novels = {}
+        self.ready_novel_basis = {}
+        self.previous_novel_counts = {}
+        self._novel_fingerprints = {}
         self._replacement_rules = {}
         self.samples = samples or {}
         self.item_estimates, self.novel_estimates = {}, {}
@@ -142,6 +151,8 @@ class ReadingEstimator:
                 self._snapshot_rows = await asyncio.to_thread(snapshots.read)
         counts = snapshots.load(scope, fingerprint, rows=self._snapshot_rows)
         if isinstance(counts, snapshots.WordCounts):
+            if self.collect_ready:
+                self.word_counts[scope] = counts
             return Estimate(counts.remaining * rate, counts.total * rate, 0)
         if self.cached_only and counts is not None:
             return Estimate(*counts)  # Legacy duration; revalidated by the endpoint.
@@ -223,6 +234,9 @@ class ReadingEstimator:
                     scope = (self.cache_account, 'item', identity)
                     try:
                         stat = stats[identity]
+                        if self.collect_ready:
+                            self.ready_sources[identity] = (row['file_path'],
+                                type(stat).__name__ if isinstance(stat, (OSError, ValueError)) else (stat.st_size, stat.st_mtime_ns))
                         if isinstance(stat, (OSError, ValueError)):
                             raise stat
                         fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
@@ -247,7 +261,10 @@ class ReadingEstimator:
                     if remaining is not None:
                         self.item_estimates[identity] = Estimate(remaining * rate, total * rate, 0)
                         self.item_states[identity] = 'available'
-                        await asyncio.to_thread(snapshots.save, scope, fingerprint, snapshots.WordCounts(remaining, total))
+                        counts = snapshots.WordCounts(remaining, total)
+                        if self.collect_ready:
+                            self.word_counts[scope] = counts
+                        await asyncio.to_thread(snapshots.save, scope, fingerprint, counts)
                     else:
                         self.item_states[identity] = 'position_unavailable'
 
@@ -278,8 +295,14 @@ class ReadingEstimator:
             'SELECT revision FROM novel_content_revisions WHERE novel_id=?', (novel_id,))).fetchone()
         identities = await (await self.db.execute('SELECT chapters.id ' + query + ' ORDER BY chapters.id', params)).fetchall()
         scope_key = (self.cache_account, 'novel', novel_id, volume_id)
+        if self.collect_ready:
+            self.ready_novel_basis[key] = (
+                snapshots.signature([row[0] for row in identities]), snapshots.signature(rules),
+                tuple(position) if position is not None else None,
+                position is not None and any(row[0] == position['chapter_id'] for row in identities))
         fingerprint = snapshots.signature((revision[0] if revision else 0,
             [row[0] for row in identities], tuple(position) if position else None, rules, 1))
+        self._novel_fingerprints[key] = fingerprint
         saved = await self._cached_estimate(scope_key, fingerprint, rate)
         if saved is not None:
             self.novel_estimates[key] = saved
@@ -287,6 +310,10 @@ class ReadingEstimator:
             return
         if self.cached_only:
             return  # Small scopes can also contain expensive chapter text.
+        counts = await self._novel_delta(key, position, rules)
+        if counts is not None:
+            await self._save_novel(scope_key, rate, counts)
+            return
         remaining = 0
         async with self.db.execute('SELECT chapters.id,chapters.content_html ' + query, params) as cursor:
             while batch := await cursor.fetchmany(16):
@@ -312,9 +339,50 @@ class ReadingEstimator:
                         log.info('reading_estimate user=%s novel=%s state=content_unavailable error=%s', self.user_id, novel_id, type(exc).__name__)
                         return
                     remaining += words
-        self.novel_estimates[key] = Estimate(remaining * rate, remaining * rate, 0)
+        await self._save_novel(scope_key, rate, snapshots.WordCounts(remaining, remaining))
+
+    async def _save_novel(self, scope, rate, counts):
+        key = scope[2], scope[3]
+        self.novel_estimates[key] = Estimate(counts.remaining * rate, counts.total * rate, 0)
         self.novel_states[key] = 'available'
-        await asyncio.to_thread(snapshots.save, scope_key, fingerprint, snapshots.WordCounts(remaining, remaining))
+        if self.collect_ready:
+            self.word_counts[scope] = counts
+        # The exact native fingerprint, also used by requests without RAM.
+        await asyncio.to_thread(snapshots.save, scope, self._novel_fingerprints[key], counts)
+
+    async def _novel_delta(self, key, position, rules):
+        """Only an unchanged unread set/rules may reuse a previous source sum."""
+        previous = self.previous_novel_counts.get(key)
+        current = self.ready_novel_basis.get(key)
+        if previous is None or current is None:
+            return None
+        counts, old = previous
+        if counts is None or old[:2] != current[:2]:
+            return None
+        if not old[3] and not current[3]:
+            return counts  # Position is outside this volume in both generations.
+        if not current[3] or (old[3] and old[2][0] != current[2][0]):
+            return None
+        if position['paragraph_index'] is None and position['chapter_percent']:
+            return None
+        chapter = await (await self.db.execute('SELECT content_html FROM chapters WHERE id=?',
+                                               (position['chapter_id'],))).fetchone()
+        if chapter is None or chapter[0] is None:
+            return None
+        try:
+            inventory = await asyncio.to_thread(inventory_html, chapter[0], rules)
+            before = inventory.remaining(0, (old[2][1] or 0) if old[3] else 0,
+                                         (old[2][2] or 0) if old[3] else 0)
+            after = inventory.remaining(0, position['paragraph_index'] or 0, position['character_offset'] or 0)
+        except (OSError, ValueError):
+            return None
+        if before is None or after is None:
+            return None
+        remaining = counts.remaining + after - before
+        total = counts.total + after - before
+        if remaining < 0 or total < remaining:
+            return None
+        return snapshots.WordCounts(remaining, total)
 
     def for_novel(self, novel_id, volume_id=None):
         return self.novel_estimates.get((novel_id, volume_id))
@@ -339,6 +407,12 @@ class ReadingEstimator:
     def _estimate(total, fraction, rest=0.0):
         return Estimate(remaining=rest + total * (1 - fraction), total=total, rest=rest)
 
+    @staticmethod
+    def comic_key(item, progress):
+        return (item['id'], item['series_id'], item['page_count'],
+                progress['status'] if progress is not None else None,
+                progress['progress_percent'] if progress is not None else None)
+
     def for_item(self, item, progress):
         if item['file_format'] == 'epub':
             if progress is not None and progress['status'] == 'completed':
@@ -346,6 +420,9 @@ class ReadingEstimator:
             return self.item_estimates.get(item['id'])
         if item['file_format'] != COMIC_FORMAT:
             return None
+        key = self.comic_key(item, progress)
+        if key in self.comic_estimates:
+            return self.comic_estimates[key]
         fraction = 0.0
         if progress is not None:
             if progress['status'] == 'completed':

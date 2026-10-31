@@ -114,6 +114,8 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
     # has none to hand over, so it still builds its own.
     if estimator is None:
         estimator = await build_estimator(db, user_id, cached_only=True)
+        from app.stats.ready_estimates import cache
+        await cache.get(db, user_id, estimator)
 
     await estimator.prepare_items(reading_comics)
     reading_items = []
@@ -230,6 +232,18 @@ NO_CHAPTERS = NovelShelf(unread=0, remaining=None, newest=None)
 
 
 async def _series_reading(db, user_id: int, estimator, series_ids=None):
+    from app.stats.ready_estimates import cache
+    started = request_timing.start()
+    with request_timing.item_preparation():
+        state = await cache.get(db, user_id, estimator)
+    request_timing.finish('series_prepare', started)
+    if state is not None:
+        return {key: value for key, value in state.series.items()
+                if series_ids is None or key in series_ids}
+    return await _series_reading_uncached(db, user_id, estimator, series_ids)
+
+
+async def _series_reading_uncached(db, user_id: int, estimator, series_ids=None):
     """What each series still has waiting, keyed by series id.
 
     "Unread" is NOT COMPLETED, which is the same rule the time beside it
@@ -262,7 +276,7 @@ async def _series_reading(db, user_id: int, estimator, series_ids=None):
         scope = ("AND items.series_id = ?" if len(selected) == 1 else
                  "AND items.series_id IN (" + ','.join('?' for _ in selected) + ")")
         params = (user_id, *selected)
-    phase_started = request_timing.start()
+    phase_started = None if estimator.collect_ready else request_timing.start()
     rows = await (await db.execute(f"""
         SELECT items.id, items.series_id, items.file_format,
                items.text_size, items.page_count,
@@ -276,12 +290,14 @@ async def _series_reading(db, user_id: int, estimator, series_ids=None):
            {scope}
     """, params)).fetchall()
 
+    if estimator.collect_ready:
+        estimator.ready_items.update((row["id"], dict(row)) for row in rows)
     request_timing.finish("series_query", phase_started)
-    phase_started = request_timing.start()
+    phase_started = None if estimator.collect_ready else request_timing.start()
     with request_timing.item_preparation():
         await estimator.prepare_items(rows)
     request_timing.finish("series_prepare", phase_started)
-    phase_started = request_timing.start()
+    phase_started = None if estimator.collect_ready else request_timing.start()
     by_series: dict[int, list] = {}
     for row in rows:
         by_series.setdefault(row["series_id"], []).append(row)
@@ -297,6 +313,15 @@ async def _series_reading(db, user_id: int, estimator, series_ids=None):
 
 
 async def _novel_reading(db, user_id: int, estimator, novel_id: int | None = None):
+    from app.stats.ready_estimates import cache
+    state = await cache.get(db, user_id, estimator)
+    if state is not None:
+        return {key: value for key, value in state.novels.items()
+                if novel_id is None or key == novel_id}
+    return await _novel_reading_uncached(db, user_id, estimator, novel_id)
+
+
+async def _novel_reading_uncached(db, user_id: int, estimator, novel_id: int | None = None):
     """Home-card scope: every unmarked chapter of the novel, across volumes.
 
     The inventory estimator owns word counts and the exact saved text anchor.
@@ -315,6 +340,8 @@ async def _novel_reading(db, user_id: int, estimator, novel_id: int | None = Non
          GROUP BY chapters.novel_id
     """, params)).fetchall()
     shelf = {}
+    if estimator.collect_ready:
+        estimator.ready_novels.update((row["novel_id"], dict(row)) for row in rows)
     for row in rows:
         await estimator.prepare_novel(row["novel_id"])
         estimate = estimator.for_novel(row["novel_id"])
@@ -1265,6 +1292,10 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
         key = f"{kind}:{identity}:{volume or ''}"
         parsed[key] = (kind, identity, volume)
     estimator = await build_estimator(db, user["id"])
+    from app.stats.ready_estimates import cache
+    prepared = await cache.api(db, user["id"], estimator, parsed)
+    if prepared is not None:
+        return prepared
     series_ids = {identity for kind, identity, _ in parsed.values() if kind == "series"}
     series_reading = await _series_reading(db, user["id"], estimator, series_ids) if series_ids else {}
     results = []

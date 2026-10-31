@@ -38,6 +38,7 @@ from app.reader.router import router as reader_router
 from app import request_timing
 from app.account_events import AccountChangeNotifications
 from app.stats.router import router as stats_router
+from app.stats.ready_estimates import cache as ready_estimates, ReadyEstimateUpdates
 from app.tracking import service as tracking
 from app.tracking.router import router as tracking_router
 
@@ -157,7 +158,11 @@ async def lifespan(app: FastAPI):
     # answer about descriptions must not also swallow this.
     statuses = asyncio.create_task(tracking.backfill_statuses())
 
-    yield
+    await ready_estimates.start()
+    try:
+        yield
+    finally:
+        await ready_estimates.stop()
 
     # Reached when uvicorn receives SIGTERM (`docker stop`) or SIGINT --
     # it stops accepting new connections and lets in-flight requests finish
@@ -198,6 +203,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Publication Reader", lifespan=lifespan)
 app.add_middleware(AccountChangeNotifications)
+app.add_middleware(ReadyEstimateUpdates)
 
 
 class VersionedStaticFiles(StaticFiles):

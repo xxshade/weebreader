@@ -414,8 +414,11 @@ class DetailedTimingChecks(AuditChecks):
                   (part.strip().split(';') for part in result['timing'].split(','))}
         self.assertEqual(set(values), expected)
         self.assertTrue(all(value >= 0 for value in values.values()))
-        for key in expected - {'app', 'other', 'series_other', 'items_other'}:
+        skipped = {'series_query', 'series_aggregate', 'items_positions', 'items_rules'}
+        for key in expected - {'app', 'other', 'series_other', 'items_other'} - skipped:
             self.assertGreater(values[key], 0, key)
+        for key in skipped:
+            self.assertEqual(values[key], 0, 'Prepared estimates must skip ' + key)
         self.assertAlmostEqual(values['series_prepare'], sum(value for key, value in values.items() if key.startswith('items_')), delta=0.01)
         self.assertAlmostEqual(values['home_series'], sum(value for key, value in values.items() if key.startswith('series_')), delta=0.01)
         self.assertAlmostEqual(values['home_data'], sum(value for key, value in values.items() if key.startswith('home_') and key != 'home_data'), delta=0.01)

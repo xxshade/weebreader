@@ -66,6 +66,8 @@ async def init_db() -> None:
         await db.executescript(AFTER_MIGRATIONS)
         await db.executescript(PACE_TRIGGER)
         await ensure_pace_totals(db)
+        from app.stats.estimate_revisions import triggers
+        await db.executescript(triggers())
         await db.commit()
 
 
@@ -389,14 +391,19 @@ async def get_connection() -> aiosqlite.Connection:
     thread = getattr(pending, "_thread", None)
     if thread is not None:
         thread.daemon = True
+    opening = asyncio.ensure_future(pending)
     try:
-        db = await pending
+        db = await asyncio.shield(opening)
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA synchronous = NORMAL")
         await db.execute("PRAGMA busy_timeout = 5000")
         await db.execute("PRAGMA foreign_keys = ON")
         return db
     except BaseException:
+        # The worker may still be returning sqlite3.connect(). Cancelling its
+        # future discards that result before aiosqlite can close it.
+        with suppress(Exception):
+            await opening
         with suppress(Exception):
             await pending.close()
         raise
@@ -577,3 +584,5 @@ async def write_transaction():
         # it. Rolled back here so the NEXT writer does not commit it.
         if db.in_transaction:
             await db.rollback()
+    from app.stats.ready_estimates import cache
+    cache.notify()

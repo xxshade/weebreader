@@ -923,3 +923,23 @@ AFTER UPDATE OF content_html,volume_id,order_index,novel_id ON chapters BEGIN
     ON CONFLICT(novel_id) DO UPDATE SET revision=lower(hex(randomblob(16)));
     UPDATE novel_content_revisions SET revision=lower(hex(randomblob(16))) WHERE novel_id=OLD.novel_id AND OLD.novel_id<>NEW.novel_id;
 END;
+
+-- Derived estimate generations. Mutations increment these in their own commit;
+-- an in-process notification is only an eager-refresh hint, never correctness.
+CREATE TABLE IF NOT EXISTS estimate_revision (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    epoch TEXT NOT NULL DEFAULT (lower(hex(randomblob(16)))),
+    revision INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO estimate_revision(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS estimate_account_revisions (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS estimate_work_revisions (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('series','novel')),
+    identity INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    PRIMARY KEY(user_id,kind,identity)
+);
