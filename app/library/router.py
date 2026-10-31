@@ -233,7 +233,10 @@ NO_CHAPTERS = NovelShelf(unread=0, remaining=None, newest=None)
 
 async def _series_reading(db, user_id: int, estimator, series_ids=None):
     from app.stats.ready_estimates import cache
-    state = await cache.get(db, user_id, estimator)
+    started = request_timing.start()
+    with request_timing.item_preparation():
+        state = await cache.get(db, user_id, estimator)
+    request_timing.finish('series_prepare', started)
     if state is not None:
         return {key: value for key, value in state.series.items()
                 if series_ids is None or key in series_ids}
@@ -273,7 +276,7 @@ async def _series_reading_uncached(db, user_id: int, estimator, series_ids=None)
         scope = ("AND items.series_id = ?" if len(selected) == 1 else
                  "AND items.series_id IN (" + ','.join('?' for _ in selected) + ")")
         params = (user_id, *selected)
-    phase_started = request_timing.start()
+    phase_started = None if estimator.collect_ready else request_timing.start()
     rows = await (await db.execute(f"""
         SELECT items.id, items.series_id, items.file_format,
                items.text_size, items.page_count,
@@ -290,11 +293,11 @@ async def _series_reading_uncached(db, user_id: int, estimator, series_ids=None)
     if estimator.collect_ready:
         estimator.ready_items.update((row["id"], dict(row)) for row in rows)
     request_timing.finish("series_query", phase_started)
-    phase_started = request_timing.start()
+    phase_started = None if estimator.collect_ready else request_timing.start()
     with request_timing.item_preparation():
         await estimator.prepare_items(rows)
     request_timing.finish("series_prepare", phase_started)
-    phase_started = request_timing.start()
+    phase_started = None if estimator.collect_ready else request_timing.start()
     by_series: dict[int, list] = {}
     for row in rows:
         by_series.setdefault(row["series_id"], []).append(row)

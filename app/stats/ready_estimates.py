@@ -11,6 +11,7 @@ import logging
 import sqlite3
 import weakref
 
+from app import request_timing
 from app.config import settings
 from app.stats import estimate_snapshots as snapshots
 
@@ -73,6 +74,16 @@ class State:
 
 
 async def revisions(db, uid):
+    with request_timing.item_phase('items_query'):
+        return await _revisions(db, uid)
+
+
+async def _snapshot(operation):
+    with request_timing.item_phase('items_index'):
+        return await asyncio.to_thread(operation)
+
+
+async def _revisions(db, uid):
     source = await (await db.execute('SELECT epoch,revision FROM estimate_revision WHERE id=1')).fetchone()
     pace = await (await db.execute('SELECT revision FROM estimate_account_revisions WHERE user_id=?', (uid,))).fetchone()
     work = {(r[0], r[1]): r[2] for r in await (await db.execute(
@@ -111,7 +122,8 @@ class ReadyEstimates:
         for start in range(0, len(entries), FILE_STAT_BATCH_SIZE):
             batch = entries[start:start + FILE_STAT_BATCH_SIZE]
             rows = [{'id': identity, 'file_path': value[0]} for identity, value in batch]
-            stats = await asyncio.to_thread(_stat_epub_files, rows)
+            with request_timing.item_phase('items_stat'):
+                stats = await asyncio.to_thread(_stat_epub_files, rows)
             for identity, (_, saved) in batch:
                 value = stats[identity]
                 actual = type(value).__name__ if isinstance(value, (OSError, ValueError)) else (value.st_size, value.st_mtime_ns)
@@ -252,7 +264,7 @@ class ReadyEstimates:
                     limit_token = (before[0], before[1], sum(before[2].values()))
                     if self.uncacheable.get(uid) == limit_token:
                         return None
-                    version = await asyncio.to_thread(snapshots.version)
+                    version = await _snapshot(snapshots.version)
                     state = self.states.get(uid)
                     full = state is None or state.account != estimator.cache_account or state.revision[0] != before[0]
                     if full:
@@ -279,7 +291,7 @@ class ReadyEstimates:
                         if authoritative:
                             eager_work = set(changed)
                         if version != state.snapshot_version:
-                            version, index = await asyncio.to_thread(snapshots.versioned_read)
+                            version, index = await _snapshot(snapshots.versioned_read)
                             if version[0] != state.snapshot_version[0]:
                                 full = True
                             else:
@@ -298,7 +310,7 @@ class ReadyEstimates:
                             novel_ids.update(dirty_novels)
                         await self._build(db, uid, fresh, None if full else state, series_ids, novel_ids,
                                           eager_work if not full else set())
-                        version_after, rows = await asyncio.to_thread(snapshots.versioned_read)
+                        version_after, rows = await _snapshot(snapshots.versioned_read)
                         after = await revisions(db, uid)
                         if after != before or version_after != version:
                             continue
@@ -308,7 +320,7 @@ class ReadyEstimates:
                         state.revision = before
                         if index is not None:
                             state.snapshot_version, state.snapshot_rows = version, index
-                        if await revisions(db, uid) != before or await asyncio.to_thread(snapshots.version) != version:
+                        if await revisions(db, uid) != before or await _snapshot(snapshots.version) != version:
                             continue
                     entries = len(state.items) + len(state.novel_states)
                     if entries <= MAX_ENTRIES:
@@ -322,7 +334,8 @@ class ReadyEstimates:
                         while len(self.uncacheable) > MAX_ACCOUNTS:
                             self.uncacheable.pop(next(iter(self.uncacheable)))
                     if seed:
-                        state.seed(estimator)
+                        with request_timing.item_phase('items_snapshots'):
+                            state.seed(estimator)
                     return state
                 self.states.pop(uid, None)
                 return None

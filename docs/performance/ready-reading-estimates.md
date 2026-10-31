@@ -89,6 +89,17 @@ was slower. Those measurements describe a prototype on an EPYC host, not this
 all-format implementation or an Intel N100. Actual reading-session CPU and
 memory costs must be considered alongside navigation measurements.
 
+## Detailed timing
+
+The existing optional Server-Timing phases remain available on 200 and 304.
+For a prepared hit, `series_prepare` includes validation and retrieval;
+`items_query` includes durable revision reads, `items_index` snapshot generation
+or index reads, `items_stat` the retained file checks, and `items_snapshots` copies
+of prepared values. `series_query`, `series_aggregate`, `items_positions` and
+`items_rules` can be zero when their native work is skipped. Zero does not mean
+missing instrumentation; the actual validation costs are still reported and
+parent/child totals reconcile. Native fallback retains its original phases.
+
 ## Verification
 
 `tests/test_ready_estimates.py` compares projections to native calculations for
