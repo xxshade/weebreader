@@ -423,6 +423,29 @@ class DetailedTimingChecks(AuditChecks):
         self.assertAlmostEqual(values['home_series'], sum(value for key, value in values.items() if key.startswith('series_')), delta=0.01)
         self.assertAlmostEqual(values['home_data'], sum(value for key, value in values.items() if key.startswith('home_') and key != 'home_data'), delta=0.01)
         self.assertAlmostEqual(values['app'], sum(value for key, value in values.items() if key in ('db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other')), delta=0.01)
+        api = self.driver.execute_async_script("""const done=arguments[0];
+            (async()=>{
+                const response=await fetch('/library/reading-estimates',{
+                    method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({targets:[{kind:'series',id:100}]})});
+                const data=await response.json();
+                done({status:response.status,timing:response.headers.get('server-timing'),
+                    estimates:Array.isArray(data.estimates),key:data.estimates?.[0]?.key});
+            })().catch(error=>done({error:String(error)}));""")
+        self.assertEqual(api['status'], 200)
+        self.assertTrue(api['estimates'])
+        self.assertEqual(api['key'], 'series:100:')
+        self.assertIsInstance(api['timing'], str, 'API timing must be visible in both browser engines')
+        values = {name:float(duration.removeprefix('dur=')) for name,duration in
+                  (part.strip().split(';') for part in api['timing'].split(','))}
+        roots = {'api_auth','api_slot','api_db','api_input','api_estimator','api_cache',
+                 'api_fallback','api_encode','api_flush','api_other'}
+        self.assertEqual(set(values), {'app',*roots,'api_validate','api_targets','api_cache_other',
+                                      'api_files','api_index','api_revisions','api_validate_other'})
+        self.assertTrue(all(value>=0 for value in values.values()))
+        self.assertAlmostEqual(values['app'],sum(values[key] for key in roots),delta=.02)
+        self.assertAlmostEqual(values['api_cache'],sum(values[key] for key in ('api_validate','api_targets','api_cache_other')),delta=.01)
+        self.assertAlmostEqual(values['api_validate'],sum(values[key] for key in ('api_files','api_index','api_revisions','api_validate_other')),delta=.01)
 
 
 if __name__ == '__main__':

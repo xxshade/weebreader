@@ -1257,16 +1257,20 @@ _estimate_slots = asyncio.Semaphore(1)
 
 async def get_estimate_db():
     # Slow inventory work must never occupy the interactive request pool.
+    waiting = request_timing.api_start()
     async with _estimate_slots:
-        db = await get_connection()
+        request_timing.finish('api_slot', waiting)
+        with request_timing.api_phase('api_db'):
+            db = await get_connection()
         try:
-            await db.execute("PRAGMA query_only = ON")
+            with request_timing.api_phase('api_db'):
+                await db.execute("PRAGMA query_only = ON")
             yield db
         finally:
             await db.close()
 
 
-@router.post("/library/reading-estimates")
+@router.post("/library/reading-estimates", response_class=request_timing.EstimateJSONResponse)
 async def reading_estimates(request: Request, user=Depends(get_streaming_user), db=Depends(get_estimate_db)):
     """Authoritative word-based estimates for the text cards currently on screen.
 
@@ -1274,64 +1278,68 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
     Each requested scope is bounded and resolved against this account's saved
     positions; callers never submit percentages or a pace to extrapolate.
     """
-    try:
-        body = json_object(await request.json())
-    except ValueError:
-        raise HTTPException(400, "Expected a JSON body")
-    targets = body.get("targets")
-    if not isinstance(targets, list) or not 1 <= len(targets) <= 100:
-        raise HTTPException(400, "Expected 1 to 100 reading estimate targets")
-    parsed = {}
-    for target in targets:
-        if not isinstance(target, dict):
-            raise HTTPException(400, "Invalid reading estimate target")
-        kind, identity, volume = target.get("kind"), target.get("id"), target.get("volume_id")
-        if (kind not in ("item", "novel", "series") or type(identity) is not int or identity < 1
-                or (volume is not None and (kind != "novel" or type(volume) is not int or volume < 1))):
-            raise HTTPException(400, "Invalid reading estimate target")
-        key = f"{kind}:{identity}:{volume or ''}"
-        parsed[key] = (kind, identity, volume)
-    estimator = await build_estimator(db, user["id"])
+    with request_timing.api_phase('api_input'):
+        try:
+            body = json_object(await request.json())
+        except ValueError:
+            raise HTTPException(400, "Expected a JSON body")
+        targets = body.get("targets")
+        if not isinstance(targets, list) or not 1 <= len(targets) <= 100:
+            raise HTTPException(400, "Expected 1 to 100 reading estimate targets")
+        parsed = {}
+        for target in targets:
+            if not isinstance(target, dict):
+                raise HTTPException(400, "Invalid reading estimate target")
+            kind, identity, volume = target.get("kind"), target.get("id"), target.get("volume_id")
+            if (kind not in ("item", "novel", "series") or type(identity) is not int or identity < 1
+                    or (volume is not None and (kind != "novel" or type(volume) is not int or volume < 1))):
+                raise HTTPException(400, "Invalid reading estimate target")
+            key = f"{kind}:{identity}:{volume or ''}"
+            parsed[key] = (kind, identity, volume)
+    with request_timing.api_phase('api_estimator'):
+        estimator = await build_estimator(db, user["id"])
     from app.stats.ready_estimates import cache
-    prepared = await cache.api(db, user["id"], estimator, parsed)
+    with request_timing.api_phase('api_cache'):
+        prepared = await cache.api(db, user["id"], estimator, parsed)
     if prepared is not None:
         return prepared
-    series_ids = {identity for kind, identity, _ in parsed.values() if kind == "series"}
-    series_reading = await _series_reading(db, user["id"], estimator, series_ids) if series_ids else {}
-    results = []
-    for key, (kind, identity, volume) in parsed.items():
-        estimate, state, missing = None, "complete", 0
-        if kind == "item":
-            item = await (await db.execute("SELECT * FROM items WHERE id=? AND file_format='epub'",
-                                          (identity,))).fetchone()
-            if item is not None:
-                progress = await (await db.execute(
-                    "SELECT * FROM reading_progress WHERE user_id=? AND item_id=?",
-                    (user["id"], identity))).fetchone()
-                await estimator.prepare_items([item])
-                estimate = estimator.for_item(item, progress)
-                state = estimator.item_states.get(identity, "content_unavailable")
-        elif kind == "novel":
-            scope = "AND chapters.volume_id=?" if volume is not None else ""
-            parameters = (user["id"], identity, volume) if volume is not None else (user["id"], identity)
-            unread = await (await db.execute(f"""SELECT COUNT(*) AS n FROM chapters
-                LEFT JOIN novel_read_chapters AS marked
-                  ON marked.chapter_id=chapters.id AND marked.user_id=?
-                WHERE chapters.novel_id=? AND marked.chapter_id IS NULL {scope}""", parameters)).fetchone()
-            if unread["n"]:
-                await estimator.prepare_novel(identity, volume)
-                estimate = estimator.for_novel(identity, volume)
-                state = estimator.novel_states.get((identity, volume), "content_unavailable")
-        else:
-            reading = series_reading.get(identity, NOTHING_LEFT)
-            state, missing = reading.state, reading.missing
-            results.append({"key": key, "remaining": reading.remaining, "total": None,
-                            "collecting": state == "collecting", "state": state, "missing": missing})
-            continue
-        results.append({"key": key, "remaining": estimate.remaining if estimate else None,
-                        "total": estimate.total if estimate else None, "collecting": state == "collecting",
-                        "state": state, "missing": missing})
-    return {"estimates": results}
+    with request_timing.api_phase('api_fallback'):
+        series_ids = {identity for kind, identity, _ in parsed.values() if kind == "series"}
+        series_reading = await _series_reading(db, user["id"], estimator, series_ids) if series_ids else {}
+        results = []
+        for key, (kind, identity, volume) in parsed.items():
+            estimate, state, missing = None, "complete", 0
+            if kind == "item":
+                item = await (await db.execute("SELECT * FROM items WHERE id=? AND file_format='epub'",
+                                              (identity,))).fetchone()
+                if item is not None:
+                    progress = await (await db.execute(
+                        "SELECT * FROM reading_progress WHERE user_id=? AND item_id=?",
+                        (user["id"], identity))).fetchone()
+                    await estimator.prepare_items([item])
+                    estimate = estimator.for_item(item, progress)
+                    state = estimator.item_states.get(identity, "content_unavailable")
+            elif kind == "novel":
+                scope = "AND chapters.volume_id=?" if volume is not None else ""
+                parameters = (user["id"], identity, volume) if volume is not None else (user["id"], identity)
+                unread = await (await db.execute(f"""SELECT COUNT(*) AS n FROM chapters
+                    LEFT JOIN novel_read_chapters AS marked
+                      ON marked.chapter_id=chapters.id AND marked.user_id=?
+                    WHERE chapters.novel_id=? AND marked.chapter_id IS NULL {scope}""", parameters)).fetchone()
+                if unread["n"]:
+                    await estimator.prepare_novel(identity, volume)
+                    estimate = estimator.for_novel(identity, volume)
+                    state = estimator.novel_states.get((identity, volume), "content_unavailable")
+            else:
+                reading = series_reading.get(identity, NOTHING_LEFT)
+                state, missing = reading.state, reading.missing
+                results.append({"key": key, "remaining": reading.remaining, "total": None,
+                                "collecting": state == "collecting", "state": state, "missing": missing})
+                continue
+            results.append({"key": key, "remaining": estimate.remaining if estimate else None,
+                            "total": estimate.total if estimate else None, "collecting": state == "collecting",
+                            "state": state, "missing": missing})
+        return {"estimates": results}
 
 
 @router.get("/library/reading-grid", response_class=HTMLResponse)
