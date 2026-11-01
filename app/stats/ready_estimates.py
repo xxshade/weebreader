@@ -121,12 +121,12 @@ class State:
 
 
 async def revisions(db, uid):
-    with request_timing.item_phase('items_query'):
+    with request_timing.api_phase('api_revisions'), request_timing.item_phase('items_query'):
         return await _revisions(db, uid)
 
 
 async def _snapshot(operation):
-    with request_timing.item_phase('items_index'):
+    with request_timing.api_phase('api_index'), request_timing.item_phase('items_index'):
         return await asyncio.to_thread(operation)
 
 
@@ -175,7 +175,7 @@ class ReadyEstimates:
             worker, size = _stat_prepared_files, PREPARED_FILE_BATCH_SIZE
         dirty = set()
         for start in range(0, len(rows), size):
-            with request_timing.item_phase('items_stat'):
+            with request_timing.api_phase('api_files'), request_timing.item_phase('items_stat'):
                 stats = await asyncio.to_thread(worker, rows[start:start + size])
             for identity, value in stats.items():
                 actual = type(value).__name__ if isinstance(value, (OSError, ValueError)) else (value.st_size, value.st_mtime_ns)
@@ -403,45 +403,50 @@ class ReadyEstimates:
     async def api(self, db, uid, estimator, parsed):
         if not self.enabled or uid not in self.states:
             return None
-        state = await self.get(db, uid, estimator, allow_authoritative=True, seed=False)
+        with request_timing.api_phase('api_validate'):
+            state = await self.get(db, uid, estimator, allow_authoritative=True, seed=False)
         if state is None:
             return None
-        results = []
-        for key, (kind, identity, volume) in parsed.items():
-            if kind == 'series':
-                value = state.series.get(identity)
-                if (value is None or value.missing or any(
-                        row['file_format'] == 'epub' and (state.account, 'item', i) not in state.words
-                        for i, row in state.items.items() if row['series_id'] == identity)):
+        with request_timing.api_phase('api_targets'):
+            results = []
+            for key, (kind, identity, volume) in parsed.items():
+                if kind == 'series':
+                    value = state.series.get(identity)
+                    if (value is None or value.missing or any(
+                            row['file_format'] == 'epub' and (state.account, 'item', i) not in state.words
+                            for i, row in state.items.items() if row['series_id'] == identity)):
+                        return None
+                    results.append(dict(key=key, remaining=value.remaining, total=None,
+                                        collecting=value.state == 'collecting', state=value.state, missing=value.missing))
+                    continue
+                if kind == 'item':
+                    row = state.items.get(identity)
+                    scope = (state.account, 'item', identity)
+                    if row is None or row['file_format'] != 'epub' or scope not in state.words:
+                        return None
+                    value = state.item_estimates.get(identity)
+                    status = state.item_states.get(identity)
+                else:
+                    scope = (state.account, 'novel', identity, volume)
+                    target = (identity, volume)
+                    status = state.novel_states.get(target)
+                    value = state.novel_estimates.get(target)
+                    if status != 'complete' and scope not in state.words:
+                        return None
+                if status not in ('available', 'complete'):
                     return None
-                results.append(dict(key=key, remaining=value.remaining, total=None,
-                                    collecting=value.state == 'collecting', state=value.state, missing=value.missing))
-                continue
-            if kind == 'item':
-                row = state.items.get(identity)
-                scope = (state.account, 'item', identity)
-                if row is None or row['file_format'] != 'epub' or scope not in state.words:
-                    return None
-                value = state.item_estimates.get(identity)
-                status = state.item_states.get(identity)
-            else:
-                scope = (state.account, 'novel', identity, volume)
-                target = (identity, volume)
-                status = state.novel_states.get(target)
-                value = state.novel_estimates.get(target)
-                if status != 'complete' and scope not in state.words:
-                    return None
-            if status not in ('available', 'complete'):
-                return None
-            results.append(dict(key=key, remaining=value.remaining if value else None,
-                                total=value.total if value else None, collecting=False, state=status, missing=0))
-        return {'estimates': results}
+                results.append(dict(key=key, remaining=value.remaining if value else None,
+                                    total=value.total if value else None, collecting=False, state=status, missing=0))
+            return {'estimates': results}
 
     async def _refresh(self, uid, *, authoritative=False):
         from app.stats.estimates import build_estimator
-        async with _dedicated_connection() as db:
-            estimator = await build_estimator(db, uid, cached_only=True)
-            return await self.get(db, uid, estimator, force=True, authoritative=authoritative)
+        # A task can inherit the request context that queued it. Its internal
+        # work is not a route phase; the request's wait belongs to api_flush.
+        with request_timing.collect(False):
+            async with _dedicated_connection() as db:
+                estimator = await build_estimator(db, uid, cached_only=True)
+                return await self.get(db, uid, estimator, force=True, authoritative=authoritative)
 
     async def _drain(self):
         try:
@@ -531,6 +536,7 @@ class ReadyEstimateUpdates:
         async def updated(message):
             if (message['type'] == 'http.response.start' and 200 <= message['status'] < 400
                     and scope.get('method') in ('POST', 'PUT', 'PATCH', 'DELETE')):
-                await cache.flush()
+                with request_timing.api_phase('api_flush'):
+                    await cache.flush()
             await send(message)
         await self.app(scope, receive, updated)

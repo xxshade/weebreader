@@ -88,5 +88,6 @@ async def get_streaming_user(session: str | None = Cookie(default=None)):
     (measured: the home page stopped answering at the fourth stream).
     This borrows one for the check alone.
     """
-    async with read_connection() as db:
-        return await get_current_user(session=session, db=db)
+    with request_timing.api_phase('api_auth'):
+        async with read_connection() as db:
+            return await get_current_user(session=session, db=db)

@@ -321,8 +321,9 @@ async def revalidate_pages(request: Request, call_next):
     chosen its own policy -- the reader's own pages, the SSE stream --
     keeps it.
     """
-    enabled = settings.detailed_server_timing and request.method == "GET" and request.url.path == "/"
-    with request_timing.collect(enabled):
+    api = request.method == "POST" and request.url.path == "/library/reading-estimates"
+    enabled = settings.detailed_server_timing and (api or (request.method == "GET" and request.url.path == "/"))
+    with request_timing.collect(enabled, api=api):
         return await _revalidate_page(request, call_next)
 
 
@@ -330,6 +331,8 @@ async def _revalidate_page(request, call_next):
     started = perf_counter()
     response = await call_next(request)
     if "text/html" not in response.headers.get("content-type", ""):
+        if request_timing.api_enabled():
+            return _time_page(response, started)
         return response
     if "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "private, no-cache"

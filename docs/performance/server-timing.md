@@ -47,9 +47,10 @@ To investigate a recurring home-page cost, set
 `APP_DETAILED_SERVER_TIMING=true` in the application container's environment and
 recreate that container. The sample Compose file forwards this variable from
 its environment or `.env`; it defaults to `false`. This option does not change
-calculations, queries or cache decisions. It affects only GET requests to `/`,
-including its query-string variants, and is controlled by installation settings,
-not a request parameter.
+calculations, queries or cache decisions. This home breakdown covers GET requests
+to `/`, including query-string variants. The same flag also enables the estimate
+API breakdown below. Installation settings control both; request parameters and
+headers cannot enable them.
 
 The response keeps the total `app` metric and adds the following elapsed phases:
 
@@ -169,3 +170,67 @@ They still perform a small scope check, but do not read the diagnostic clock or
 create timing spans. Active detailed diagnostics keep the same exclusive phases,
 request isolation and exception cleanup. This does not add a reading-estimate
 cache or change calculations, invalidation or file checks.
+
+
+## Optional reading-estimates API phases
+
+After upgrading, keep `APP_DETAILED_SERVER_TIMING=true` and recreate the container.
+POST `/library/reading-estimates` then includes `Server-Timing: app;dur=...` and
+API phases, including on handled 400/401 responses. With the flag off, its JSON
+responses retain their previous headers. Other JSON endpoints and SSE remain
+outside this diagnostic. Existing HTML timing and cache validators are unchanged.
+
+The total ends before the response headers are sent. It includes the successful
+POST's existing wait for pending eager estimate maintenance; it excludes network,
+proxy, browser work and body transfer. The diagnostic does not change whether the
+request waits, how estimates are calculated, or which cache/connections it uses.
+
+| Metric | Interval |
+| --- | --- |
+| `api_auth` | Session validation, including borrowing and returning its authentication read connection. This is broader than the home's query-only `auth` phase. |
+| `api_slot` | Waiting to enter the existing single estimate-connection slot. |
+| `api_db` | Opening the dedicated estimate connection and configuring `query_only`. Not all SQL execution. |
+| `api_input` | Reading/parsing JSON and validating targets. |
+| `api_estimator` | Constructing the request's reading estimator. |
+| `api_cache` | Attempting the prepared-cache response, including validation and target resolution. |
+| `api_fallback` | Native estimate work when the prepared response is unavailable. Zero on a complete prepared-cache hit. |
+| `api_encode` | JSONResponse's JSON encoding. FastAPI's preceding response conversion remains in `api_other`. Error handlers using ordinary JSONResponse also remain in that residual. |
+| `api_flush` | Existing wait for pending eager maintenance before successful POST headers, outside the route itself. |
+| `api_other` | Nonnegative residual of `app` after the top-level API phases: framework work, conversion and unmeasured gaps. |
+
+These phases plus `api_other` account for `app` within rounding precision. Child
+phases are already included in their parents:
+
+| Parent | Children and residual |
+| --- | --- |
+| `api_cache` | `api_validate` (validation/rebuild), `api_targets` (resolving the requested scopes), `api_cache_other` (eligibility and remaining cache handling). |
+| `api_validate` | `api_files` (prepared-state file checks), `api_index` (snapshot-index/version operations), `api_revisions` (database revision reads), `api_validate_other` (remaining validation, copies or reconstruction). |
+
+Do not add child durations to their parent again. File-check time includes worker
+scheduling and metadata calls, not pure disk time. Native fallback preparation is
+inside `api_fallback`, rather than being relabeled as prepared-state validation.
+Phases that were not reached are zero; early validation errors do not perform
+estimator/cache work. Background refresh internals do not inherit route phases;
+only the request's actual wait for them contributes to `api_flush`.
+
+For successful responses the yield dependency closes the estimate connection
+AFTER sending the response, so that future time cannot be added to the already
+sent header. Error unwinding can close it before producing error headers; that
+elapsed cleanup is included in `api_other`. Do not interpret the absence of a
+connection-close phase as zero cleanup work.
+
+In browser DevTools, select the actual POST to `/library/reading-estimates`, not
+the home document. Record the HTTP status, the complete Server-Timing header and
+Waiting time from five warm successful requests. Distinguish home versus series
+views and different batches; their target counts and kinds need not be identical.
+No payload, cookies, SQL, names, identifiers or reading history are added to the
+metrics or logs. Do not send cookies or authorization headers with the timings.
+Disable the option and recreate the container when finished.
+
+Backend tests inject elapsed time at the actual authentication, semaphore,
+connection, parsing, estimator, file/index/revision, target, encoding and pending
+flush boundaries. They verify nested accounting, default-off behavior, request
+isolation, error cleanup and exclusion of background refresh work. Browser audit
+checks expose API headers and retain equivalent estimate JSON in Chrome and
+Firefox at desktop and simulated 320px widths. Mutation controls disable the
+instrumentation to verify that these assertions can fail.
