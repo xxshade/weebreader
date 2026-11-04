@@ -7,7 +7,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
-from app import request_timing as timing
+from app import database, request_timing as timing
 from app.auth import dependencies
 from app.auth.service import hash_token
 from app.config import settings
@@ -35,7 +35,7 @@ class EstimateApiTiming(fixtures.EstimateCase):
         self.addAsyncCleanup(close_pool)
         await ready.cache.stop()
         self.addAsyncCleanup(ready.cache.stop)
-        slots = patch.object(router, '_estimate_slots', asyncio.Semaphore(1))
+        slots = patch.object(database, '_estimate_slots', asyncio.Semaphore(1))
         slots.start()
         self.addCleanup(slots.stop)
         self.clock = [1.0]
@@ -125,7 +125,7 @@ class EstimateApiTiming(fixtures.EstimateCase):
     async def test_top_level_phase_boundaries_use_the_actual_call_sites(self):
         settings.detailed_server_timing = True
         original_auth = dependencies.get_current_user
-        original_db = router.get_connection
+        original_db = database._estimate_read_connection
         original_input = router.json_object
         original_estimator = router.build_estimator
         original_render = timing.JSONResponse.render
@@ -152,7 +152,7 @@ class EstimateApiTiming(fixtures.EstimateCase):
             return value
         for owner, name, replacement, phase, expected in (
                 (dependencies,'get_current_user',auth,'api_auth',20),
-                (router,'get_connection',connection,'api_db',15),
+                (database,'_estimate_read_connection',connection,'api_db',15),
                 (router,'json_object',parse,'api_input',10),
                 (router,'build_estimator',estimator,'api_estimator',25),
                 (timing.JSONResponse,'render',render,'api_encode',12)):
@@ -220,7 +220,7 @@ class EstimateApiTiming(fixtures.EstimateCase):
 
     async def test_real_semaphore_wait_is_outside_opening_and_cache_validation(self):
         settings.detailed_server_timing = True
-        slots = router._estimate_slots
+        slots = database._estimate_slots
         await slots.acquire()
         task = asyncio.create_task(self.clocked_request())
         try:
@@ -266,9 +266,9 @@ class EstimateApiTiming(fixtures.EstimateCase):
             await pending
             ready.cache.task = previous
 
-    async def test_cleanup_is_excluded_after_success_but_can_precede_error_headers(self):
+    async def test_reused_reader_cleanup_is_outside_success_and_handled_error_headers(self):
         settings.detailed_server_timing = True
-        original = router.get_connection
+        original = database.get_connection
         closed = []
         clock = self.clock
         class Connection:
@@ -282,15 +282,21 @@ class EstimateApiTiming(fixtures.EstimateCase):
                 await self.db.close()
         async def connection():
             return Connection(await original())
-        with patch.object(router,'get_connection',connection):
+        # Warm authentication separately so only the estimate reader is wrapped.
+        async with database.read_connection():
+            pass
+        with patch.object(database,'get_connection',connection):
             response = await self.clocked_request()
-            self.assertTrue(closed)
+            self.assertFalse(closed)
             self.assertEqual(metrics(response)['app'], 0, 'Connection cleanup follows successful headers')
             with patch('app.request_timing.perf_counter', side_effect=lambda: self.clock[0]), \
                  patch('app.main.perf_counter', side_effect=lambda: self.clock[0]):
                 response = await self.client.post('/library/reading-estimates', json={'targets':[]})
             self.assertEqual(response.status_code, 400)
-            self.assertEqual(metrics(response)['api_other'], 40, 'Early error cleanup belongs to elapsed residual')
+            self.assertEqual(metrics(response)['api_other'], 0, 'Handled errors retain a healthy reader')
+            self.assertFalse(closed)
+            await close_pool()
+            self.assertTrue(closed, 'Shutdown must close the retained estimate reader')
         self.clock[0] = 1.0
         consumed = []
         async def body():
