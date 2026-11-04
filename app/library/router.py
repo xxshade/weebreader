@@ -18,7 +18,7 @@ from app.auth.dependencies import get_current_user, get_streaming_user
 from app.auth.router import MAX_COVER_BLUR, MIN_COVER_BLUR
 from app.background import run_background as _run_background
 from app.covers.thumbnails import delete_custom_series_cover, save_custom_series_cover
-from app.database import get_db, write_transaction, get_connection
+from app.database import get_db, write_transaction, estimate_connection
 from app.http_utils import back_target, is_htmx, json_object, redirect_back
 from app.library import events, job_status
 from app.library.naturalsort import natural_sort_key
@@ -1252,22 +1252,9 @@ async def _problem_item_count(db) -> int:
     )["n"]
 
 
-_estimate_slots = asyncio.Semaphore(1)
-
-
 async def get_estimate_db():
-    # Slow inventory work must never occupy the interactive request pool.
-    waiting = request_timing.api_start()
-    async with _estimate_slots:
-        request_timing.finish('api_slot', waiting)
-        with request_timing.api_phase('api_db'):
-            db = await get_connection()
-        try:
-            with request_timing.api_phase('api_db'):
-                await db.execute("PRAGMA query_only = ON")
-            yield db
-        finally:
-            await db.close()
+    async with estimate_connection() as db:
+        yield db
 
 
 @router.post("/library/reading-estimates", response_class=request_timing.EstimateJSONResponse)
