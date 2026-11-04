@@ -12,6 +12,8 @@ import logging
 import os
 from pathlib import Path
 import sqlite3
+import threading
+from time import perf_counter
 from types import MappingProxyType
 import weakref
 
@@ -23,6 +25,7 @@ log = logging.getLogger(__name__)
 MAX_ACCOUNTS = 4
 MAX_ENTRIES = 4096
 PREPARED_FILE_BATCH_SIZE = 128
+PREPARED_FILE_BUDGET_SECONDS = .002
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,14 +59,29 @@ def _prepare_files(sources, previous=None):
     return _PreparedFiles(tuple(index.values()), MappingProxyType(index))
 
 
-def _stat_prepared_files(rows):
-    results = {}
-    for row in rows:
-        try:
-            results[row.identity] = row.path.stat()
-        except (OSError, ValueError) as error:
-            results[row.identity] = error
-    return results
+def _check_prepared_files(state, start, stop):
+    """Check current metadata, yielding after the budget or a cancelled block.
+
+    A block already running may exceed the budget; cancellation stops the next
+    block. No database connection or reusable stat result belongs to this worker.
+    """
+    rows = state.file_checks.rows
+    dirty = set()
+    deadline = perf_counter() + PREPARED_FILE_BUDGET_SECONDS
+    while start < len(rows) and not stop.is_set():
+        end = start + PREPARED_FILE_BATCH_SIZE
+        for row in rows[start:end]:
+            try:
+                value = row.path.stat()
+                actual = value.st_size, value.st_mtime_ns
+            except (OSError, ValueError) as error:
+                actual = type(error).__name__
+            if actual != state.sources[row.identity][1]:
+                dirty.add(state.items[row.identity]['series_id'])
+        start = end
+        if perf_counter() >= deadline:
+            break
+    return start, dirty
 
 
 @asynccontextmanager
@@ -166,15 +184,21 @@ class ReadyEstimates:
 
     async def _files(self, state):
         from app.stats.estimates import FILE_STAT_BATCH_SIZE, _stat_epub_files
-        if state.file_checks is None:
-            # Unprepared states retain the existing bounded check. Oversized
-            # libraries bypass this cache entirely and use the native estimator.
-            rows = tuple({'id': identity, 'file_path': value[0]}
-                         for identity, value in state.sources.items())
-            worker, size = _stat_epub_files, FILE_STAT_BATCH_SIZE
-        else:
-            rows = state.file_checks.rows
-            worker, size = _stat_prepared_files, PREPARED_FILE_BATCH_SIZE
+        if state.file_checks is not None:
+            stop = threading.Event()
+            dirty, start = set(), 0
+            try:
+                while start < len(state.file_checks.rows):
+                    with request_timing.api_phase('api_files'), request_timing.item_phase('items_stat'):
+                        start, batch = await asyncio.to_thread(_check_prepared_files, state, start, stop)
+                    dirty.update(batch)
+                return dirty
+            finally:
+                stop.set()
+        # Unprepared/oversized libraries retain native batches of 32.
+        rows = tuple({'id': identity, 'file_path': value[0]}
+                     for identity, value in state.sources.items())
+        worker, size = _stat_epub_files, FILE_STAT_BATCH_SIZE
         dirty = set()
         for start in range(0, len(rows), size):
             with request_timing.api_phase('api_files'), request_timing.item_phase('items_stat'):
