@@ -15,6 +15,8 @@ _API_PHASES = ('api_auth', 'api_slot', 'api_db', 'api_input', 'api_estimator',
                'api_cache', 'api_fallback', 'api_encode', 'api_flush')
 _API_CACHE_PHASES = ('api_validate', 'api_targets')
 _API_VALIDATION_PHASES = ('api_files', 'api_index', 'api_revisions')
+_RENDER_PHASES = ('render_content', 'render_grid', 'render_reading', 'render_filters')
+_FILE_PHASES = ('file_queue', 'file_worker', 'file_worker_cpu', 'file_resume')
 _api_enabled: ContextVar[bool] = ContextVar('api_timing_enabled', default=False)
 _api_validating: ContextVar[bool] = ContextVar('api_timing_validation', default=False)
 _items_enabled: ContextVar[bool] = ContextVar('item_timing_enabled', default=False)
@@ -112,6 +114,23 @@ def _measure_item_phase(name):
         metrics[name] = metrics.get(name, 0.0) + max(0.0, elapsed - children[0]) * 1000
 
 
+def file_checks_enabled():
+    # Exclude background maintenance, native fallback and unrelated work.
+    return _metrics.get() is not None and (_items_enabled.get() or _api_validating.get())
+
+
+def file_check_result(submitted, started, finished, resumed, cpu, sources, blocks):
+    """Publish completed dispatch data on the requesting coroutine only."""
+    metrics = _metrics.get()
+    if not file_checks_enabled():
+        return
+    for name, seconds in zip(_FILE_PHASES, (started - submitted, finished - started,
+                                           cpu, resumed - finished)):
+        metrics[name] = metrics.get(name, 0.0) + max(0.0, seconds) * 1000
+    for name, count in (('file_jobs', 1), ('file_sources', sources), ('file_blocks', blocks)):
+        metrics[name] = metrics.get(name, 0) + count
+
+
 def start():
     return perf_counter() if _metrics.get() is not None else None
 
@@ -120,12 +139,12 @@ def finish(name, started):
     metrics = _metrics.get()
     if metrics is not None and started is not None:
         if name not in (_PHASES + _HOME_PHASES + _SERIES_PHASES + _ITEM_PHASES
-                        + _API_PHASES + _API_CACHE_PHASES + _API_VALIDATION_PHASES):
+                        + _API_PHASES + _API_CACHE_PHASES + _API_VALIDATION_PHASES + _RENDER_PHASES):
             raise ValueError('Unknown timing phase')
         metrics[name] = metrics.get(name, 0.0) + (perf_counter() - started) * 1000
 
 
-def headers(total):
+def _phase_headers(total):
     metrics = _metrics.get()
     if metrics is None:
         return []
@@ -151,3 +170,24 @@ def headers(total):
         f'series_other;dur={max(0.0, metrics.get("home_series", 0.0) - sum(metrics.get(name, 0.0) for name in _SERIES_PHASES)):.3f}'] + [
         f'{name};dur={metrics.get(name, 0.0):.3f}' for name in _ITEM_PHASES] + [
         f'items_other;dur={max(0.0, metrics.get("series_prepare", 0.0) - sum(metrics.get(name, 0.0) for name in _ITEM_PHASES)):.3f}']
+
+
+def headers(total):
+    values = _phase_headers(total)
+    metrics = _metrics.get()
+    if metrics is None:
+        return values
+    if 'file_jobs' in metrics:
+        for name in _FILE_PHASES:
+            value = f'{name};dur={metrics[name]:.3f}'
+            if name == 'file_worker':
+                value += ';desc="jobs={} blocks={} sources={}"'.format(
+                    metrics['file_jobs'], metrics['file_blocks'], metrics['file_sources'])
+            values.append(value)
+    if 'render_content' in metrics:
+        values.extend(f'{name};dur={metrics.get(name, 0.0):.3f}' for name in _RENDER_PHASES)
+        values.append('render_other;dur={:.3f}'.format(max(0.0, metrics.get('render', 0.0)
+                      - metrics['render_content'] - metrics.get('render_filters', 0.0))))
+        values.append('render_content_other;dur={:.3f}'.format(max(0.0, metrics['render_content']
+                      - metrics.get('render_grid', 0.0) - metrics.get('render_reading', 0.0))))
+    return values

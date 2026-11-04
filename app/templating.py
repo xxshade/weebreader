@@ -10,9 +10,11 @@ from fastapi.templating import Jinja2Templates
 from app.asset_versioning import register as register_asset_versioning
 from app.library.events import register as register_events_stamp
 from app.template_filters import register as register_template_filters
+from app.template_timing import RenderTimingExtension
 from app.ui_prefs import register as register_ui_prefs
 
 templates = Jinja2Templates(directory="app/templates")
+templates.env.add_extension(RenderTimingExtension)
 register_asset_versioning(templates)
 register_events_stamp(templates)
 register_ui_prefs(templates)

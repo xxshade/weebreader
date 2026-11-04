@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Library{% endblock %}
-{% block header_filters %}
+{% block header_filters %}{% render_timing 'render_filters' %}
 {# name="q" + hx-get: the SERIES half of this box stays client-side (every
    card is already in the DOM, so filtering is instant and needs no round
    trip), while matching ITEMS come from the server -- they cannot be
@@ -16,8 +16,8 @@
        class="flex-1 min-w-[140px] bg-neutral-900 border border-neutral-700 rounded px-3 py-2 md:py-1.5 text-sm">
 {% include "library/_filters_control.html" %}
 {% include "_thumb_size_control.html" %}
-{% endblock %}
-{% block content %}
+{% endrender_timing %}{% endblock %}
+{% block content %}{% render_timing 'render_content' %}
 {% import "library/_icons.html" as ui %}
 {% import "_status_badges.html" as badges %}
 <div>
@@ -43,7 +43,7 @@
        (library-events.js swaps this section's grid in place). #}
     <section id="reading-section" class="mb-8{{ '' if reading_items else ' hidden' }}">
         <h2 class="text-lg font-semibold mb-3">Reading</h2>
-        {% include "library/_reading_grid.html" %}
+        {% render_timing 'render_reading' %}{% include "library/_reading_grid.html" %}{% endrender_timing %}
     </section>
 
     <section>
@@ -160,7 +160,7 @@
         <div id="series-grid" class="thumb-grid grid gap-4"
              style="--cover-blur: {{ user.cover_blur_px }}px"
              data-hidden-statuses="{{ hidden_statuses|join(',') }}">
-            {% for card in cards %}
+            {% render_timing 'render_grid' %}{% for card in cards %}
             {# Hidden statuses are an account setting (see /settings),
                known server-side -- rendering the "hidden" class here
                directly means these cards never show up for a frame
@@ -290,7 +290,7 @@
             </a>
             {% else %}
             <p class="text-neutral-500 text-sm col-span-full">Nothing here yet — run a scan, or add a novel from Settings.</p>
-            {% endfor %}
+            {% endfor %}{% endrender_timing %}
         </div>
         <!-- Reorders the server-rendered cards (name-ascending) to the
              saved sort before the browser paints them -- inline and
@@ -491,4 +491,4 @@
 <script src="{{ asset_url('js/filters-panel.js') }}" defer></script>
 <script src="{{ asset_url('js/home.js') }}" defer></script>
 <script src="{{ asset_url('js/thumbnail-size.js') }}" defer></script>
-{% endblock %}
+{% endrender_timing %}{% endblock %}
