@@ -165,11 +165,11 @@ class EstimateApiTiming(fixtures.EstimateCase):
 
     async def test_cache_children_account_for_files_index_revisions_and_targets(self):
         settings.detailed_server_timing = True
-        original_files = ready._stat_prepared_files
+        original_files = ready._check_prepared_files
         original_version = ready.snapshots.version
         original_revisions = ready._revisions
-        def files(rows):
-            value = original_files(rows)
+        def files(*args):
+            value = original_files(*args)
             self.clock[0] += .040
             return value
         def version():
@@ -181,7 +181,7 @@ class EstimateApiTiming(fixtures.EstimateCase):
             self.clock[0] += .020
             return value
         for owner, name, replacement, phase in (
-                (ready,'_stat_prepared_files',files,'api_files'),
+                (ready,'_check_prepared_files',files,'api_files'),
                 (ready.snapshots,'version',version,'api_index'),
                 (ready,'_revisions',revisions,'api_revisions')):
             with self.subTest(phase=phase), patch.object(owner,name,replacement):

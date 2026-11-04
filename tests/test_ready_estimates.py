@@ -530,6 +530,63 @@ class ReadyEstimates(EstimateCase):
         self.assertGreater(len(creations), len(result.sources), 'A stale build must be retried')
         await self.equivalent()
 
+    async def test_fast_prepared_checks_share_one_dispatch_without_caching_metadata(self):
+        base = await self.state()
+        source, fingerprint = next(iter(base.sources.values()))
+        sources = {i: (source, fingerprint) for i in range(512)}
+        state = SimpleNamespace(sources=sources, items={i: {'series_id': 1} for i in sources},
+                                file_checks=await asyncio.to_thread(ready._prepare_files, sources))
+        original_thread, original_stat = asyncio.to_thread, os.stat
+        dispatched, checked = [], []
+        loop_thread = threading.get_ident()
+        async def dispatch(fn, *args, **kwargs):
+            if fn is ready._check_prepared_files:
+                dispatched.append(fn)
+            return await original_thread(fn, *args, **kwargs)
+        def stat(target, *args, **kwargs):
+            if os.fspath(target) == source:
+                self.assertNotEqual(threading.get_ident(), loop_thread)
+                checked.append(os.fspath(target))
+            return original_stat(target, *args, **kwargs)
+        with patch.object(ready, 'perf_counter', return_value=0), \
+                patch('asyncio.to_thread', dispatch), patch('os.stat', stat):
+            self.assertEqual(await cache._files(state), set())
+            self.assertEqual(len(dispatched), 1, 'Fast metadata checks should share a dispatch')
+            self.assertEqual(await cache._files(state), set())
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual(checked, [source] * 1024, 'Every access must stat every source')
+
+    async def test_time_budget_returns_after_a_block_and_resumes_with_error_fingerprints(self):
+        sources = {i: (f'/prepared/{i}', (0, 0)) for i in range(257)}
+        sources[129] = ('/prepared/129', 'PermissionError')
+        state = SimpleNamespace(sources=sources, items={i: {'series_id': 1} for i in sources},
+                                file_checks=await asyncio.to_thread(ready._prepare_files, sources))
+        state.items[3]['series_id'] = 7
+        state.items[130]['series_id'] = 9
+        checked = []
+        def stat(path):
+            identity = int(path.name)
+            checked.append(identity)
+            if identity == 129:
+                raise PermissionError()
+            if identity == 130:
+                raise ValueError()
+            return SimpleNamespace(st_size=int(identity == 3), st_mtime_ns=0)
+        stop = threading.Event()
+        ticks = iter((0, .002))
+        with patch.object(Path, 'stat', stat), \
+                patch.object(ready, 'perf_counter', side_effect=lambda: next(ticks, .010)):
+            start, dirty = await asyncio.to_thread(ready._check_prepared_files, state, 0, stop)
+        self.assertEqual(start, 128, 'Exhausted time budget must return the worker after its block')
+        self.assertEqual(dirty, {7})
+        ticks = iter((.003, .004, .006))
+        with patch.object(Path, 'stat', stat), \
+                patch.object(ready, 'perf_counter', side_effect=lambda: next(ticks, .010)):
+            start, dirty = await asyncio.to_thread(ready._check_prepared_files, state, start, stop)
+        self.assertGreaterEqual(start, len(sources))
+        self.assertEqual(dirty, {9}, 'Only changed error fingerprints should invalidate a series')
+        self.assertEqual(checked, list(range(257)), 'Resume must neither skip nor repeat sources')
+
     async def test_cancelled_validation_finishes_only_the_active_batch(self):
         base = await self.state()
         source = next(iter(base.sources.values()))[0]
@@ -551,13 +608,14 @@ class ReadyEstimates(EstimateCase):
                     if not release.wait(3):
                         raise AssertionError('Worker must be released')
             return original(target, *args, **kwargs)
-        original_worker = ready._stat_prepared_files
-        def worker(rows):
+        original_worker = ready._check_prepared_files
+        def worker(*args):
             try:
-                return original_worker(rows)
+                return original_worker(*args)
             finally:
                 done.set()
-        with patch('os.stat', blocked), patch.object(ready, '_stat_prepared_files', side_effect=worker):
+        with patch('os.stat', blocked), patch.object(ready, '_check_prepared_files', side_effect=worker), \
+                patch.object(ready, 'perf_counter', return_value=0):
             task = asyncio.create_task(cache._files(fake))
             try:
                 self.assertTrue(await asyncio.to_thread(entered.wait, 3))
