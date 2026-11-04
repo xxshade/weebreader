@@ -71,7 +71,8 @@ class EstimateApiTiming(fixtures.EstimateCase):
         self.assertEqual(response.content, normal.content)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(set(phase), {'app', *ROOT_PHASES, 'api_other', 'api_validate', 'api_targets',
-                                    'api_cache_other', 'api_files', 'api_index', 'api_revisions', 'api_validate_other'})
+                                    'api_cache_other', 'api_files', 'api_index', 'api_revisions', 'api_validate_other',
+                                    'file_queue', 'file_worker', 'file_worker_cpu', 'file_resume'})
         for name in ('api_auth', 'api_db', 'api_input', 'api_estimator', 'api_cache',
                      'api_validate', 'api_targets', 'api_files', 'api_index', 'api_revisions', 'api_encode'):
             self.assertGreater(phase[name], 0, name)

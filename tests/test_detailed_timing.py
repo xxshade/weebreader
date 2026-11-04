@@ -17,7 +17,7 @@ from app.main import app
 
 def metrics(response):
     return {name: float(duration.removeprefix('dur=')) for name, duration in
-            (part.strip().split(';') for part in response.headers['server-timing'].split(','))}
+            (part.strip().split(';')[:2] for part in response.headers['server-timing'].split(','))}
 
 
 class HomePhases(unittest.IsolatedAsyncioTestCase):
@@ -51,6 +51,9 @@ class HomePhases(unittest.IsolatedAsyncioTestCase):
             normal = await self.client.get('/')
         self.assertEqual(set(metrics(normal)), {'app'})
         settings.detailed_server_timing = True
+        from app.templating import templates
+        templates.env.cache.clear()
+        self.addCleanup(templates.env.cache.clear)
         detailed = await self.client.get('/')
         phase = metrics(detailed)
         self.assertEqual(set(phase), {'app', 'db_acquire', 'auth', 'home_data', 'render', 'revalidate', 'other',
@@ -58,7 +61,9 @@ class HomePhases(unittest.IsolatedAsyncioTestCase):
                     'home_tracking', 'home_cards', 'home_reading', 'home_other',
                     'series_query', 'series_prepare', 'series_aggregate', 'series_other',
                     'items_query', 'items_positions', 'items_rules', 'items_stat',
-                    'items_index', 'items_snapshots', 'items_other'})
+                    'items_index', 'items_snapshots', 'items_other',
+                    'render_content', 'render_grid', 'render_reading', 'render_filters',
+                    'render_other', 'render_content_other'})
         for key in ('db_acquire', 'auth', 'home_data', 'render', 'revalidate',
                     'home_queries', 'home_estimator', 'home_series', 'home_novels',
                     'home_tracking', 'home_cards', 'home_reading', 'home_other'):

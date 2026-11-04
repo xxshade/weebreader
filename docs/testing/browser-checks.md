@@ -220,3 +220,9 @@ watermarks. Different openings keep independent counters; this does not impose
 a new winner between devices or tabs. Clients without metadata keep their
 previous protocol, so already-open older tabs need a reload to gain protection.
 Novels and comics retain their current save protocol in this change.
+
+Detailed home/API audit cases also require prepared-file queue, worker wall/CPU
+and event-loop resumption metrics, with completed work counts in the worker's
+Server-Timing description. Home render spans cover cards, Reading and filters,
+with nested accounting retained on 200/304 responses. The probes use the existing
+APP_DETAILED_SERVER_TIMING option; default-off responses keep their prior behavior.

@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
-from time import perf_counter
+from time import perf_counter, thread_time
 from types import MappingProxyType
 import weakref
 
@@ -82,6 +82,29 @@ def _check_prepared_files(state, start, stop):
         if perf_counter() >= deadline:
             break
     return start, dirty
+
+
+async def _dispatch_prepared_files(state, start, stop):
+    if not request_timing.file_checks_enabled():
+        return await asyncio.to_thread(_check_prepared_files, state, start, stop)
+    submitted = request_timing.perf_counter()
+
+    def measured():
+        # These stamps stay worker-local. A cancelled request cannot be updated
+        # by a worker that finishes after its request context has been retired.
+        began = request_timing.perf_counter()
+        cpu = thread_time()
+        result = _check_prepared_files(state, start, stop)
+        cpu = thread_time() - cpu
+        ended = request_timing.perf_counter()
+        return result, began, ended, cpu
+
+    result, began, ended, cpu = await asyncio.to_thread(measured)
+    resumed = request_timing.perf_counter()
+    count = max(0, min(result[0], len(state.file_checks.rows)) - start)
+    blocks = (count + PREPARED_FILE_BATCH_SIZE - 1) // PREPARED_FILE_BATCH_SIZE
+    request_timing.file_check_result(submitted, began, ended, resumed, cpu, count, blocks)
+    return result
 
 
 @asynccontextmanager
@@ -190,7 +213,7 @@ class ReadyEstimates:
             try:
                 while start < len(state.file_checks.rows):
                     with request_timing.api_phase('api_files'), request_timing.item_phase('items_stat'):
-                        start, batch = await asyncio.to_thread(_check_prepared_files, state, start, stop)
+                        start, batch = await _dispatch_prepared_files(state, start, stop)
                     dirty.update(batch)
                 return dirty
             finally:

@@ -236,3 +236,46 @@ isolation, error cleanup and exclusion of background refresh work. Browser audit
 checks expose API headers and retain equivalent estimate JSON in Chrome and
 Firefox at desktop and simulated 320px widths. Mutation controls disable the
 instrumentation to verify that these assertions can fail.
+
+## Optional prepared-file dispatch and home render diagnostics
+
+With `APP_DETAILED_SERVER_TIMING=true`, prepared-cache checks add the following
+metrics to the home and reading-estimates API. They retain every current file
+check, batch budget, cancellation signal and invalidation rule. Native fallback
+and background maintenance do not contribute these finer dispatch metrics.
+
+| Metric | Meaning |
+| --- | --- |
+| `file_queue` | Submission until the executor starts the worker, including scheduling overhead. |
+| `file_worker` | Worker wall time for current metadata checks and fingerprint comparisons. Its `desc` contains completed dispatch (`jobs`), 128-source block (`blocks`) and actual source (`sources`) counts. Counts are not milliseconds. |
+| `file_worker_cpu` | CPU time consumed by that worker thread, including system calls; overlaps `file_worker` and must not be added to elapsed time. |
+| `file_resume` | Worker completion until the awaiting coroutine resumes, including delivery overhead. |
+
+Queue + worker + resume approximately account for `api_files` or `items_stat`;
+those parents also include bookkeeping. Repeated completed dispatches accumulate.
+A cancelled or failed dispatch adds no partial samples; a worker that finishes
+later cannot update retired request metrics. The description contains counts
+only, never names, paths, identifiers or content. Server-Timing parsers must
+accept optional parameters after `dur`, such as `;desc="jobs=3 blocks=16 sources=2048"`.
+
+Home rendering additionally reports these nested wall-time phases:
+
+| Parent | Children and residual |
+| --- | --- |
+| `render` | `render_content`, `render_filters`, `render_other` (base shell, template lookup, response encoding and remaining work). |
+| `render_content` | `render_grid` (all library cards), `render_reading` (Reading include), `render_content_other`. |
+
+Do not add nested phases to their parents. These template spans do not buffer
+HTML, change escaping or add markup. When the flag is off, the timing tags
+compile to their original template statements without runtime probes. The flag
+is process configuration: recreate the container after changing it; compiled
+templates are not reconfigured by request parameters. Enabled instrumentation
+adds small measurement overhead, so compare like-for-like requests and disable
+it after the diagnosis. Local prototype costs are not an N100 prediction.
+
+After updating and recreating with the option enabled, capture five warm home
+responses (record 200/304), then five successful POST responses to
+`/library/reading-estimates`. Send their complete Server-Timing headers and
+Waiting values only. Preserve the `file_worker` description so work counts can
+be compared, and avoid overlapping benchmark activity. See the API instructions
+above for scope, privacy and container recreation when finished.

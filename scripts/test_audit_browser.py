@@ -399,7 +399,10 @@ class DetailedTimingChecks(AuditChecks):
                     'home_tracking', 'home_cards', 'home_reading', 'home_other',
                     'series_query', 'series_prepare', 'series_aggregate', 'series_other',
                     'items_query', 'items_positions', 'items_rules', 'items_stat',
-                    'items_index', 'items_snapshots', 'items_other'}
+                    'items_index', 'items_snapshots', 'items_other',
+                    'file_queue', 'file_worker', 'file_worker_cpu', 'file_resume',
+                    'render_content', 'render_grid', 'render_reading', 'render_filters',
+                    'render_other', 'render_content_other'}
         self.assertEqual(set(names), expected, 'Detailed home phases must be visible to DevTools')
         result = self.driver.execute_async_script("""const done=arguments[0];
             (async()=>{
@@ -411,8 +414,11 @@ class DetailedTimingChecks(AuditChecks):
         self.assertEqual(result['status'], 304)
         self.assertEqual(result['length'], 0)
         values = {name: float(value.removeprefix('dur=')) for name, value in
-                  (part.strip().split(';') for part in result['timing'].split(','))}
+                  (part.strip().split(';')[:2] for part in result['timing'].split(','))}
         self.assertEqual(set(values), expected)
+        self.assertRegex(result['timing'], r'file_worker;dur=[0-9.]+;desc="jobs=[1-9][0-9]* blocks=[1-9][0-9]* sources=[1-9][0-9]*"')
+        self.assertAlmostEqual(values['render'], sum(values[key] for key in ('render_content', 'render_filters', 'render_other')), delta=.01)
+        self.assertAlmostEqual(values['render_content'], sum(values[key] for key in ('render_grid', 'render_reading', 'render_content_other')), delta=.01)
         self.assertTrue(all(value >= 0 for value in values.values()))
         skipped = {'series_query', 'series_aggregate', 'items_positions', 'items_rules'}
         for key in expected - {'app', 'other', 'series_other', 'items_other'} - skipped:
@@ -437,11 +443,12 @@ class DetailedTimingChecks(AuditChecks):
         self.assertEqual(api['key'], 'series:100:')
         self.assertIsInstance(api['timing'], str, 'API timing must be visible in both browser engines')
         values = {name:float(duration.removeprefix('dur=')) for name,duration in
-                  (part.strip().split(';') for part in api['timing'].split(','))}
+                  (part.strip().split(';')[:2] for part in api['timing'].split(','))}
         roots = {'api_auth','api_slot','api_db','api_input','api_estimator','api_cache',
                  'api_fallback','api_encode','api_flush','api_other'}
         self.assertEqual(set(values), {'app',*roots,'api_validate','api_targets','api_cache_other',
-                                      'api_files','api_index','api_revisions','api_validate_other'})
+                                      'api_files','api_index','api_revisions','api_validate_other',
+                                      'file_queue','file_worker','file_worker_cpu','file_resume'})
         self.assertTrue(all(value>=0 for value in values.values()))
         self.assertAlmostEqual(values['app'],sum(values[key] for key in roots),delta=.02)
         self.assertAlmostEqual(values['api_cache'],sum(values[key] for key in ('api_validate','api_targets','api_cache_other')),delta=.01)
