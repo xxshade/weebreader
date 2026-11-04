@@ -109,6 +109,8 @@ class State:
     novels: dict = field(default_factory=dict)
     scope_work: dict = field(default_factory=dict)
     comic_estimates: dict = field(default_factory=dict)
+    # None is unknown, not an assertion that every EPUB has a word basis.
+    missing_word_series: frozenset[int] | None = None
 
     def seed(self, estimator):
         estimator.item_estimates.update(self.item_estimates)
@@ -284,10 +286,14 @@ class ReadyEstimates:
                       novel_estimates=fresh.novel_estimates, novel_states=fresh.novel_states,
                       pending_novels=fresh.pending_novels, novel_basis=fresh.ready_novel_basis, novel_rows=fresh.ready_novels)
         by_series = defaultdict(list)
-        for row in state.items.values():
+        missing_word_series = set()
+        for identity, row in state.items.items():
+            if row['file_format'] == 'epub' and (state.account, 'item', identity) not in state.words:
+                missing_word_series.add(row['series_id'])
             by_series[row['series_id']].append(row)
             if row['file_format'] == 'cbz':
                 state.comic_estimates[fresh.comic_key(row, row)] = fresh.for_item(row, row)
+        state.missing_word_series = frozenset(missing_word_series)
         fresh.comic_estimates.update(state.comic_estimates)
         state.series = {sid: ShelfReading(len(items), fresh.total_remaining(items),
                         any(row['file_format'] == 'epub' for row in items),
@@ -412,9 +418,10 @@ class ReadyEstimates:
             for key, (kind, identity, volume) in parsed.items():
                 if kind == 'series':
                     value = state.series.get(identity)
-                    if (value is None or value.missing or any(
-                            row['file_format'] == 'epub' and (state.account, 'item', i) not in state.words
-                            for i, row in state.items.items() if row['series_id'] == identity)):
+                    if (value is None or value.missing or (
+                            identity in state.missing_word_series if state.missing_word_series is not None else any(
+                                row['file_format'] == 'epub' and (state.account, 'item', i) not in state.words
+                                for i, row in state.items.items() if row['series_id'] == identity))):
                         return None
                     results.append(dict(key=key, remaining=value.remaining, total=None,
                                         collecting=value.state == 'collecting', state=value.state, missing=value.missing))

@@ -7,7 +7,7 @@ import shutil
 import threading
 from types import SimpleNamespace
 import sqlite3
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.database import get_connection, write_transaction
 from app.library.router import _series_reading_uncached, _novel_reading_uncached, _series_reading
@@ -55,7 +55,12 @@ class ReadyEstimates(EstimateCase):
 
     async def state(self, uid=1, **kwargs):
         estimator = await build_estimator(self.db, uid, cached_only=True)
-        return await cache.get(self.db, uid, estimator, **kwargs)
+        state = await cache.get(self.db, uid, estimator, **kwargs)
+        if state is not None:
+            self.assertEqual(state.missing_word_series, frozenset(
+                row['series_id'] for identity, row in state.items.items()
+                if row['file_format'] == 'epub' and (state.account, 'item', identity) not in state.words))
+        return state
 
     async def equivalent(self):
         state = await self.state()
@@ -196,6 +201,69 @@ class ReadyEstimates(EstimateCase):
         self.assertNotIn(1, estimator.item_estimates)
         result = await _series_reading_uncached(self.db, 1, estimator, [1])
         self.assertLess(result[1].remaining, 999)
+
+    async def test_word_basis_index_uses_inventory_identity_and_ignores_comics(self):
+        fresh = SimpleNamespace(
+            cache_account=('fixture', 1), ready_items={
+                1: {'id': 999, 'series_id': 1, 'file_format': 'epub'},
+                2: {'id': 998, 'series_id': 2, 'file_format': 'epub'},
+                3: {'id': 997, 'series_id': 3, 'file_format': 'cbz'}}, ready_sources={},
+            word_counts={(('fixture', 1), 'item', 1): object()}, item_estimates={}, item_states={},
+            novel_estimates={}, novel_states={}, pending_novels=set(), ready_novel_basis={}, ready_novels={},
+            comic_estimates={}, comic_key=lambda *args: 3, for_item=lambda *args: None,
+            total_remaining=lambda rows: 1., missing_items=lambda rows: 0,
+            series_state=lambda rows: 'available')
+        state = cache._state(fresh, (), (), {})
+        self.assertEqual(state.missing_word_series, frozenset({2}))
+        self.assertIsInstance(state.missing_word_series, frozenset)
+
+    async def test_series_word_basis_index_is_rebuilt_and_old_copies_stay_unchanged(self):
+        before = await self.state()
+        self.assertIs(cache._copy(before).missing_word_series, before.missing_word_series)
+        scope = snapshots.signature((before.account, 'item', 1))
+        with snapshots._connection() as db:
+            db.execute("UPDATE snapshots SET payload='[999,1000,0]' WHERE scope=?", (scope,))
+        legacy = await self.state()
+        self.assertEqual(legacy.missing_word_series, frozenset({1}))
+        self.assertFalse(before.missing_word_series)
+        await self.db.execute('UPDATE items SET series_id=2 WHERE id=1')
+        await self.db.commit()
+        moved = await self.state()
+        self.assertNotIn(1, moved.missing_word_series)  # Its comic needs no word basis.
+        await self.progress(1, 'completed', 1)
+        completed = await self.state()
+        self.assertNotIn(1, completed.items)
+        await self.db.execute('DELETE FROM items WHERE id=2')
+        await self.db.commit()
+        await self.state()
+
+    async def test_series_api_uses_index_and_preserves_guards_and_unknown_index_fallback(self):
+        from dataclasses import replace
+
+        class NoScan(dict):
+            def items(self):
+                raise AssertionError('API rescanned items after validation')
+
+        state = await self.state()
+        state.items = NoScan(state.items)
+        parsed = {'series:1:': ('series', 1, None), 'series:4:': ('series', 4, None)}
+        with patch.object(cache, 'get', AsyncMock(return_value=state)):
+            self.assertIsNotNone(await cache.api(None, 1, None, parsed))
+            # An unrelated missing basis must not invalidate the requested series.
+            state.missing_word_series = frozenset({2})
+            self.assertIsNotNone(await cache.api(None, 1, None, parsed))
+            self.assertIsNone(await cache.api(None, 1, None, {'s': ('series', 2, None)}))
+            self.assertIsNone(await cache.api(None, 1, None, {'s': ('series', 999, None)}))
+            state.series[4] = state.series[4]._replace(missing=1)
+            self.assertIsNone(await cache.api(None, 1, None, {'s': ('series', 4, None)}))
+            state.series[4] = state.series[4]._replace(missing=0)
+            state.items = dict(state.items)
+            unknown = replace(state, missing_word_series=None)
+            with patch.object(cache, 'get', AsyncMock(return_value=unknown)):
+                self.assertIsNotNone(await cache.api(None, 1, None, parsed))
+                unknown.words = {key: value for key, value in unknown.words.items()
+                                 if key != (unknown.account, 'item', 1)}
+                self.assertIsNone(await cache.api(None, 1, None, parsed))
 
     async def test_chapter_order_and_newest_metadata_invalidate_without_body_edits(self):
         before = await self.state()
