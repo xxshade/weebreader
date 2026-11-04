@@ -189,7 +189,7 @@ request waits, how estimates are calculated, or which cache/connections it uses.
 | --- | --- |
 | `api_auth` | Session validation, including borrowing and returning its authentication read connection. This is broader than the home's query-only `auth` phase. |
 | `api_slot` | Waiting to enter the existing single estimate-connection slot. |
-| `api_db` | Opening the dedicated estimate connection and configuring `query_only`. Not all SQL execution. |
+| `api_db` | Acquiring the exclusive estimate reader, including opening/configuring `query_only` when it is first needed or must be replaced. Warm reuse can be near zero. Not all SQL execution. |
 | `api_input` | Reading/parsing JSON and validating targets. |
 | `api_estimator` | Constructing the request's reading estimator. |
 | `api_cache` | Attempting the prepared-cache response, including validation and target resolution. |
@@ -213,11 +213,13 @@ Phases that were not reached are zero; early validation errors do not perform
 estimator/cache work. Background refresh internals do not inherit route phases;
 only the request's actual wait for them contributes to `api_flush`.
 
-For successful responses the yield dependency closes the estimate connection
-AFTER sending the response, so that future time cannot be added to the already
-sent header. Error unwinding can close it before producing error headers; that
-elapsed cleanup is included in `api_other`. Do not interpret the absence of a
-connection-close phase as zero cleanup work.
+The yield dependency releases its exclusive slot after response cleanup; healthy
+connections remain available for reuse, including after handled HTTP errors.
+Unexpected failures, cancellation or an unfinished explicit transaction discard
+the reader. Cleanup that occurs before headers contributes to `api_other`; work
+after headers cannot be added to the already sent timing. The retained reader
+also closes at application shutdown. Absence of a connection-close phase does
+not imply there is no resource cleanup.
 
 In browser DevTools, select the actual POST to `/library/reading-estimates`, not
 the home document. Record the HTTP status, the complete Server-Timing header and
