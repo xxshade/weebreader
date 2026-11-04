@@ -465,9 +465,10 @@ async def _pool_queue() -> asyncio.LifoQueue:
 
 
 async def close_pool() -> None:
-    """Closes every pooled connection, and the write connection. Called
-    from the lifespan's shutdown."""
+    """Close the interactive pool, writer and exclusive estimate reader."""
     global _pool
+    async with _estimate_slots:
+        await _close_estimate_reader()
     await _close_writer()
     for db in _pool_connections:
         with suppress(Exception):
@@ -524,6 +525,63 @@ async def get_db():
     async with read_connection() as db:
         request_timing.finish("db_acquire", started)
         yield db
+
+
+# Estimate inventories must not occupy the interactive pool. The endpoint
+# already permits one estimate request at a time, so it can reuse one reader.
+_estimate_slots = asyncio.Semaphore(1)
+_estimate_reader: aiosqlite.Connection | None = None
+_estimate_reader_path: str | None = None
+
+
+async def _close_estimate_reader():
+    global _estimate_reader, _estimate_reader_path
+    db, _estimate_reader, _estimate_reader_path = _estimate_reader, None, None
+    if db is not None:
+        with suppress(Exception):
+            await db.close()
+
+
+async def _estimate_read_connection():
+    """Called only while the exclusive estimate slot is held."""
+    global _estimate_reader, _estimate_reader_path
+    path = str(settings.db_path)
+    if _estimate_reader is not None and _estimate_reader_path != path:
+        await _close_estimate_reader()
+    if _estimate_reader is None:
+        db = await get_connection()
+        try:
+            await db.execute('PRAGMA query_only = ON')
+        except BaseException:
+            with suppress(Exception):
+                await db.close()
+            raise
+        _estimate_reader, _estimate_reader_path = db, path
+    return _estimate_reader
+
+
+@asynccontextmanager
+async def estimate_connection():
+    """One read-only API connection, independent of the interactive pool.
+
+    The slot remains held until response cleanup, including errors/cancellation.
+    No reader with unfinished work or an explicit transaction is handed onward.
+    """
+    waiting = request_timing.api_start()
+    async with _estimate_slots:
+        request_timing.finish('api_slot', waiting)
+        with request_timing.api_phase('api_db'):
+            db = await _estimate_read_connection()
+        try:
+            yield db
+        except HTTPException:
+            raise
+        except BaseException:
+            await _close_estimate_reader()
+            raise
+        finally:
+            if db is _estimate_reader and db.in_transaction:
+                await _close_estimate_reader()
 
 
 # ONE write connection, reused, behind the lock.
