@@ -174,13 +174,25 @@ async def _snapshot(operation):
 
 
 async def _revisions(db, uid):
-    source = await (await db.execute('SELECT epoch,revision FROM estimate_revision WHERE id=1')).fetchone()
-    pace = await (await db.execute('SELECT revision FROM estimate_account_revisions WHERE user_id=?', (uid,))).fetchone()
-    work = {(r[0], r[1]): r[2] for r in await (await db.execute(
-        'SELECT kind,identity,revision FROM estimate_work_revisions WHERE user_id=?', (uid,))).fetchall()}
+    # One statement observes one SQLite snapshot and avoids three round trips
+    # through aiosqlite. Callers still check revisions before and after work.
+    rows = await (await db.execute("""SELECT 0, epoch, revision, NULL, NULL
+        FROM estimate_revision WHERE id=1
+        UNION ALL SELECT 1, NULL, revision, NULL, NULL
+        FROM estimate_account_revisions WHERE user_id=?1
+        UNION ALL SELECT 2, NULL, revision, kind, identity
+        FROM estimate_work_revisions WHERE user_id=?1""", (uid,))).fetchall()
+    source, pace, work = None, 0, {}
+    for tag, epoch, revision, kind, identity in rows:
+        if tag == 0:
+            source = epoch, revision
+        elif tag == 1:
+            pace = revision
+        else:
+            work[kind, identity] = revision
     if source is None:
         raise sqlite3.DatabaseError('Missing estimate generation')
-    return tuple(source), pace[0] if pace else 0, work
+    return source, pace, work
 
 
 class ReadyEstimates:
