@@ -152,6 +152,9 @@ class CoverCache(unittest.TestCase):
                 self.assertEqual(response.status_code,200)
                 self.assertNotIn('cookie',response.headers.get('Vary','').lower(),
                                  'Private image reuse must not vary by session or preference cookies')
+        # The two explicit header probes above are server requests, not
+        # browser cache misses. Start counting the browser comparison here.
+        checked = len(self.image_requests())
         # Presentation cookies do not select different cover bytes. Altering
         # one must not turn a warm cover/novel/avatar into a new request.
         self.js("document.cookie='thumbnail-size=220;path=/;SameSite=Lax'")
