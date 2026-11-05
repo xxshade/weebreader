@@ -5,6 +5,7 @@ boot, see events.py), so a data directory upgraded from that version would
 otherwise keep a file that looks like it means something. This runs the
 real lifespan against a directory holding one.
 """
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,12 +30,16 @@ class TheLeftoverSequenceFileIsRemoved(unittest.IsolatedAsyncioTestCase):
         # lifespan in the same process dies on a closed loop -- a fact
         # about that singleton, not about anything here.
         from app.main import app, lifespan
+        from app.stats import estimate_snapshots
 
         leftover = self.dir / "event-sequence.json"
         leftover.write_text('{"epoch": "a35d8ef2", "reserved": 3190}')
         async with lifespan(app):
             self.assertFalse(leftover.exists())
+            await asyncio.to_thread(estimate_snapshots.version)
+            self.assertIsNotNone(estimate_snapshots._reader.db)
         self.assertFalse(leftover.exists(), "the shutdown wrote it back")
+        self.assertIsNone(estimate_snapshots._reader.db, "shutdown retained snapshot connection")
 
 
 if __name__ == "__main__":

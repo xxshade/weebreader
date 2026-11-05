@@ -114,7 +114,12 @@ def main():
     loader = unittest.defaultTestLoader
     def suite():
         return loader.loadTestsFromNames(sys.argv[1:]) if len(sys.argv) > 1 else loader.discover('tests', top_level_dir='.')
-    result = run(suite, cleanup=lambda: asyncio.run(close_pool()))
+    def cleanup():
+        from app.stats import estimate_snapshots
+        asyncio.run(close_pool())
+        estimate_snapshots.close_reader()
+
+    result = run(suite, cleanup=cleanup)
     return int(not result.wasSuccessful() or result.testsRun == 0)
 
 

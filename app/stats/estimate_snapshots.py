@@ -13,6 +13,7 @@ import math
 import sqlite3
 
 from app.config import settings
+from app.stats.snapshot_reader import SnapshotReader
 
 log = logging.getLogger(__name__)
 MAX_ENTRIES = 4096
@@ -66,22 +67,29 @@ def read():
         return {}
 
 
+def _initialize():
+    """Keep schema creation and repair on the existing short-lived writer path."""
+    with _connection():
+        pass
+
+
+_reader = SnapshotReader(lambda: settings.data_dir / 'cache' / 'reading-estimates.sqlite3',
+                         _initialize, MAX_ENTRIES)
+
+
 def version():
-    """A failed check must invalidate RAM; unlike read(), errors propagate."""
-    with _connection() as db:
-        return tuple(db.execute('SELECT epoch,revision FROM snapshot_revision WHERE id=1').fetchone())
+    """A fresh generation check; failure invalidates RAM rather than using old data."""
+    return _reader.read()
 
 
 def versioned_read():
-    """Read the generation and bounded index in one SQLite read transaction."""
-    with _connection() as db:
-        if not db.in_transaction:
-            db.execute('BEGIN')
-        generation = tuple(db.execute('SELECT epoch,revision FROM snapshot_revision WHERE id=1').fetchone())
-        rows = {key: (fingerprint, payload) for key, fingerprint, payload in db.execute(
-            'SELECT scope,signature,payload FROM snapshots WHERE length(payload)<=512 LIMIT ?',
-            (MAX_ENTRIES,))}
-        return generation, rows
+    """Read the generation and bounded index from the same SQLite snapshot."""
+    return _reader.read(index=True)
+
+
+def close_reader():
+    """Release the persistent reader after estimate/background work has stopped."""
+    _reader.close()
 
 
 def load(scope, fingerprint, *, rows=None):

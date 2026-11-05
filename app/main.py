@@ -198,6 +198,9 @@ async def lifespan(app: FastAPI):
     # above. After this nothing can read, which is why it comes after
     # everything that still might.
     await close_pool()
+    # All request and background readers have stopped before the cache closes.
+    from app.stats import estimate_snapshots
+    await asyncio.to_thread(estimate_snapshots.close_reader)
     logger.info("Shutdown complete.")
 
 

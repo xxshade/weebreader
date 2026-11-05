@@ -129,3 +129,46 @@ or truncate the number of books within the requested series. Individual item
 targets, including orphans and completed items, remain independent, and results
 retain the deduplicated request order. File checks retain their sequential
 32-file batch bound and remain fresh on each request.
+
+## Reusing snapshot reads and grouping revisions
+
+Prepared estimate validation still checks the main database revisions and the
+snapshot generation before and after its work. Main-database revision reads now
+use one compound SELECT for the global generation, account pace and work
+revisions. This reduces six SELECTs per stable validation to two without caching
+revision values, and each compound read observes one SQLite snapshot.
+
+The disposable snapshot database has one serialized read-only connection. Each
+borrow checks file identity and schema version, reads a fresh generation, and
+ends its read transaction before returning. Generation and index reads share a
+transaction. Missing tables, triggers or generation rows use the existing repair
+path; file replacement reopens the connection, and corruption fails closed.
+The validation token includes file/schema identity so recreating a table without
+changing the persisted revision cannot validate an old RAM projection. Snapshot
+writes keep their existing short-lived connections and invalidation notifications.
+The persistent reader closes after request and background work stops. Cancelled
+API database reads retain the existing discard-on-error behavior.
+
+An alternating local HTTP comparison of the integrated change used 729 EPUBs
+across 59 series, two novels and a single 64-target estimate request. All 729
+files remained checked, response JSON matched, and no fallback occurred:
+
+| Warm operation | Previous | Combined reads |
+| --- | ---: | ---: |
+| Stable home, backend median | 7.52 ms | 6.64 ms |
+| Stable estimate API, backend median | 5.23 ms | 4.69 ms |
+| Home after saved progress, backend median | 8.16 ms | 7.68 ms |
+| Estimate API after saved progress, backend median | 5.38 ms | 4.60 ms |
+
+Each scenario used 36 alternating samples per variant. The progress scenario
+saved a valid anchor without new pace evidence; it is not a full reading session.
+Earlier prototype comparisons with reversed startup order found similar API
+gains. These are local synthetic measurements, not N100 or browser latency
+predictions. A separate prototype CPU experiment reduced process CPU per home +
+API pair from 12.34 to 10.94 ms; this does not measure electrical power.
+
+The new resource cost is one persistent connection and its SQLite cache. In an
+isolated 4,096-work-revision stress probe, grouped revision rows retained about
+53 KiB more Python allocations than the reader alone. Actual libraries have a
+different number of work revisions than files. Python allocation tracking excludes
+SQLite C allocations, and these observations are not a universal memory budget.
