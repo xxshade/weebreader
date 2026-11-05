@@ -38,6 +38,12 @@ render and every observed update, exercises partial series totals and retries
 repaired unread content by keyboard, and retains a known value on HTTP failure.
 Controls disable snapshot reuse, hide partial identification and erase a known
 result on failure; both engines must reject each defect.
+The suite also checks scoped file validation: a prepared estimate request reads
+only the EPUBs belonging to its requested series, while home retains complete
+validation. An EPUB edited outside the watched media root must change the API's
+prediction before another home navigation can repair it. Desktop and narrow
+viewports run in both engines; controls omit the file checks, restore a full
+library scan for each API batch, and incorrectly restrict home's checks.
 The suite also runs `test_reload_performance_browser.py` against a real HTTP
 server started with 151 distinct 100,000-word EPUBs, ten saved reading anchors
 and novels with 1,817 and 176 distinct chapter bodies. It warms all scopes,
