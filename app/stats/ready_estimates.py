@@ -7,7 +7,7 @@ import asyncio
 from collections import OrderedDict, defaultdict
 from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 import os
 from pathlib import Path
@@ -205,9 +205,21 @@ class ReadyEstimates:
             self.path = path
         return path
 
-    async def _files(self, state):
+    async def _files(self, state, *, targets=None):
         from app.stats.estimates import FILE_STAT_BATCH_SIZE, _stat_epub_files
         if state.file_checks is not None:
+            if targets is not None:
+                # An item can invalidate its whole series aggregate. Keep the
+                # original fingerprints for unrelated sources: a later API or
+                # full home read must still validate them before serving them.
+                series_ids = {identity for kind, identity, _ in targets.values() if kind == 'series'}
+                series_ids.update(state.items[identity]['series_id']
+                                  for kind, identity, _ in targets.values()
+                                  if kind == 'item' and identity in state.items)
+                checks = state.file_checks
+                rows = tuple(row for row in checks.rows
+                             if state.items[row.identity]['series_id'] in series_ids)
+                state = replace(state, file_checks=_PreparedFiles(rows, checks.by_id))
             stop = threading.Event()
             dirty, start = set(), 0
             try:
@@ -285,7 +297,6 @@ class ReadyEstimates:
 
     @staticmethod
     def _copy(state):
-        from dataclasses import replace
         return replace(state, item_estimates=dict(state.item_estimates), item_states=dict(state.item_states),
                        novel_estimates=dict(state.novel_estimates), novel_states=dict(state.novel_states))
 
@@ -357,7 +368,10 @@ class ReadyEstimates:
                                 for key in state.novel_states)
         return state
 
-    async def get(self, db, uid, estimator, *, force=False, authoritative=False, allow_authoritative=False, seed=True):
+    async def get(self, db, uid, estimator, *, force=False, authoritative=False, allow_authoritative=False,
+                  seed=True, file_targets=None):
+        if file_targets is not None and (seed or force or not allow_authoritative):
+            raise ValueError('Scoped file validation requires an unseeded API read')
         if not self.enabled or (not estimator.cached_only and not force and not allow_authoritative):
             return None
         self._current_path()
@@ -409,7 +423,7 @@ class ReadyEstimates:
                         series_ids.update(identity for kind, identity in changed if kind == 'series')
                         novel_ids.update(identity for kind, identity in changed if kind == 'novel')
                         if not force:
-                            series_ids.update(await self._files(state))
+                            series_ids.update(await self._files(state, targets=file_targets))
                     if full or pace or series_ids or novel_ids:
                         from app.stats.estimates import build_estimator
                         fresh = await build_estimator(db, uid, cached_only=True)
@@ -457,7 +471,7 @@ class ReadyEstimates:
         if not self.enabled or uid not in self.states:
             return None
         with request_timing.api_phase('api_validate'):
-            state = await self.get(db, uid, estimator, allow_authoritative=True, seed=False)
+            state = await self.get(db, uid, estimator, allow_authoritative=True, seed=False, file_targets=parsed)
         if state is None:
             return None
         with request_timing.api_phase('api_targets'):

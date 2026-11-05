@@ -2,7 +2,9 @@
 import argparse
 from contextlib import closing
 import io
+import os
 from pathlib import Path
+import re
 import sqlite3
 import shutil
 import sys
@@ -10,6 +12,7 @@ import time
 import unittest
 import uuid
 import zipfile
+from unittest.mock import patch
 
 from selenium.webdriver.common.keys import Keys
 
@@ -195,13 +198,101 @@ class EstimateAvailabilityChecks(TextEtaChecks):
         self.assertEqual(self.js('return etaProbe.errors'),[])
 
 
-def suite(*, mobile=True, availability=None):
+class ScopedEstimateChecks(audit.AuditChecks):
+    probe = PROBE
+
+    @classmethod
+    def setUpClass(cls):
+        with patch.dict(os.environ, {'APP_DETAILED_SERVER_TIMING': 'true'}):
+            super().setUpClass()
+
+    @classmethod
+    def seed_readers(cls):
+        with closing(sqlite3.connect(cls.fixture.data / 'library.db')) as db, db:
+            for identity in (300, 301):
+                # Outside the watched media root: only request validation can
+                # discover a later content edit, not a watcher notification.
+                folder = cls.fixture.fixture / f'scoped-{identity}'
+                folder.mkdir()
+                path = folder / 'book.epub'
+                with zipfile.ZipFile(path, 'w') as archive:
+                    archive.writestr('META-INF/container.xml', '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>')
+                    archive.writestr('content.opf', '<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="a" href="a.xhtml"/></manifest><spine><itemref idref="a"/></spine></package>')
+                    archive.writestr('a.xhtml', '<p>' + 'word ' * 1000 + '</p>')
+                db.execute('INSERT INTO series(id,library_id,name,sort_name,folder_path) VALUES(?,1,?,?,?)',
+                           (identity, f'Scoped {identity}', f'scoped{identity}', str(folder)))
+                db.execute("""INSERT INTO items(id,series_id,library_id,title,sort_title,file_path,
+                    file_format,file_hash,file_size) VALUES(?,?,1,?, ?,?,'epub',?,?)""",
+                           (identity, identity, f'Book {identity}', str(identity), str(path), str(identity), path.stat().st_size))
+            db.execute("""INSERT INTO page_reads(user_id,kind,started_at,seconds,cap_seconds,visit_id,
+                pace_words,pace_seconds,pace_samples)
+                VALUES(1,'epub',datetime('now'),300,300,'scoped-fixture',3000,300,3)""")
+
+    def estimate(self, identity):
+        response = self.driver.execute_async_script("""const done=arguments[arguments.length-1];
+            fetch('/library/reading-estimates', {method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({targets:[{kind:'series',id:arguments[0]}]})})
+            .then(async r=>({status:r.status,value:await r.json(),timing:r.headers.get('Server-Timing')}))
+            .then(done).catch(e=>done({error:String(e)}));""", identity)
+        self.assertEqual(response.get('status'), 200, response)
+        return response
+
+    def warm(self):
+        self.driver.get(self.base + '/')
+        self.wait("document.querySelector('[data-text-eta-kind=series][data-text-eta-id=\"301\"]')?.dataset.estimateState==='available'")
+        # Finish authoritative preparation before measuring a stable hit.
+        for identity in (300, 301, 300):
+            self.estimate(identity)
+
+    def edit(self, identity):
+        path = self.fixture.fixture / f'scoped-{identity}' / 'book.epub'
+        with zipfile.ZipFile(path) as archive:
+            entries = {name: archive.read(name) for name in archive.namelist()}
+        entries['a.xhtml'] += b'<p>' + b'additional ' * 5000 + b'</p>'
+        with zipfile.ZipFile(path, 'w') as archive:
+            for name, content in entries.items():
+                archive.writestr(name, content)
+
+    @staticmethod
+    def checked_sources(timing):
+        found = re.search(r'file_worker;[^,]*sources=(\d+)', timing or '')
+        return int(found[1]) if found else 0
+
+    def test_requested_content_edit_invalidates_without_home_navigation(self):
+        self.warm()
+        before = self.estimate(300)['value']['estimates'][0]['remaining']
+        self.edit(300)
+        # Do not navigate: a full home validation must not hide a broken API.
+        after = self.estimate(300)['value']['estimates'][0]['remaining']
+        self.assertGreater(after, before, 'Changed requested EPUB must invalidate prepared estimate')
+        self.assertEqual(self.js('return etaProbe.errors'), [])
+
+    def test_api_checks_only_requested_series_and_home_keeps_full_validation(self):
+        self.warm()
+        self.assertEqual(self.checked_sources(self.estimate(300)['timing']), 1,
+                         'API must check only the requested series files')
+        self.edit(301)
+        self.assertEqual(self.checked_sources(self.estimate(300)['timing']), 1,
+                         'API must check only the requested series files')
+        timing = self.driver.execute_async_script("""const done=arguments[0];
+            fetch('/',{cache:'no-store'}).then(async r=>{
+                await r.text();return r.headers.get('Server-Timing');
+            }).then(done).catch(e=>done(String(e)));""")
+        self.assertEqual(self.checked_sources(timing), 2,
+                         'Home must still validate every prepared EPUB')
+
+
+def suite(*, mobile=True, availability=None, scoped_test=None):
     return unittest.TestSuite(type(browser.title()+'TextEta'+str(width)+test,(checks,),
         {'browser':browser,'viewport_width':width})(test)
         for browser in selected_browsers(ARGS) for width in ((1280,320) if mobile else (1280,))
         for checks,test in ((TextEtaChecks,'test_samples_refresh_estimates_and_preserve_document_covers_and_scope'),
-                            (EstimateAvailabilityChecks,'test_saved_partial_estimates_and_retry'))
-        if availability is None or (checks is EstimateAvailabilityChecks) == availability)
+                            (EstimateAvailabilityChecks,'test_saved_partial_estimates_and_retry'),
+                            (ScopedEstimateChecks,'test_requested_content_edit_invalidates_without_home_navigation'),
+                            (ScopedEstimateChecks,'test_api_checks_only_requested_series_and_home_keeps_full_validation'))
+        if (scoped_test is None or test == scoped_test)
+        and (availability is None or (checks in (TextEtaChecks, EstimateAvailabilityChecks)
+                                      and (checks is EstimateAvailabilityChecks) == availability)))
 
 
 
@@ -215,7 +306,7 @@ if __name__=='__main__':
     audit.ARGS=ARGS
     result=unittest.TextTestRunner(verbosity=2).run(suite())
     unittest_failures(result)
-    if not baseline_passed(result,len(selected_browsers(ARGS))*4):
+    if not baseline_passed(result,len(selected_browsers(ARGS))*8):
         sys.exit(1)
     for filename,before,after,signal in (
         ('app/account_events.py', "if path.startswith('/settings/text-replacements'):", 'if False:',
@@ -259,6 +350,34 @@ if __name__=='__main__':
             print(output.getvalue())
             raise AssertionError('Each selected browser must reject the text ETA defect')
         print(' and '.join(browser.title() for browser in selected_browsers(ARGS))+' rejected: '+signal,flush=True)
+
+    for before, after, test, signal in (
+        ('series_ids.update(await self._files(state, targets=file_targets))', 'series_ids.update(set())',
+         'test_requested_content_edit_invalidates_without_home_navigation',
+         'Changed requested EPUB must invalidate prepared estimate'),
+        ('if targets is not None:', 'if False and targets is not None:',
+         'test_api_checks_only_requested_series_and_home_keeps_full_validation',
+         'API must check only the requested series files'),
+        ('targets=file_targets)', 'targets=file_targets if file_targets is not None else {})',
+         'test_api_checks_only_requested_series_and_home_keeps_full_validation',
+         'Home must still validate every prepared EPUB'),
+    ):
+        path = ROOT / 'app/stats/ready_estimates.py'
+        original = path.read_text()
+        if original.count(before) != 1:
+            raise ValueError('Scoped estimate mutation must match exactly once')
+        try:
+            path.write_text(original.replace(before, after))
+            output = io.StringIO()
+            control = unittest.TextTestRunner(stream=output, verbosity=2).run(
+                suite(mobile=False, scoped_test=test))
+        finally:
+            path.write_text(original)
+        if not mutation_rejected(control, selected_browsers(ARGS), 'TextEta', signal):
+            print(output.getvalue())
+            raise AssertionError('Each selected browser must reject the scoped estimate defect')
+        print(' and '.join(browser.title() for browser in selected_browsers(ARGS)) + ' rejected: ' + signal,
+              flush=True)
 
     from test_reload_performance_browser import run as run_reload_checks
     run_reload_checks(ARGS)

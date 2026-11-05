@@ -1,5 +1,8 @@
 """The ready projection must remain equivalent to the native format-specific path."""
 import asyncio
+import json
+import zipfile
+from starlette.requests import Request
 from contextlib import ExitStack
 from pathlib import Path
 import os
@@ -10,7 +13,7 @@ import sqlite3
 from unittest.mock import AsyncMock, patch
 
 from app.database import get_connection, write_transaction
-from app.library.router import _series_reading_uncached, _novel_reading_uncached, _series_reading
+from app.library.router import _series_reading_uncached, _novel_reading_uncached, _series_reading, reading_estimates
 from app.stats import estimate_snapshots as snapshots
 from app.stats import estimates, ready_estimates as ready
 from app.stats.estimates import build_estimator
@@ -655,3 +658,172 @@ class ReadyEstimates(EstimateCase):
                 release.set()
                 self.assertTrue(await asyncio.to_thread(done.wait, 3))
         self.assertIsNotNone(await self.state())
+
+
+
+    async def _scoped_api(self, targets):
+        data = json.dumps({'targets': targets}).encode()
+
+        async def receive():
+            return {'type': 'http.request', 'body': data, 'more_body': False}
+        request = Request({'type': 'http', 'method': 'POST', 'path': '/library/reading-estimates', 'headers': [(b'content-type', b'application/json')]}, receive)
+        return await reading_estimates(request, {'id': 1}, self.db)
+
+    async def _edit_epub(self, identity, words):
+        path = Path((await self.row('SELECT file_path FROM items WHERE id=?', (identity,)))[0])
+        with zipfile.ZipFile(path) as archive:
+            entries = {n: archive.read(n) for n in archive.namelist()}
+        entries['a.xhtml'] = ('<p>' + 'additional ' * words + '</p>').encode()
+        with zipfile.ZipFile(path, 'w') as archive:
+            for name, data in entries.items():
+                archive.writestr(name, data)
+        return path
+
+    async def test_scope_exact_and_novel_only_does_not_stat_epubs(self):
+        await self.state()
+        seen = []
+        native = ready._dispatch_prepared_files
+
+        async def dispatch(state, start, stop):
+            seen.extend((row.identity for row in state.file_checks.rows[start:]))
+            return await native(state, start, stop)
+        with patch.object(ready, '_dispatch_prepared_files', side_effect=dispatch):
+            result = await self._scoped_api([{'kind': 'item', 'id': 1}])
+            self.assertEqual(result['estimates'][0]['state'], 'available')
+            self.assertEqual(set(seen), {1}, 'only requested series must be checked')
+            seen.clear()
+            await self._scoped_api([{'kind': 'novel', 'id': 1}])
+            self.assertEqual(seen, [], 'novel-only must not stat EPUBs')
+
+    async def test_unrelated_changed_book_is_not_blessed_by_partial_hit(self):
+        before = await self.state()
+        old = before.sources[2][1]
+        await self._edit_epub(2, 80)
+        await self._scoped_api([{'kind': 'series', 'id': 1}])
+        self.assertEqual(ready.cache.states[1].sources[2][1], old, 'unrelated fingerprint must remain unvalidated')
+        home = await self.state()
+        self.assertNotEqual(home.sources[2][1], old, 'home must detect unrelated edit')
+        result = await self._scoped_api([{'kind': 'item', 'id': 2}])
+        self.assertGreater(result['estimates'][0]['remaining'], before.item_estimates[2].remaining, 'real content edit must update prediction')
+        await self.equivalent()
+
+    async def test_requested_content_edit_rebuilds_and_changes_estimate(self):
+        before = await self.state()
+        await self._edit_epub(1, 100)
+        result = await self._scoped_api([{'kind': 'item', 'id': 1}, {'kind': 'series', 'id': 1}])
+        self.assertGreater(result['estimates'][0]['remaining'], before.item_estimates[1].remaining, 'requested edit served stale item')
+        self.assertGreater(result['estimates'][1]['remaining'], before.series[1].remaining, 'requested edit served stale series')
+        await self.equivalent()
+
+    async def test_other_book_in_requested_items_series_is_checked(self):
+        await self.book(5)
+        await self.db.execute('UPDATE items SET series_id=1 WHERE id=5')
+        await self.db.commit()
+        await self._scoped_api([{'kind': 'item', 'id': 5}])
+        before = await self.state()
+        await self._edit_epub(5, 60)
+        await self._scoped_api([{'kind': 'item', 'id': 1}])
+        self.assertNotEqual(ready.cache.states[1].sources[5][1], before.sources[5][1], 'item target must validate whole series')
+        result = await self._scoped_api([{'kind': 'series', 'id': 1}])
+        self.assertGreater(result['estimates'][0]['remaining'], before.series[1].remaining)
+
+    async def test_partial_api_never_seeds_broad_estimator(self):
+        await self.state()
+        estimator = await build_estimator(self.db, 1)
+        await ready.cache.api(self.db, 1, estimator, {'item:1:': ('item', 1, None)})
+        self.assertIsNone(getattr(estimator, '_ready_state', None), 'partial state seeded broad estimator')
+
+    async def test_cancellation_restores_full_validation(self):
+        await self.state()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        native = ready._dispatch_prepared_files
+
+        async def held(state, start, stop):
+            entered.set()
+            await release.wait()
+            return await native(state, start, stop)
+        estimator = await build_estimator(self.db, 1)
+        with patch.object(ready, '_dispatch_prepared_files', side_effect=held):
+            task = asyncio.create_task(ready.cache.api(self.db, 1, estimator, {'item:1:': ('item', 1, None)}))
+            await asyncio.wait_for(entered.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        release.set()
+        before = ready.cache.states[1].sources[2][1]
+        await self._edit_epub(2, 70)
+        home = await self.state()
+        self.assertNotEqual(home.sources[2][1], before, 'cancelled scope contaminated home')
+
+    async def test_concurrent_home_and_partial_api_use_fallback_without_stale_result(self):
+        await self.state()
+        await self._edit_epub(2, 90)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        native = ready._dispatch_prepared_files
+
+        async def held(state, start, stop):
+            entered.set()
+            await release.wait()
+            return await native(state, start, stop)
+        estimator = await build_estimator(self.db, 1)
+        with patch.object(ready, '_dispatch_prepared_files', side_effect=held):
+            task = asyncio.create_task(ready.cache.api(self.db, 1, estimator, {'item:1:': ('item', 1, None)}))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                try:
+                    concurrent = await asyncio.wait_for(self.state(), 2)
+                except TimeoutError:
+                    self.fail('busy cache must yield to original fallback')
+                self.assertIsNone(concurrent, 'busy cache must yield to original fallback')
+                response = await asyncio.wait_for(self._scoped_api([{'kind': 'item', 'id': 2}]), 3)
+                self.assertGreater(response['estimates'][0]['remaining'], 10, 'concurrent fallback served old content')
+            finally:
+                release.set()
+                await asyncio.wait_for(task, 3)
+        await self.equivalent()
+
+    async def test_partial_api_pace_race_retimes_all_series_and_novels(self):
+        from app.database import get_connection
+        before = await self.state()
+        native = ready._dispatch_prepared_files
+        committed = False
+
+        async def race(state, start, stop):
+            nonlocal committed
+            result = await native(state, start, stop)
+            if not committed:
+                committed = True
+                other = await get_connection()
+                try:
+                    await other.execute('UPDATE account_pace_totals SET seconds=seconds*2 WHERE user_id=1')
+                    await other.commit()
+                finally:
+                    await other.close()
+            return result
+        with patch.object(ready, '_dispatch_prepared_files', side_effect=race):
+            response = await self._scoped_api([{'kind': 'item', 'id': 1}])
+        self.assertAlmostEqual(response['estimates'][0]['remaining'], before.item_estimates[1].remaining * 2, msg='partial response missed concurrent pace')
+        self.assertAlmostEqual(ready.cache.states[1].item_estimates[2].remaining, before.item_estimates[2].remaining * 2, msg='unrequested series missed global pace')
+        self.assertAlmostEqual(ready.cache.states[1].novels[1].remaining, before.novels[1].remaining * 2, msg='novel missed global pace')
+        await self.equivalent()
+
+    async def test_deleted_requested_epub_returns_unavailable_and_repair_recovers(self):
+        before = await self.state()
+        path = Path(before.sources[1][0])
+        original = path.read_bytes()
+        path.unlink()
+        response = await self._scoped_api([{'kind': 'item', 'id': 1}])
+        value = response['estimates'][0]
+        self.assertIsNone(value['remaining'], 'deleted file served stale duration')
+        self.assertEqual(value['state'], 'content_unavailable')
+        path.write_bytes(original)
+        repaired = await self._scoped_api([{'kind': 'item', 'id': 1}])
+        self.assertAlmostEqual(repaired['estimates'][0]['remaining'], before.item_estimates[1].remaining, msg='repaired file stayed unavailable')
+
+    async def test_scoped_validation_cannot_seed_or_force_a_broad_state(self):
+        estimator = await build_estimator(self.db, 1, cached_only=True)
+        for options in ({'seed': True, 'allow_authoritative': True}, {'seed': False, 'allow_authoritative': False}, {'seed': False, 'allow_authoritative': True, 'force': True}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'unseeded API'):
+                await cache.get(self.db, 1, estimator, file_targets={}, **options)
