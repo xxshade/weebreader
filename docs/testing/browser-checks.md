@@ -232,3 +232,10 @@ and event-loop resumption metrics, with completed work counts in the worker's
 Server-Timing description. Home render spans cover cards, Reading and filters,
 with nested accounting retained on 200/304 responses. The probes use the existing
 APP_DETAILED_SERVER_TIMING option; default-off responses keep their prior behavior.
+
+The cover-cache suite also runs at desktop and 320px widths. It warms the old
+cover URL generation before loading the current page, checks the one-time new
+URL fetch, and requires warm images to survive preference-cookie changes
+without new image requests. Backend guards require Cookie-independent private
+responses while preserving authentication for normal and conditional reads.
+See [private cover caching](../performance/cover-cache-reloads.md).

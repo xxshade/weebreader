@@ -29,6 +29,7 @@ from test_resync_browser import BrowserChecks
 
 
 class CoverCache(unittest.TestCase):
+    viewport_width = 1280
     js = BrowserChecks.js
     wait_for = BrowserChecks.wait_for
 
@@ -62,6 +63,7 @@ class CoverCache(unittest.TestCase):
             options = FirefoxOptions()
             options.binary_location = ARGS.firefox_binary
             options.add_argument('-headless')
+            options.enable_bidi = True
             options.add_argument('-profile')
             options.add_argument(str(profile))
             options.set_preference('browser.cache.disk.enable', True)
@@ -71,6 +73,16 @@ class CoverCache(unittest.TestCase):
                 env={**os.environ, 'MOZ_DISABLE_CONTENT_SANDBOX': '1',
                      'XDG_CACHE_HOME': str(self.fixture / 'xdg-cache')}))
         self.driver = driver
+        driver.set_window_size(self.viewport_width, 900)
+        if self.viewport_width < 500:
+            if self.browser == 'chrome':
+                driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+                    'width': self.viewport_width, 'height': 740,
+                    'deviceScaleFactor': 1, 'mobile': False})
+            else:
+                driver.browsing_context.set_viewport(context=driver.current_window_handle,
+                    viewport={'width': self.viewport_width, 'height': 740})
+            self.assertEqual(self.js('return innerWidth'), self.viewport_width)
         self.addCleanup(self.quit_driver)
         return driver
 
@@ -102,10 +114,28 @@ class CoverCache(unittest.TestCase):
         driver.get(self.base + '/login')
         for name, value in session.cookies.items():
             driver.add_cookie({'name': name, 'value': value, 'expiry': int(time.time()) + 3600})
+        # Warm the old URL generation before the first updated home. A fresh
+        # immutable entry retains its old headers, so the new URL must fetch
+        # once instead of relying on a server-only header change.
+        old_urls = [self.base + '/covers/' + name + '?private=1'
+                    for name in sorted(p.name for p in (self.data / 'covers').glob('*.webp'))]
+        warmed = driver.execute_async_script("""
+            const urls=arguments[0],done=arguments[1];window.oldCoverCache=[];
+            Promise.all(urls.map(url=>new Promise((resolve,reject)=>{
+                const image=new Image();oldCoverCache.push(image);
+                image.onload=()=>resolve(true);image.onerror=()=>reject(new Error('old cover failed'));
+                image.src=url;
+            }))).then(values=>done(values.length),()=>done(-1));
+        """, old_urls)
+        self.assertEqual(warmed,len(old_urls),'Old cover cache control must load')
+        previous = len(self.image_requests())
         driver.get(self.base + '/')
         self.images_ready()
-        self.assertTrue(self.js("return [...document.querySelectorAll('img[src^=\"/covers/\"]')].every(i=>new URL(i.src).searchParams.get('private')==='1')"),
-                        'Private image URLs must bypass previously cached public images')
+        self.assertTrue(any('?private=2' in line and '" 200 ' in line
+                            for line in self.image_requests()[previous:]),
+                        'Updated cover URLs must fetch a fresh cache entry once')
+        self.assertTrue(self.js("return [...document.querySelectorAll('img[src^=\"/covers/\"]')].every(i=>new URL(i.src).searchParams.get('private')==='2')"),
+                        'Private image URLs must bypass old Cookie-varying cache entries')
         expected = self.base + f'/novels/1/cover?v={self.version}'
         self.assertEqual(self.js("return document.querySelector('#series-grid [data-novel-id=\"1\"] img').src"), expected)
         self.assertTrue(self.js("return !!document.querySelector('img.avatar[src*=\"avatar-1-fixture.webp\"]')"),
@@ -117,6 +147,17 @@ class CoverCache(unittest.TestCase):
             driver.get(self.base + path)
             self.images_ready()
             checked = self.assert_cached(checked)
+        for name in ('avatar-1-fixture.webp', 'series-1-fixture.webp'):
+            with session.get(self.base + '/covers/' + name + '?private=2') as response:
+                self.assertEqual(response.status_code,200)
+                self.assertNotIn('cookie',response.headers.get('Vary','').lower(),
+                                 'Private image reuse must not vary by session or preference cookies')
+        # Presentation cookies do not select different cover bytes. Altering
+        # one must not turn a warm cover/novel/avatar into a new request.
+        self.js("document.cookie='thumbnail-size=220;path=/;SameSite=Lax'")
+        driver.get(self.base + '/')
+        self.images_ready()
+        checked = self.assert_cached(checked)
         self.quit_driver()
         driver = self.launch()  # Same on-disk profile, including the session cookie.
         for path in ('/series/1', '/novels/1', '/'):
@@ -193,8 +234,10 @@ if __name__ == '__main__':
     ARGS = parser.parse_args()
     suite = unittest.TestSuite()
     for browser in selected_browsers(ARGS):
-        case = type(browser.title() + 'CoverCache', (CoverCache,), {'browser': browser})
-        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
+        for width in (1280, 320):
+            case = type(browser.title() + str(width) + 'CoverCache', (CoverCache,),
+                        {'browser': browser, 'viewport_width': width})
+            suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
     expected = suite.countTestCases()
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     unittest_failures(result)
