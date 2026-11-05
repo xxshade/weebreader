@@ -264,7 +264,9 @@ class PrivateImageFiles(StaticFiles):
         await get_streaming_user(session=request.cookies.get("session"))
         response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
-        response.headers.add_vary_header("Cookie")
+        # A successful URL always serves the same bytes. Varying on Cookie
+        # adds cache variants and can delay Firefox's initial image display.
+        # Authentication still runs for every request reaching this mount.
         return response
 
 

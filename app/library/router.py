@@ -131,7 +131,7 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
         reading_items.append({
             "kind": "item", "id": it["id"], "title": it["title"],
             "url": f"/reader/{it['id']}",
-            "cover_url": f"/covers/{it['cover_path']}?private=1" if it["cover_path"] else None,
+            "cover_url": f"/covers/{it['cover_path']}?private=2" if it["cover_path"] else None,
             # A blurred cover is the series' choice, and its volumes wear it
             # here as on the home grid: this strip is on the same page, in
             # front of whoever is looking at the screen.
@@ -788,7 +788,7 @@ def _series_card(row, *, status, last_read_at, reading, tracked_count, tracker_t
     return {
         "kind": "series", "id": row["id"], "name": row["name"],
         "detail_url": f"/series/{row['id']}",
-        "cover_url": f"/covers/{row['cover_path']}?private=1" if row["cover_path"] else None,
+        "cover_url": f"/covers/{row['cover_path']}?private=2" if row["cover_path"] else None,
         "status": status,
         "status_label": SERIES_STATUS_LABELS.get(status) if status else None,
         "publication_status": row["publication_status"],
