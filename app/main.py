@@ -327,8 +327,9 @@ async def revalidate_pages(request: Request, call_next):
     keeps it.
     """
     api = request.method == "POST" and request.url.path == "/library/reading-estimates"
-    enabled = settings.detailed_server_timing and (api or (request.method == "GET" and request.url.path == "/"))
-    with request_timing.collect(enabled, api=api):
+    stats = request.method == "GET" and request.url.path == "/stats"
+    enabled = settings.detailed_server_timing and (api or stats or (request.method == "GET" and request.url.path == "/"))
+    with request_timing.collect(enabled, api=api, stats=stats):
         return await _revalidate_page(request, call_next)
 
 

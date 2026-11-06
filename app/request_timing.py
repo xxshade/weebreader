@@ -6,6 +6,10 @@ from time import perf_counter
 from starlette.responses import JSONResponse
 
 _PHASES = ('db_acquire', 'auth', 'home_data', 'render', 'revalidate')
+_STATS_PHASES = ('stats_daily', 'stats_by_kind', 'stats_pace', 'stats_recent',
+                 'stats_series_status', 'stats_item_status', 'stats_novels',
+                 'stats_libraries', 'stats_totals', 'stats_finish')
+_stats_enabled: ContextVar[bool] = ContextVar('stats_timing_enabled', default=False)
 _HOME_PHASES = ('home_queries', 'home_estimator', 'home_series', 'home_novels',
                 'home_tracking', 'home_cards', 'home_reading')
 _SERIES_PHASES = ('series_query', 'series_prepare', 'series_aggregate')
@@ -25,7 +29,8 @@ _metrics: ContextVar[dict | None] = ContextVar('request_timing', default=None)
 
 
 @contextmanager
-def collect(enabled, *, api=False):
+def collect(enabled, *, api=False, stats=False):
+    stats_token = _stats_enabled.set(enabled and stats)
     token = _metrics.set({} if enabled else None)
     api_token = _api_enabled.set(enabled and api)
     validation_token = _api_validating.set(False)
@@ -35,6 +40,22 @@ def collect(enabled, *, api=False):
         _api_validating.reset(validation_token)
         _api_enabled.reset(api_token)
         _metrics.reset(token)
+        _stats_enabled.reset(stats_token)
+
+
+def stats_phase(name):
+    if not _stats_enabled.get() or _metrics.get() is None:
+        return nullcontext()
+    return _measure_stats_phase(name)
+
+
+@contextmanager
+def _measure_stats_phase(name):
+    started = start()
+    try:
+        yield
+    finally:
+        finish(name, started)
 
 
 def api_enabled():
@@ -139,7 +160,7 @@ def finish(name, started):
     metrics = _metrics.get()
     if metrics is not None and started is not None:
         if name not in (_PHASES + _HOME_PHASES + _SERIES_PHASES + _ITEM_PHASES
-                        + _API_PHASES + _API_CACHE_PHASES + _API_VALIDATION_PHASES + _RENDER_PHASES):
+                        + _STATS_PHASES + _API_PHASES + _API_CACHE_PHASES + _API_VALIDATION_PHASES + _RENDER_PHASES):
             raise ValueError('Unknown timing phase')
         metrics[name] = metrics.get(name, 0.0) + (perf_counter() - started) * 1000
 
@@ -148,6 +169,10 @@ def _phase_headers(total):
     metrics = _metrics.get()
     if metrics is None:
         return []
+    if _stats_enabled.get():
+        phases = ('db_acquire', 'auth', *_STATS_PHASES, 'render', 'revalidate')
+        return [f'{name};dur={metrics.get(name, 0.0):.3f}' for name in phases] + [
+            f'stats_other;dur={max(0.0, total - sum(metrics.get(name, 0.0) for name in phases)):.3f}']
     if api_enabled():
         def residual(parent, children):
             return max(0.0, parent - sum(metrics.get(name, 0.0) for name in children))
