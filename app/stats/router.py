@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+from app import request_timing
 from app.templating import templates
 from app.auth.dependencies import get_current_user
 from app.database import get_db, write_transaction
@@ -291,54 +292,67 @@ async def stats_page(request: Request, days: int | None = None,
                      from_: str | None = Query(default=None, alias="from"),
                      to: str | None = None,
                      user=Depends(get_current_user), db=Depends(get_db)):
-    daily_context = await _daily_context(db, user["id"], _resolve_window(days, from_, to))
-    per_kind = await queries.seconds_per_page_by_kind(db, user["id"])
-    pace = await queries.text_pace(db, user['id'])
+    with request_timing.stats_phase('stats_daily'):
+        daily_context = await _daily_context(db, user["id"], _resolve_window(days, from_, to))
+    with request_timing.stats_phase('stats_by_kind'):
+        per_kind = await queries.seconds_per_page_by_kind(db, user["id"])
+    with request_timing.stats_phase('stats_pace'):
+        pace = await queries.text_pace(db, user['id'])
     comic = next((k for k in per_kind if k['kind'] == 'cbz'), {'pages':0, 'seconds':0})
-    recent = await queries.recent_items(db, user["id"])
+    with request_timing.stats_phase('stats_recent'):
+        recent = await queries.recent_items(db, user["id"])
     # Rows are scaled against the slowest kind, so the bars compare with
     # each other rather than each filling its own row.
     kind_max = max([(k["seconds"] / k["pages"]) for k in per_kind if k["pages"]] or [0]) or 1
     per_page_groups = _grouped_per_page(per_kind)
-    series_status = _bucket(await queries.series_by_status(db, user["id"]), STATUS_LABELS)
-    item_status = _bucket(await queries.items_by_status(db, user["id"]), ITEM_STATUS_LABELS)
-    novels = await queries.novel_totals(db, user["id"])
-    libraries = await queries.library_totals(db)
+    with request_timing.stats_phase('stats_series_status'):
+        series_status = _bucket(await queries.series_by_status(db, user["id"]), STATUS_LABELS)
+    with request_timing.stats_phase('stats_item_status'):
+        item_status = _bucket(await queries.items_by_status(db, user["id"]), ITEM_STATUS_LABELS)
+    with request_timing.stats_phase('stats_novels'):
+        novels = await queries.novel_totals(db, user["id"])
+    with request_timing.stats_phase('stats_libraries'):
+        libraries = await queries.library_totals(db)
     media_blocks = _with_novels(queries.totals_by_media_type(libraries),
                                 series_status, item_status, novels)
-    return templates.TemplateResponse(
-        request, "stats.html",
-        {
-            "user": user,
-            "libraries": libraries,
-            "media_totals": media_blocks,
-            "series_status": series_status,
-            "item_status": item_status,
-            "novels": novels,
-            "totals": await queries.reading_totals(db, user["id"]),
-            "per_kind": per_kind,
-            "pace": pace,
-            "text_words": pace['words'],
-            "comic_visits": comic['pages'],
-            "comic_seconds_per_visit": comic['seconds'] / comic['pages'] if comic['pages'] else None,
-            "kind_max": kind_max,
-            "per_page_groups": per_page_groups,
-            "finish": await queries.time_to_finish(db, user["id"]),
-            **daily_context,
-            "recent": recent,
-            "recent_limit": queries.RECENT_LIMIT,
-            # Only the buckets something was actually read in: a control
-            # offering a filter that can only ever empty the list is
-            # worse than no control, and with one bucket there is
-            # nothing to choose between.
-            "recent_kinds": [k for k in queries.RECENT_KINDS
-                             if any(r["kind"] == k for r in recent)],
-            "recent_kind_labels": RECENT_KIND_LABELS,
-            "kind_labels": KIND_LABELS,
-            "viz_slot": STATUS_VIZ_SLOT,
-            "media_labels": MEDIA_TYPE_LABELS,
-        },
-    )
+    with request_timing.stats_phase('stats_totals'):
+        totals = await queries.reading_totals(db, user["id"])
+    with request_timing.stats_phase('stats_finish'):
+        finish = await queries.time_to_finish(db, user["id"])
+    with request_timing.stats_phase('render'):
+        return templates.TemplateResponse(
+            request, "stats.html",
+            {
+                "user": user,
+                "libraries": libraries,
+                "media_totals": media_blocks,
+                "series_status": series_status,
+                "item_status": item_status,
+                "novels": novels,
+                "totals": totals,
+                "per_kind": per_kind,
+                "pace": pace,
+                "text_words": pace['words'],
+                "comic_visits": comic['pages'],
+                "comic_seconds_per_visit": comic['seconds'] / comic['pages'] if comic['pages'] else None,
+                "kind_max": kind_max,
+                "per_page_groups": per_page_groups,
+                "finish": finish,
+                **daily_context,
+                "recent": recent,
+                "recent_limit": queries.RECENT_LIMIT,
+                # Only the buckets something was actually read in: a control
+                # offering a filter that can only ever empty the list is
+                # worse than no control, and with one bucket there is
+                # nothing to choose between.
+                "recent_kinds": [k for k in queries.RECENT_KINDS
+                                 if any(r["kind"] == k for r in recent)],
+                "recent_kind_labels": RECENT_KIND_LABELS,
+                "kind_labels": KIND_LABELS,
+                "viz_slot": STATUS_VIZ_SLOT,
+                "media_labels": MEDIA_TYPE_LABELS,
+            },
+        )
 
 
 @router.post("/reading-session")

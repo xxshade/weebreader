@@ -279,3 +279,38 @@ responses (record 200/304), then five successful POST responses to
 Waiting values only. Preserve the `file_worker` description so work counts can
 be compared, and avoid overlapping benchmark activity. See the API instructions
 above for scope, privacy and container recreation when finished.
+
+## Optional statistics diagnostics
+
+`APP_DETAILED_SERVER_TIMING=true` also enables phases on `GET /stats`, including
+period query parameters and 304 responses. It does not enable them on
+`/stats/daily-activity` or recording endpoints. The default remains `app` only.
+
+| Metric | Interval |
+| --- | --- |
+| `db_acquire`, `auth` | Borrowing the page connection and validating the session. |
+| `stats_daily` | Resolving the date window, querying daily activity and preparing its chart data. |
+| `stats_by_kind` | Reading-time/visit aggregation by media kind. |
+| `stats_pace` | Text reading pace query. |
+| `stats_recent` | Recent reading queries and their result preparation. |
+| `stats_series_status`, `stats_item_status` | Status queries and buckets. |
+| `stats_novels`, `stats_libraries` | Novel and library totals. |
+| `stats_totals` | Overall reading totals, distinct visits and active days. |
+| `stats_finish` | Existing time-to-finish calculation, retained unchanged. |
+| `render` | Template lookup/compilation, rendering, response construction and remaining context expressions inside that call. |
+| `revalidate` | Existing HTML validator processing. |
+| `stats_other` | Nonnegative residual: framework routing/dependencies and unmeasured context preparation or response work. |
+
+These phases are siblings: sum them once to account for `app`, within rounding
+precision. Query phases include awaiting the SQLite worker and Python result
+preparation; they are not pure SQL CPU durations. The diagnostic adds no result
+cache, changes no query, and preserves HTML, ETags and cache policy. A 304 still
+performs the page calculations and render before checking its validator.
+
+After updating, recreate with the option enabled. Capture the full Server-Timing
+header, status and Waiting time for the first `/stats` request after a normal
+restart, then three ordinary reloads. Do not restart solely to gather a cold
+sample if inconvenient. Record whether navigation was a fresh request or history
+restoration; a restored page may not contact the server. Disable the option and
+recreate when the investigation is complete. No history, IDs or paths appear in
+these metrics.
