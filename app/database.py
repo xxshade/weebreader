@@ -64,6 +64,8 @@ async def init_db() -> None:
         # 0.27 ms on a database that already has all of it.
         await db.executescript(_schema_path.read_text())
         await db.executescript(AFTER_MIGRATIONS)
+        await db.execute("""INSERT OR IGNORE INTO stats_account_generations
+                            SELECT id, lower(hex(randomblob(16))) FROM users""")
         await db.executescript(PACE_TRIGGER)
         await ensure_pace_totals(db)
         from app.stats.estimate_revisions import triggers
@@ -467,6 +469,8 @@ async def _pool_queue() -> asyncio.LifoQueue:
 async def close_pool() -> None:
     """Close the interactive pool, writer and exclusive estimate reader."""
     global _pool
+    from app.stats.page_cache import cache as statistics_cache
+    await statistics_cache.close()
     async with _estimate_slots:
         await _close_estimate_reader()
     await _close_writer()
@@ -644,3 +648,5 @@ async def write_transaction():
             await db.rollback()
     from app.stats.ready_estimates import cache
     cache.notify()
+    from app.stats.page_cache import cache as statistics_cache
+    statistics_cache.notify()

@@ -59,6 +59,7 @@ def run_commands(commands, log_dir):
 
 def backend_commands():
     commands = [('backend', [sys.executable, '-m', 'scripts.test_backend']),
+                ('statistics-cache-controls', [sys.executable, 'scripts/test_statistics_cache_mutations.py']),
                 ('python-lint', [sys.executable, '-m', 'pyflakes', 'app', 'scripts'])]
     for path in sorted(Path('app/static').rglob('*.js')):
         commands.append(('javascript-' + path.name, ['node', '--check', str(path)]))

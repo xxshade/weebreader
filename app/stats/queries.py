@@ -460,7 +460,8 @@ async def time_to_finish(db, user_id: int) -> dict:
 async def daily_activity(db, user_id: int, *, days: int = DAILY_WINDOW_DAYS,
                          today: date | None = None,
                          start: date | None = None,
-                         end: date | None = None) -> list[dict]:
+                         end: date | None = None,
+                         comic_only: bool = False) -> list[dict]:
     """One entry per day over the window, oldest first.
 
     The window is a date RANGE, given either as an explicit `start`/`end`
@@ -486,13 +487,16 @@ async def daily_activity(db, user_id: int, *, days: int = DAILY_WINDOW_DAYS,
     """
     end = end or today or date.today()
     start = start or (end - timedelta(days=days - 1))
+    visits = ("COUNT(DISTINCT CASE WHEN kind='cbz' THEN "
+              "COALESCE('visit:' || page_reads.visit_id, 'legacy:' || page_reads.id) END)"
+              if comic_only else VISITS)
     rows = await _rows(
         db,
         f"""
         SELECT date(started_at, 'localtime') AS day,
                kind,
                COALESCE({COUNTED}, 0) AS seconds,
-               {VISITS} AS pages
+               {visits} AS pages
           FROM page_reads
          WHERE user_id = ?
            AND started_at >= ? AND started_at < ?

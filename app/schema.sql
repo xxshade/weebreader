@@ -943,3 +943,16 @@ CREATE TABLE IF NOT EXISTS estimate_work_revisions (
     revision INTEGER NOT NULL,
     PRIMARY KEY(user_id,kind,identity)
 );
+
+-- Numeric account IDs may be reused after deletion. RAM interests belong to
+-- the creation of an account, never to its recycled ID or mutable profile.
+CREATE TABLE IF NOT EXISTS stats_account_generations (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    incarnation TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS stats_account_insert AFTER INSERT ON users BEGIN
+    INSERT OR REPLACE INTO stats_account_generations VALUES(NEW.id, lower(hex(randomblob(16))));
+END;
+CREATE TRIGGER IF NOT EXISTS stats_account_delete AFTER DELETE ON users BEGIN
+    DELETE FROM stats_account_generations WHERE user_id=OLD.id;
+END;

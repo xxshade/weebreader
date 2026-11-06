@@ -4,7 +4,8 @@ import unittest
 from unittest.mock import patch
 
 from app.config import settings
-from app.stats import queries
+from app.stats import page_data
+from app.stats.page_cache import cache
 from tests import test_detailed_timing as home_timing
 
 metrics = home_timing.metrics
@@ -20,28 +21,18 @@ class StatsPhases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normal.status_code, 200)
         self.assertEqual(set(metrics(normal)), {'app'})
         settings.detailed_server_timing = True
-        boundaries = {
-            'daily_activity': 'stats_daily',
-            'seconds_per_page_by_kind': 'stats_by_kind',
-            'text_pace': 'stats_pace',
-            'recent_items': 'stats_recent',
-            'series_by_status': 'stats_series_status',
-            'items_by_status': 'stats_item_status',
-            'novel_totals': 'stats_novels',
-            'library_totals': 'stats_libraries',
-            'reading_totals': 'stats_totals',
-            'time_to_finish': 'stats_finish',
-        }
-        from contextlib import ExitStack
-        with ExitStack() as stack:
-            for name in boundaries:
-                original = getattr(queries, name)
-                async def delayed(*args, _original=original, **kwargs):
-                    await asyncio.sleep(.002)
-                    return await _original(*args, **kwargs)
-                stack.enter_context(patch.object(queries, name, side_effect=delayed))
+        boundaries = page_data.PHASES
+        await cache.close()
+        original = page_data.load
+        async def delayed(*args, **kwargs):
+            await asyncio.sleep(.002)
+            return await original(*args, **kwargs)
+        with patch.object(page_data, 'load', side_effect=delayed) as load:
             detailed = await self.client.get('/stats')
+            self.assertEqual(load.call_count, len(boundaries))
+            load.reset_mock()
             cached = await self.client.get('/stats', headers={'If-None-Match': normal.headers['etag']})
+            self.assertEqual(load.call_count, 0)
         self.assertEqual(detailed.content, normal.content)
         self.assertEqual(detailed.headers['etag'], normal.headers['etag'])
         self.assertEqual(cached.status_code, 304)
@@ -50,9 +41,11 @@ class StatsPhases(unittest.IsolatedAsyncioTestCase):
         for response in (detailed, cached):
             values = metrics(response)
             self.assertEqual(set(values), {'app', 'db_acquire', 'auth', 'render',
-                'revalidate', 'stats_other', *boundaries.values()})
-            for phase in boundaries.values():
-                self.assertGreaterEqual(values[phase], 2, phase)
+                'revalidate', 'stats_other', 'stats_finish', *boundaries.values()})
+            if response is detailed:
+                for phase in boundaries.values():
+                    self.assertGreaterEqual(values[phase], 2, phase)
+            self.assertEqual(values['stats_finish'], 0)
             self.assertGreater(values['render'], 0)
             self.assertTrue(all(v >= 0 for v in values.values()))
             self.assertAlmostEqual(values['app'], sum(v for k, v in values.items() if k != 'app'), delta=.02)
