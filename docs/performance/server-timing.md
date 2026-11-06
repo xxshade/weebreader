@@ -289,23 +289,25 @@ period query parameters and 304 responses. It does not enable them on
 | Metric | Interval |
 | --- | --- |
 | `db_acquire`, `auth` | Borrowing the page connection and validating the session. |
-| `stats_daily` | Resolving the date window, querying daily activity and preparing its chart data. |
-| `stats_by_kind` | Reading-time/visit aggregation by media kind. |
+| `stats_daily` | Retrieving cached or freshly queried daily activity. |
+| `stats_by_kind` | Retrieving the displayed comic time/visit aggregate. |
 | `stats_pace` | Text reading pace query. |
 | `stats_recent` | Recent reading queries and their result preparation. |
-| `stats_series_status`, `stats_item_status` | Status queries and buckets. |
+| `stats_series_status`, `stats_item_status` | Retrieving status query results. |
 | `stats_novels`, `stats_libraries` | Novel and library totals. |
-| `stats_totals` | Overall reading totals, distinct visits and active days. |
-| `stats_finish` | Existing time-to-finish calculation, retained unchanged. |
+| `stats_totals` | Retrieving history existence and active days used by the page. |
+| `stats_finish` | Reserved compatibility metric, zero: this unused calculation is no longer requested. |
 | `render` | Template lookup/compilation, rendering, response construction and remaining context expressions inside that call. |
 | `revalidate` | Existing HTML validator processing. |
 | `stats_other` | Nonnegative residual: framework routing/dependencies and unmeasured context preparation or response work. |
 
 These phases are siblings: sum them once to account for `app`, within rounding
 precision. Query phases include awaiting the SQLite worker and Python result
-preparation; they are not pure SQL CPU durations. The diagnostic adds no result
-cache, changes no query, and preserves HTML, ETags and cache policy. A 304 still
-performs the page calculations and render before checking its validator.
+preparation; they are not pure SQL CPU durations. The diagnostic preserves HTML, ETags and HTTP cache policy. Query phases now
+include retrieval from the [prepared Statistics cache](statistics-cache.md). Cache
+validation, window resolution and derived presentation fields are included in
+`stats_other`; `render` still measures template work. A 304 renders the page from
+validated query data before checking its validator.
 
 After updating, recreate with the option enabled. Capture the full Server-Timing
 header, status and Waiting time for the first `/stats` request after a normal

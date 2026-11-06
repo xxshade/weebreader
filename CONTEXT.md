@@ -55,6 +55,9 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 
 | Term | Meaning |
 | --- | --- |
+| Prepared Statistics | SQL aggregate results retained for a validated account, database generation and local calendar; distinct from rendered HTML or browser history. |
+| Statistics preparation interest | A preset or consulted custom range to refresh in the background. Remembering a range does not guarantee its results fit in the bounded cache. |
+| Account incarnation | One creation of an account, distinct from its numeric ID, which can be reused after deletion. |
 | Daily activity window | The inclusive range of calendar days selected for daily reading activity. |
 | Window reading time | The sum of counted reading time across all media within the daily activity window. |
 | Daily activity measure | Either reading time or comic page visits for each day. Each measure has its own scale and shares the selected window. |

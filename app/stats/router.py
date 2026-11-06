@@ -1,7 +1,7 @@
 """The statistics page, and the endpoint the readers post page timings to."""
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -12,12 +12,17 @@ from app.auth.dependencies import get_current_user
 from app.database import get_db, write_transaction
 from app.http_utils import json_object
 from app.stats import queries
+from app.stats.page_cache import cache
+from app.stats.windows import resolve_window, _format_day
+
 from app.stats.recording import record_spans
 from app.stats.activity import claim_session, record_batch
 from app.status_labels import STATUS_LABELS
 from app.library import events
 
 logger = logging.getLogger("stats")
+
+_resolve_window = resolve_window  # Keep the original resolver import available.
 
 router = APIRouter(tags=["stats"])
 
@@ -90,62 +95,12 @@ RECENT_KIND_LABELS = {
 # lightness and chroma floors besides.
 DAILY_KIND_SLOTS = {"cbz": 1, "epub": 2, "novel": 3, "unknown": 4}
 
-# Month names spelled out rather than taken from strftime: %b is locale
-# dependent and the container's locale is not something this page should
-# be reading, while "%-d" (no zero padding) is glibc-only.
-MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
-              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-
-
-def _format_day(day: date) -> str:
-    return f"{MONTH_ABBR[day.month - 1]} {day.day}, {day.year}"
-
-
-def _resolve_window(days: int | None, start: str | None, end: str | None) -> dict:
-    """What window the daily charts should cover, from the query string.
-
-    Two shapes, and the explicit one wins: `from`/`to` are a custom range,
-    anything else is the last `days` days. Returns the resolved dates, the
-    preset that produced them (None for a custom range, which is what the
-    control highlights), and the label the heading shows.
-
-    A date that does not parse is a 400 rather than a silent fall back to
-    the default: the chart would then be answering a different question
-    than the URL asks, and there is no way to see that from the page.
-    Everything else is CLAMPED instead, because those are all questions
-    with a sensible nearest answer -- a range running into the future ends
-    today (there is no reading yet to draw), a backwards range is the same
-    range read the other way round, and one longer than MAX_WINDOW_DAYS is
-    cut at its start, keeping the recent end the reader asked from.
-    """
-    today = date.today()
-    if start or end:
-        try:
-            first = date.fromisoformat(start) if start else today
-            last = date.fromisoformat(end) if end else today
-        except ValueError:
-            raise HTTPException(400, "Expected ISO dates (YYYY-MM-DD)")
-        if first > last:
-            first, last = last, first
-        last = min(last, today)
-        first = min(first, last)
-        first = max(first, last - timedelta(days=queries.MAX_WINDOW_DAYS - 1))
-        return {"start": first, "end": last, "preset": None,
-                "label": f"{_format_day(first)} – {_format_day(last)}"}
-
-    window = days or queries.DAILY_WINDOW_DAYS
-    window = max(1, min(window, queries.MAX_WINDOW_DAYS))
-    return {"start": today - timedelta(days=window - 1), "end": today,
-            "preset": window if window in queries.DAILY_WINDOW_PRESETS else None,
-            "label": f"Last {window} days"}
-
-
-async def _daily_context(db, user_id: int, window: dict) -> dict:
+async def _daily_context(db, user_id: int, window: dict, daily=None) -> dict:
     """Everything the daily-activity section needs, for the page and for
     the partial the range control swaps in -- one function so the two can
     never drift into charting different things."""
-    daily = await queries.daily_activity(db, user_id,
-                                         start=window["start"], end=window["end"])
+    if daily is None:
+        daily = await queries.daily_activity(db, user_id, start=window["start"], end=window["end"], comic_only=True)
     for day in daily:
         day["label"] = _format_day(date.fromisoformat(day["day"]))
         day['comic_visits'] = sum(v['pages'] for k, v in day['kinds'].items() if k == 'cbz')
@@ -261,9 +216,9 @@ async def daily_activity_partial(request: Request, days: int | None = None,
     The buttons are still ordinary links to /stats, so the section works
     with no JavaScript and a window stays shareable as a URL.
     """
-    window = _resolve_window(days, from_, to)
+    window, data = await cache.get(user["id"], days, from_, to, partial=True)
     return templates.TemplateResponse(
-        request, "_daily_activity.html", await _daily_context(db, user["id"], window))
+        request, "_daily_activity.html", await _daily_context(db, user["id"], window, data["daily_activity"]))
 
 
 def _grouped_per_page(per_kind: list[dict]) -> list[dict]:
@@ -292,33 +247,20 @@ async def stats_page(request: Request, days: int | None = None,
                      from_: str | None = Query(default=None, alias="from"),
                      to: str | None = None,
                      user=Depends(get_current_user), db=Depends(get_db)):
-    with request_timing.stats_phase('stats_daily'):
-        daily_context = await _daily_context(db, user["id"], _resolve_window(days, from_, to))
-    with request_timing.stats_phase('stats_by_kind'):
-        per_kind = await queries.seconds_per_page_by_kind(db, user["id"])
-    with request_timing.stats_phase('stats_pace'):
-        pace = await queries.text_pace(db, user['id'])
-    comic = next((k for k in per_kind if k['kind'] == 'cbz'), {'pages':0, 'seconds':0})
-    with request_timing.stats_phase('stats_recent'):
-        recent = await queries.recent_items(db, user["id"])
-    # Rows are scaled against the slowest kind, so the bars compare with
-    # each other rather than each filling its own row.
-    kind_max = max([(k["seconds"] / k["pages"]) for k in per_kind if k["pages"]] or [0]) or 1
+    window, data = await cache.get(user['id'], days, from_, to)
+    daily_context = await _daily_context(db, user['id'], window, data['daily_activity'])
+    per_kind = data['seconds_per_page_by_kind']
+    pace = data['text_pace']
+    comic = next((k for k in per_kind if k['kind'] == 'cbz'), {'pages': 0, 'seconds': 0})
+    recent = data['recent_items']
+    kind_max = max([(k['seconds'] / k['pages']) for k in per_kind if k['pages']] or [0]) or 1
     per_page_groups = _grouped_per_page(per_kind)
-    with request_timing.stats_phase('stats_series_status'):
-        series_status = _bucket(await queries.series_by_status(db, user["id"]), STATUS_LABELS)
-    with request_timing.stats_phase('stats_item_status'):
-        item_status = _bucket(await queries.items_by_status(db, user["id"]), ITEM_STATUS_LABELS)
-    with request_timing.stats_phase('stats_novels'):
-        novels = await queries.novel_totals(db, user["id"])
-    with request_timing.stats_phase('stats_libraries'):
-        libraries = await queries.library_totals(db)
-    media_blocks = _with_novels(queries.totals_by_media_type(libraries),
-                                series_status, item_status, novels)
-    with request_timing.stats_phase('stats_totals'):
-        totals = await queries.reading_totals(db, user["id"])
-    with request_timing.stats_phase('stats_finish'):
-        finish = await queries.time_to_finish(db, user["id"])
+    series_status = _bucket(data['series_by_status'], STATUS_LABELS)
+    item_status = _bucket(data['items_by_status'], ITEM_STATUS_LABELS)
+    novels = data['novel_totals']
+    libraries = data['library_totals']
+    media_blocks = _with_novels(queries.totals_by_media_type(libraries), series_status, item_status, novels)
+    totals = data['reading_totals']
     with request_timing.stats_phase('render'):
         return templates.TemplateResponse(
             request, "stats.html",
@@ -337,7 +279,6 @@ async def stats_page(request: Request, days: int | None = None,
                 "comic_seconds_per_visit": comic['seconds'] / comic['pages'] if comic['pages'] else None,
                 "kind_max": kind_max,
                 "per_page_groups": per_page_groups,
-                "finish": finish,
                 **daily_context,
                 "recent": recent,
                 "recent_limit": queries.RECENT_LIMIT,
