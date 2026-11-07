@@ -75,7 +75,8 @@ class ATabOpenedBeforeTheUpdateStillReads(unittest.TestCase):
     def test_the_engine_reloads_when_its_dependency_was_never_loaded(self):
         engine = ENGINE.read_text()
         guard = ("if ((!window.readerBlocks && !document.querySelector('script[src*=\"/reader-blocks.js\"]')) ||\n"
-                 "            (!window.readerPagination && !document.querySelector('script[src*=\"/reader-pagination.js\"]'))) {\n"
+                 "            (!window.readerPagination && !document.querySelector('script[src*=\"/reader-pagination.js\"]')) ||\n"
+                 "            (!window.readerSourceAnchor && !document.querySelector('script[src*=\"/reader-source-anchor.js\"]'))) {\n"
                  "        window.location.reload();\n"
                  "        return;\n"
                  "    }")
