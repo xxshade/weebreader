@@ -165,7 +165,7 @@ def _rules(rules):
     return tuple((rule['find'], rule.get('replace') or '') for rule in rules if rule.get('find'))
 
 
-def _section(source, rules, build=None):
+def _section(source, rules, build=None, *, force_html5=False):
     build = _block if build is None else build
     if not source.strip():
         return ()
@@ -178,7 +178,11 @@ def _section(source, rules, build=None):
                 value = value.replace(find, replacement)
             return '>' + value + '<'
         source = re.sub(r'<(script|style)\b[\s\S]*?</\1\s*>|>([^<]+)<', replace, source, flags=re.I)
-    doc = html.document_fromstring(source.encode('utf-8'), parser=html.HTMLParser(encoding='utf-8'))
+    if force_html5 or re.search(r'<(?:table|select|template|svg|math)\b',source,re.I):
+        from app.reader.html_source import parse_html5
+        doc = parse_html5(source)
+    else:
+        doc = html.document_fromstring(source.encode('utf-8'), parser=html.HTMLParser(encoding='utf-8'))
     body = doc.find('body')
     if body is None:
         body = doc
@@ -198,7 +202,7 @@ _cache_lock = threading.Lock()
 _cache_units = 0
 _CACHE_ENTRIES = 32
 _CACHE_UNITS = 500_000
-_CACHE_VERSION = 3
+_CACHE_VERSION = 4
 _MAX_DISK_BYTES = 32 * 1024 * 1024
 _MAX_CACHE_DISK_BYTES = 256 * 1024 * 1024
 _TOTAL_ENTRIES = 4096

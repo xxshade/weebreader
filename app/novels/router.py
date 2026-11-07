@@ -264,7 +264,7 @@ async def novel_manifest(novel_id: int, user=Depends(get_current_user), db=Depen
         await db.execute(
             """
             SELECT id, number, url, title, COALESCE(content_size, 0) AS size
-            FROM chapters WHERE novel_id = ? ORDER BY order_index
+            FROM chapters WHERE novel_id = ? ORDER BY order_index, id
             """,
             (novel_id,),
         )
@@ -367,7 +367,7 @@ async def _load_chapter_context(novel_id: int, volume_number: int, chapter_numbe
 
     progress = await (
         await db.execute(
-            "SELECT chapter_id, paragraph_index, character_offset, scroll_percent FROM novel_reading_progress "
+            "SELECT chapter_id, paragraph_index, character_offset, scroll_percent, source_anchor FROM novel_reading_progress "
             "WHERE user_id = ? AND novel_id = ?",
             (user["id"], novel_id),
         )
@@ -382,6 +382,7 @@ async def _load_chapter_context(novel_id: int, volume_number: int, chapter_numbe
 
     return {
         "novel": novel, "chapter": chapter, "saved_paragraph": saved_paragraph,
+        "source_anchor": progress["source_anchor"] if saved_paragraph >= 0 else None,
         "saved_offset": progress["character_offset"] if saved_paragraph >= 0 else 0,
         # What the SERVER thought when this page was rendered, for
         # reader-resume.js to measure a later answer against. See
@@ -410,7 +411,7 @@ async def read_chapter(
 # ---------- Progress / read-status APIs ----------
 
 @router.get("/novels/{novel_id}/progress")
-async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=Depends(get_db)):
+async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=Depends(get_db), chapter_id: int | None = None):
     """The novel half of the item reader's own GET -- see read_progress in
     app/reader/router.py for what asks and why.
 
@@ -431,7 +432,10 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
             """
             SELECT novel_reading_progress.scroll_percent AS percent,
                    novel_reading_progress.paragraph_index, novel_reading_progress.character_offset,
-                   chapters.order_index,
+                   novel_reading_progress.source_anchor, chapters.id AS source_id, chapters.content_size, chapters.content_fetched_at,
+                   (SELECT COUNT(*) FROM chapters earlier WHERE earlier.novel_id=chapters.novel_id
+                     AND (earlier.order_index<chapters.order_index OR
+                       (earlier.order_index=chapters.order_index AND earlier.id<chapters.id))) AS order_index,
                    volumes.number AS volume_number, chapters.number AS chapter_number
             FROM novel_reading_progress
             LEFT JOIN chapters ON chapters.id = novel_reading_progress.chapter_id
@@ -441,6 +445,16 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
             (user["id"], novel_id),
         )
     ).fetchone()
+    if (row is None or row["volume_number"] is None or row["chapter_number"] is None) and chapter_id is not None:
+        # A first opening has no progress row. Its current chapter still supplies
+        # the context needed to refresh stale rules/source on history restore.
+        row = await (await db.execute('''SELECT 0 AS percent,NULL AS paragraph_index,
+            0 AS character_offset,NULL AS source_anchor,c.id AS source_id,c.content_size,c.content_fetched_at,
+            (SELECT COUNT(*) FROM chapters earlier WHERE earlier.novel_id=c.novel_id
+             AND (earlier.order_index<c.order_index OR (earlier.order_index=c.order_index AND earlier.id<c.id))) AS order_index,
+            v.number AS volume_number,c.number AS chapter_number
+            FROM chapters c JOIN volumes v ON v.id=c.volume_id WHERE c.id=? AND c.novel_id=?''',
+            (chapter_id,novel_id))).fetchone()
     # Nothing to go to: no saved position, a chapter with no NUMBER (the
     # column is nullable -- a scrape can produce one), or a chapter gone
     # out from under the row. A URL built from any of those is
@@ -451,6 +465,10 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
         return JSONResponse({"progress_percent": 0, "resume_url": None})
     return JSONResponse({
         "progress_percent": row["percent"] or 0,
+        "source_anchor": row["source_anchor"],
+        "current_replacements": await text_replacements.rules_for(db,user["id"],novel_id=novel_id),
+        "source_identity": row["source_id"],
+        "source_version": f'W/"{row["source_id"]}-{row["content_fetched_at"] or ""}-{row["content_size"] or 0}"',
         "position": ([row["order_index"], row["paragraph_index"], row["character_offset"]]
                      if row["paragraph_index"] is not None else None),
         "resume_url": f"/novels/{novel_id}/read/"
@@ -483,6 +501,8 @@ async def save_novel_progress(novel_id: int, request: Request, user=Depends(get_
     chapter_percent = percent(body.get("chapter_percent", 0.0), "chapter_percent")
     paragraph_index = optional_index(body.get("paragraph_index"), "paragraph_index")
     character_offset = optional_index(body.get("character_offset", 0), "character_offset") or 0
+    from app.reader.source_anchors import validate_anchor
+    source_anchor = validate_anchor(body.get("source_anchor"), chapter_id=chapter_id)
 
     # A chapter of THIS novel -- the foreign key only says the chapter
     # exists, not that it belongs here, and the progress row is keyed by
@@ -497,17 +517,18 @@ async def save_novel_progress(novel_id: int, request: Request, user=Depends(get_
         await db.execute(
             """
             INSERT INTO novel_reading_progress
-                (user_id, novel_id, chapter_id, scroll_percent, chapter_percent, paragraph_index, character_offset, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                (user_id, novel_id, chapter_id, scroll_percent, chapter_percent, paragraph_index, character_offset, source_anchor, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(user_id, novel_id) DO UPDATE SET
                 chapter_id = excluded.chapter_id,
                 scroll_percent = excluded.scroll_percent,
                 chapter_percent = excluded.chapter_percent,
                 paragraph_index = excluded.paragraph_index,
                 character_offset = excluded.character_offset,
+                source_anchor = excluded.source_anchor,
                 updated_at = datetime('now')
             """,
-            (user["id"], novel_id, chapter_id, scroll_percent, chapter_percent, paragraph_index, character_offset),
+            (user["id"], novel_id, chapter_id, scroll_percent, chapter_percent, paragraph_index, character_offset, source_anchor),
         )
         await db.commit()
 

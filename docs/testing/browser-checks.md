@@ -239,3 +239,18 @@ URL fetch, and requires warm images to survive preference-cookie changes
 without new image requests. Backend guards require Cookie-independent private
 responses while preserving authentication for normal and conditional reads.
 See [private cover caching](../performance/cover-cache-reloads.md).
+
+## Replacement-safe text positions
+
+`test_reader_replacements_browser.py` runs the EPUB and novel readers through
+actual Settings edits and resumed reading at desktop and 320px widths. It checks
+structural substitutions, HTML5 passage validation, restored history without a
+newer saved position, bounded prepared-chapter caches and reader lifecycle cleanup.
+Its disposable ASGI fixture exposes cache observation only; source mapping,
+resource loading, progress persistence and activity validation use production code.
+Deliberate defects remove queued-activity draining, position conversion, cache eviction,
+watcher cleanup and fullscreen cleanup; every selected browser must detect the intended failure.
+Run these controls sequentially in a separate checkout, like the other mutation
+suites. The standalone investigation also exercised native bfcache and continuous
+scroll; local browser evidence is documented in
+[replacement-safe reading](../reader/replacement-safe-reading.md).

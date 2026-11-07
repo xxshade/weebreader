@@ -18,6 +18,8 @@
 {% block content %}
     <div id="reader-root"
          data-source="novel"
+         data-start-chapter-id="{{ chapter.id }}"
+         data-source-anchor="{{ source_anchor or '' }}"
          data-reader-user-id="{{ user.id if user is defined else '' }}"
          data-series-url="/novels/{{ novel.id }}"
          data-item-id="{{ novel.id }}"

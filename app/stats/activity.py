@@ -92,7 +92,7 @@ def normalize(text):
     return ' '.join(text.split())
 
 
-def readable_text(source, rules):
+def readable_text(source, rules, *, html5=False):
     # Match the reader's display-only replacements before parsing HTML.
     def replace(match):
         text = match.group(2)
@@ -102,6 +102,9 @@ def readable_text(source, rules):
             text = text.replace(rule['find'], rule['replace'] or '')
         return '>' + text + '<'
     source = re.sub(r'<(script|style)\b[\s\S]*?</\1\s*>|>([^<]+)<', replace, source, flags=re.I)
+    if html5 or re.search(r'<(?:table|select|template|svg|math)\b',source,re.I):
+        from app.reader.html_source import repaired_readable
+        return repaired_readable(source,SKIP)
     doc = html.document_fromstring(source.encode('utf-8'), parser=html.HTMLParser(encoding='utf-8'))
     for node in doc.xpath('//' + '|//'.join(SKIP.split(','))):
         node.drop_tree()
@@ -183,7 +186,15 @@ async def content(db, user_id, value):
             raise ValueError('Reading content has changed.')
         rules = await text_replacements.rules_for(db, user_id, novel_id=novel_id)
     readable = await asyncio.to_thread(readable_text, source, rules)
-    positions = await asyncio.to_thread(passage_positions, value.get('passage'), readable)
+    try:
+        positions = await asyncio.to_thread(passage_positions, value.get('passage'), readable)
+    except ValueError as exc:
+        if str(exc) != 'Passage does not match the reading content.':
+            raise
+        # DOMParser uses HTML5 repair (notably table foster parenting). Recheck
+        # against that exact source order; never relax passage/offset validation.
+        readable = await asyncio.to_thread(readable_text, source, rules, html5=True)
+        positions = await asyncio.to_thread(passage_positions, value.get('passage'), readable)
     return kind, item_id, novel_id, chapter_id, positions
 
 

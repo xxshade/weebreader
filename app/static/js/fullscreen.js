@@ -160,6 +160,10 @@ window.readerFullscreen = (() => {
         currentButton.textContent = isOn() ? "Exit full" : "Fullscreen";
     }
 
+    function releaseButton(button) {
+        if (currentButton === button) currentButton = null;
+    }
+
     /**
      * Wires the reader's toggle button. Hidden outright where the API
      * isn't available (iOS Safari on iPhone, notably) and where the installed
@@ -228,5 +232,5 @@ window.readerFullscreen = (() => {
         }
     }
 
-    return { setupButton, armFromGesture, armGlobal, wanted, remember, supported, inAppFullscreen };
+    return { setupButton, releaseButton, armFromGesture, armGlobal, wanted, remember, supported, inAppFullscreen };
 })();

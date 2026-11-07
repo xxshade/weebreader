@@ -58,7 +58,8 @@ SHARED = ("src/vendor/Sortable.min.js", "js/reorder.js")
 READERS = {"reader/comic.html": "reader-comic.js",
            "reader/epub.html": "reader-text.js",
            "novels/reader.html": "reader-text.js"}
-READER_SHARED = ("js/reader-resume.js", "js/reading-time.js", "js/reader-blocks.js")
+READER_SHARED = ("js/reader-resume.js", "js/reading-time.js", "js/reader-blocks.js",
+                 "js/reader-source-anchor.js")
 
 
 def _markup_of(path: Path) -> str:

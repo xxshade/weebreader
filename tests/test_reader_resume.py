@@ -212,7 +212,7 @@ class TheOtherWayBackIn(unittest.TestCase):
         self.assertNotIn("cache:after:restore", self.js)
 
     def test_the_restore_is_consumed_by_watch(self):
-        watcher = self.js.split("watch(url, percent, position = null) {", 1)[1].split("},", 1)[0]
+        watcher = self.js.split("watch(url, percent, position = null, sourceAnchor = null) {", 1)[1].split("},", 1)[0]
         self.assertIn("if (restoring) {", watcher)
         self.assertIn("restoring = false;", watcher)
         self.assertIn("catchUp();", watcher)
@@ -222,7 +222,7 @@ class TheOtherWayBackIn(unittest.TestCase):
         # re-initialises from the snapshot's `data-start-percent`, so that
         # is what is on screen -- and the question this asks is whether
         # the server is ahead of what is on screen.
-        watcher = self.js.split("watch(url, percent, position = null) {", 1)[1].split("},", 1)[0]
+        watcher = self.js.split("watch(url, percent, position = null, sourceAnchor = null) {", 1)[1].split("},", 1)[0]
         self.assertIn("watched = { url, sent: Number(percent) || 0, position,", watcher)
         self.assertLess(watcher.index("watched = {"), watcher.index("catchUp();"))
 
