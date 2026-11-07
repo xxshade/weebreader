@@ -180,7 +180,7 @@ class ReadingEstimator:
                 placeholders = ','.join('?' for _ in batch)
                 fetched = await (await self.db.execute(
                     f"""SELECT items.*, reading_progress.status, reading_progress.current_page,
-                          reading_progress.current_location, reading_progress.progress_percent
+                          reading_progress.current_location, reading_progress.progress_percent, reading_progress.source_anchor
                      FROM items LEFT JOIN reading_progress ON reading_progress.item_id=items.id
                       AND reading_progress.user_id=? WHERE items.id IN ({placeholders})""",
                     (self.user_id, *batch))).fetchall()
@@ -240,7 +240,7 @@ class ReadingEstimator:
                         if isinstance(stat, (OSError, ValueError)):
                             raise stat
                         fingerprint = snapshots.signature((row['file_path'], row['file_hash'], stat.st_size,
-                            stat.st_mtime_ns, section, block, offset, rules, 1))
+                            stat.st_mtime_ns, section, block, offset, rules, row['source_anchor'], 2))
                         saved = await self._cached_estimate(scope, fingerprint, rate)
                         if saved is not None:
                             self.item_estimates[identity] = saved
@@ -248,7 +248,12 @@ class ReadingEstimator:
                             continue
                         if self.cached_only:
                             continue  # HTML renders never wait for a cold inventory.
-                        if section == block == offset == 0:
+                        if row['source_anchor']:
+                            from app.reader.source_anchors import remaining_epub
+                            inventory = await asyncio.to_thread(inventory_epub, row['file_path'], row['file_hash'], rules)
+                            total = inventory.total_words
+                            remaining = await asyncio.to_thread(remaining_epub, row['file_path'], row['file_hash'], rules, row['source_anchor'])
+                        elif section == block == offset == 0:
                             total = remaining = await asyncio.to_thread(inventory_epub_total, row['file_path'], row['file_hash'], rules)
                         else:
                             inventory = await asyncio.to_thread(inventory_epub, row['file_path'], row['file_hash'], rules)
@@ -276,7 +281,7 @@ class ReadingEstimator:
         self.novel_states[key] = 'complete'
         rate = self.text_rate('novel', novel_id)
         position = await (await self.db.execute(
-            'SELECT chapter_id,paragraph_index,character_offset,chapter_percent FROM novel_reading_progress WHERE user_id=? AND novel_id=?',
+            'SELECT chapter_id,paragraph_index,character_offset,chapter_percent,source_anchor FROM novel_reading_progress WHERE user_id=? AND novel_id=?',
             (self.user_id, novel_id))).fetchone()
         scope = ' AND chapters.volume_id=?' if volume_id is not None else ''
         params = (self.user_id, novel_id, volume_id) if volume_id is not None else (self.user_id, novel_id)
@@ -301,7 +306,7 @@ class ReadingEstimator:
                 tuple(position) if position is not None else None,
                 position is not None and any(row[0] == position['chapter_id'] for row in identities))
         fingerprint = snapshots.signature((revision[0] if revision else 0,
-            [row[0] for row in identities], tuple(position) if position else None, rules, 1))
+            [row[0] for row in identities], tuple(position) if position else None, rules, 2))
         self._novel_fingerprints[key] = fingerprint
         saved = await self._cached_estimate(scope_key, fingerprint, rate)
         if saved is not None:
@@ -328,7 +333,11 @@ class ReadingEstimator:
                                 self.novel_states[key] = 'position_unavailable'
                                 return
                             inventory = await asyncio.to_thread(inventory_html, chapter['content_html'], rules)
-                            words = inventory.remaining(0, position['paragraph_index'] or 0, position['character_offset'] or 0)
+                            if position['source_anchor']:
+                                from app.reader.source_anchors import remaining_html
+                                words = await asyncio.to_thread(remaining_html, chapter['content_html'], rules, position['source_anchor'])
+                            else:
+                                words = inventory.remaining(0, position['paragraph_index'] or 0, position['character_offset'] or 0)
                             if words is None:
                                 self.novel_states[key] = 'position_unavailable'
                                 return
@@ -371,9 +380,16 @@ class ReadingEstimator:
             return None
         try:
             inventory = await asyncio.to_thread(inventory_html, chapter[0], rules)
-            before = inventory.remaining(0, (old[2][1] or 0) if old[3] else 0,
-                                         (old[2][2] or 0) if old[3] else 0)
-            after = inventory.remaining(0, position['paragraph_index'] or 0, position['character_offset'] or 0)
+            from app.reader.source_anchors import remaining_html
+            if old[3] and len(old[2]) > 4 and old[2][4]:
+                before = await asyncio.to_thread(remaining_html, chapter[0], rules, old[2][4])
+            else:
+                before = inventory.remaining(0, (old[2][1] or 0) if old[3] else 0,
+                                             (old[2][2] or 0) if old[3] else 0)
+            if position['source_anchor']:
+                after = await asyncio.to_thread(remaining_html, chapter[0], rules, position['source_anchor'])
+            else:
+                after = inventory.remaining(0, position['paragraph_index'] or 0, position['character_offset'] or 0)
         except (OSError, ValueError):
             return None
         if before is None or after is None:

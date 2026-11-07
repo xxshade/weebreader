@@ -562,22 +562,28 @@ async def add_text_replacement(request: Request, user=Depends(get_current_user),
         # attributes, so the list comes back unchanged rather than
         # explaining itself.
         return await _replacement_rules_response(request, db, user["id"])
-    async with write_transaction() as wdb:
-        cursor = await wdb.execute(
-            "SELECT COUNT(*) AS n FROM text_replacements WHERE user_id = ? "
-            "AND series_id IS ? AND novel_id IS ?",
-            (user["id"], series_id, novel_id),
-        )
-        # A cap rather than no cap: every rule is a pass over the text of
-        # every chapter as it renders, and this is a personal setting, not
-        # a rules engine.
-        if (await cursor.fetchone())["n"] < text_replacements.MAX_RULES_PER_TARGET:
-            await wdb.execute(
-                "INSERT INTO text_replacements (user_id, series_id, novel_id, find_text, replace_text) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (user["id"], series_id, novel_id, find_text, str(form.get("replace_text") or "")),
+    from app.reader.source_anchors import prepare_legacy_target, apply_legacy_target
+    while True:
+        prepared = await prepare_legacy_target(db,user["id"],series_id=series_id,novel_id=novel_id)
+        async with write_transaction() as wdb:
+            if not await apply_legacy_target(wdb,prepared):
+                continue
+            cursor = await wdb.execute(
+                "SELECT COUNT(*) AS n FROM text_replacements WHERE user_id = ? "
+                "AND series_id IS ? AND novel_id IS ?",
+                (user["id"], series_id, novel_id),
             )
-        await wdb.commit()
+            # A cap rather than no cap: every rule is a pass over the text of
+            # every chapter as it renders, and this is a personal setting, not
+            # a rules engine.
+            if (await cursor.fetchone())["n"] < text_replacements.MAX_RULES_PER_TARGET:
+                await wdb.execute(
+                    "INSERT INTO text_replacements (user_id, series_id, novel_id, find_text, replace_text) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (user["id"], series_id, novel_id, find_text, str(form.get("replace_text") or "")),
+                )
+            await wdb.commit()
+            break
     return await _replacement_rules_response(request, db, user["id"])
 
 
@@ -591,14 +597,19 @@ async def update_text_replacement(
     form = await request.form()
     find_text = str(form.get("find_text") or "")
     if find_text:
-        async with write_transaction() as wdb:
-            # user_id in the WHERE, not just the id: the id comes from a form.
-            await wdb.execute(
-                "UPDATE text_replacements SET find_text = ?, replace_text = ? "
-                "WHERE id = ? AND user_id = ?",
-                (find_text, str(form.get("replace_text") or ""), rule_id, user["id"]),
-            )
-            await wdb.commit()
+        while True:
+            prepared = await _prepare_rule_position(db,user["id"],rule_id)
+            async with write_transaction() as wdb:
+                if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
+                    continue
+                # user_id in the WHERE, not just the id: the id comes from a form.
+                await wdb.execute(
+                    "UPDATE text_replacements SET find_text = ?, replace_text = ? "
+                    "WHERE id = ? AND user_id = ?",
+                    (find_text, str(form.get("replace_text") or ""), rule_id, user["id"]),
+                )
+                await wdb.commit()
+                break
     return await _replacement_rules_response(request, db, user["id"])
 
 
@@ -606,11 +617,16 @@ async def update_text_replacement(
 async def delete_text_replacement(
     rule_id: int, request: Request, user=Depends(get_current_user), db=Depends(get_db),
 ):
-    async with write_transaction() as wdb:
-        await wdb.execute(
-            "DELETE FROM text_replacements WHERE id = ? AND user_id = ?", (rule_id, user["id"])
-        )
-        await wdb.commit()
+    while True:
+        prepared = await _prepare_rule_position(db,user["id"],rule_id)
+        async with write_transaction() as wdb:
+            if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
+                continue
+            await wdb.execute(
+                "DELETE FROM text_replacements WHERE id = ? AND user_id = ?", (rule_id, user["id"])
+            )
+            await wdb.commit()
+            break
     return await _replacement_rules_response(request, db, user["id"])
 
 
@@ -1967,3 +1983,21 @@ async def set_series_status(series_id: int, request: Request, user=Depends(get_c
         # above: its colour is half of what it says.
         return tracking_badge(f"/series/{series_id}/status", status, SERIES_STATUS_LABELS)
     return redirect_back(request, f"/series/{series_id}")
+
+
+async def _prepare_rule_position(db,user_id,rule_id):
+    from app.reader.source_anchors import prepare_legacy_target
+    rule = await (await db.execute('SELECT series_id,novel_id FROM text_replacements WHERE id=? AND user_id=?',
+                                  (rule_id,user_id))).fetchone()
+    return await prepare_legacy_target(db,user_id,series_id=rule['series_id'],novel_id=rule['novel_id']) if rule else None
+
+
+async def _apply_rule_position(db,user_id,rule_id,prepared):
+    from app.reader.source_anchors import apply_legacy_target
+    rule = await (await db.execute('SELECT series_id,novel_id FROM text_replacements WHERE id=? AND user_id=?',
+                                  (rule_id,user_id))).fetchone()
+    if prepared is None:
+        return rule is None
+    if rule is None or (rule['series_id'],rule['novel_id']) != (prepared['series_id'],prepared['novel_id']):
+        return False
+    return await apply_legacy_target(db,prepared)

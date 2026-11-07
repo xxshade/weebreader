@@ -328,16 +328,20 @@ async def read_progress(item_id: int, user=Depends(get_current_user), db=Depends
     is this page again, and for a novel it is whichever chapter the saved
     position is in (see the novel router's own).
     """
-    await _get_item(db, item_id)
+    item = await _get_item(db, item_id)
     row = await (
         await db.execute(
-            "SELECT progress_percent, current_page, current_location FROM reading_progress WHERE user_id = ? AND item_id = ?",
+            "SELECT progress_percent, current_page, current_location, source_anchor FROM reading_progress WHERE user_id = ? AND item_id = ?",
             (user["id"], item_id),
         )
     ).fetchone()
     return JSONResponse({
         "progress_percent": (row["progress_percent"] if row else 0) or 0,
         "resume_url": f"/reader/{item_id}",
+        "source_anchor": row["source_anchor"] if row else None,
+        "current_replacements": await text_replacements.rules_for(db,user["id"],series_id=item["series_id"]),
+        "source_version": item["file_hash"],
+        "source_identity": item_id,
         "position": text_position(row["current_page"], row["current_location"]) if row else None,
     })
 
@@ -365,6 +369,8 @@ async def save_progress(
     current_location = body.get("current_location")
     if current_location is not None and not isinstance(current_location, str):
         raise HTTPException(400, "current_location must be a string")
+    from app.reader.source_anchors import validate_anchor
+    source_anchor = validate_anchor(body.get("source_anchor"), section=current_page)
     progress_percent = percent(body.get("progress_percent", 0), "progress_percent")
     status = one_of(body.get("status", "reading"), PROGRESS_STATUSES, "status")
 
@@ -399,15 +405,16 @@ async def save_progress(
             """
             INSERT INTO reading_progress
                 (user_id, item_id, status, current_page, current_location, progress_percent,
-                 last_read_at, completed_at, completed_from_percent)
+                 last_read_at, completed_at, completed_from_percent, source_anchor)
             VALUES (?, ?, ?, ?, ?, ?, datetime('now'),
                     -- A first save can already be the finish (a book opened
                     -- at its last page); it had no finish date at all.
-                    CASE WHEN ?3 = 'completed' THEN datetime('now') END, ?)
+                    CASE WHEN ?3 = 'completed' THEN datetime('now') END, ?, ?)
             ON CONFLICT(user_id, item_id) DO UPDATE SET
                 status = excluded.status,
                 current_page = excluded.current_page,
                 current_location = excluded.current_location,
+                source_anchor = excluded.source_anchor,
                 progress_percent = excluded.progress_percent,
                 last_read_at = datetime('now'),
                 completed_at = CASE
@@ -429,7 +436,7 @@ async def save_progress(
              # Only meaningful when this first save is already a
              # completion; every other row gets it on the transition in the
              # ON CONFLICT clause above.
-             progress_percent if status == "completed" else None),
+             progress_percent if status == "completed" else None, source_anchor),
         )
         await wdb.commit()
 

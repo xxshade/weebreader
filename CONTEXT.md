@@ -22,8 +22,11 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Paragraph | A unit of prose within a reading section. Its identity does not change when the reader changes the font or screen size. |
 | Reading page | The portion of content presented at one step in paginated reading. It can contain whole paragraphs and paragraph fragments. Its boundaries depend on the available reading area and reading preferences. |
 | Paragraph fragment | A contiguous portion of a paragraph presented on one reading page when that paragraph continues across pages. The fragments remain parts of the same paragraph. |
-| Saved reading position | The place in a book from which reading resumes. It is distinct from a page number and from a declaration that the book has been finished. |
+| Saved reading position | The place in a book from which reading resumes, independently of how the surrounding text is displayed. It is distinct from a page number and from a declaration that the book has been finished. |
+| Rewritten resume passage | A saved reading passage whose text was changed or removed by a replacement. Reading resumes from the beginning of that passage; an unchanged replacement preserves the exact place within it. |
 | Page-start position | The place in the text where a reading page begins, including a place within a paragraph. It identifies the displayed passage, not the last word the reader has actually read. |
+| Text replacement rule | An account's literal, case-sensitive replacement of one text with another for one series or web novel. Rules apply in their saved order. |
+| Exact duplicate replacement | Two rules for the same account and target with identical find and replacement text, including case and whitespace. Rules with different replacement text remain distinct. |
 | Reflow | Redistribution of the same content across reading pages when the available reading area or reading preferences change. A position in the text remains meaningful even when page boundaries change. |
 | Estimate basis | The known amount of reading remaining at a saved position, distinct from a duration predicted using reading pace. |
 | Effective text reading pace | The estimated speed for one work, combining valid evidence from that work and other text works. It need not be identical for every work. |
@@ -38,6 +41,7 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Comic pages | The count of recorded comic image pages, including repeated reading of the same page. It is distinct from unique pages completed and from rendered text pages. |
 | Sufficient pace evidence | At least 1,000 words, five minutes and three valid reading pace samples across EPUBs and web novels together. |
 | Pending reading activity | Measured reading activity awaiting confirmation that it has been recorded. It belongs to the original account and remains the same activity when submitted again. |
+| Rejected reading activity | Measured activity that the server refused to record. Its rejection is distinct from pending delivery and from the saved reading position. |
 | Orphan line | The first line of a paragraph left alone at the bottom of a reading page while the rest continues on the next page. |
 | Widow line | The last line of a paragraph left alone at the top of the next reading page. |
 | Original typography | The book's intended fonts, relative text sizes, emphasis, and spacing, as distinct from adjustments made by the reader or browser. |

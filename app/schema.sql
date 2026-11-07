@@ -238,6 +238,7 @@ CREATE TABLE IF NOT EXISTS reading_progress (
     status              TEXT NOT NULL DEFAULT 'unread' CHECK(status IN ('unread','reading','completed')),
     current_page        INTEGER,
     current_location    TEXT,
+    source_anchor       TEXT,
     progress_percent    REAL NOT NULL DEFAULT 0,
     last_read_at        TEXT,
     completed_at        TEXT,
@@ -706,6 +707,7 @@ CREATE TABLE IF NOT EXISTS novel_reading_progress (
     -- and mobile, which a raw scroll percentage alone can't do reliably.
     paragraph_index     INTEGER,
     character_offset    INTEGER NOT NULL DEFAULT 0,
+    source_anchor       TEXT,
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (user_id, novel_id)
 );

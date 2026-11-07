@@ -12,7 +12,7 @@ import time
 BROWSER_SUITES = ('resync', 'audit', 'cache', 'header', 'home_unread',
                   'pagination', 'reading_statistics', 'home_preload',
                   'lazy_covers', 'tracking', 'comic_keyboard', 'statistics_layout',
-                  'text_eta', 'hyphenation')
+                  'text_eta', 'hyphenation', 'reader_replacements')
 
 
 def verify_checkout(commit):

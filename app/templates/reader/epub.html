@@ -20,6 +20,7 @@
          data-source="epub"
          data-reader-user-id="{{ user.id if user is defined else '' }}"
          data-item-id="{{ item.id }}"
+         data-source-anchor="{{ progress.source_anchor if progress and progress.source_anchor else '' }}"
          data-start-cfi="{{ progress.current_location if progress and progress.current_location else '' }}"
          {# Where the SERVER had this when the page was rendered. It is the
             baseline reader-resume.js measures a later answer against, so a

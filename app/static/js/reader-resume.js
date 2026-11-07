@@ -43,16 +43,17 @@
          * url     -- the progress endpoint to ask.
          * percent -- what this page was rendered at, 0-100.
          */
-        watch(url, percent, position = null) {
-            watched = { url, sent: Number(percent) || 0, position, root: document.getElementById("reader-root") };
+        watch(url, percent, position = null, sourceAnchor = null) {
+            watched = { url, sent: Number(percent) || 0, position, sourceAnchor, root: document.getElementById("reader-root") };
             if (restoring) {
                 restoring = false;
-                catchUp();
+                return catchUp();
             }
         },
+        unwatch(root) { if (watched?.root === root) watched = null; },
         /** Every progress POST reports its percentage here. */
-        sent(percent, position = null) {
-            if (watched && Number.isFinite(percent)) { watched.sent = percent; watched.position = position; }
+        sent(percent, position = null, sourceAnchor = null) {
+            if (watched && Number.isFinite(percent)) { watched.sent = percent; watched.position = position; watched.sourceAnchor = sourceAnchor; }
         },
     };
 
@@ -98,7 +99,12 @@
         const sentPercent = baseline.sent;
         let saved;
         try {
-            const response = await fetch(baseline.url, { headers: { Accept: "application/json" } });
+            let url = baseline.url;
+            if (baseline.root.dataset.source === "novel") {
+                const chapter = baseline.root.dataset.readingSourceIdentity || baseline.root.dataset.startChapterId;
+                if (chapter) url += "?chapter_id=" + encodeURIComponent(chapter);
+            }
+            const response = await fetch(url, { headers: { Accept: "application/json" } });
             if (!response.ok) return;
             saved = await response.json();
         } catch {
@@ -114,12 +120,37 @@
         // `Math.round(fraction * 10000) / 100` -- and a reload for a
         // rounding step would be a reader page that throws itself away
         // every time it is restored.
+        const replaceSaved = () => {
+            baseline.root.dataset.resumePending = "true";
+            window.location.replace(saved.resume_url);
+        };
+        if (saved.source_version && baseline.root.dataset.readingSourceVersion &&
+                String(saved.source_identity) === baseline.root.dataset.readingSourceIdentity &&
+                saved.source_version !== baseline.root.dataset.readingSourceVersion) {
+            replaceSaved();
+            return;
+        }
+        if (Array.isArray(saved.current_replacements) && baseline.root.dataset.replacements !== undefined) {
+            let displayed;
+            try { displayed = JSON.parse(baseline.root.dataset.replacements); } catch { displayed = null; }
+            if (JSON.stringify(displayed) !== JSON.stringify(saved.current_replacements)) {
+                replaceSaved();
+                return;
+            }
+        }
         const valid = p => Array.isArray(p) && p.length === 3 && p.every(n => Number.isSafeInteger(n) && n >= 0);
-        if (valid(saved.position) && valid(baseline.position)) {
-            const difference = saved.position.map((n, i) => n - baseline.position[i]).find(n => n !== 0) || 0;
+        let serverPosition = saved.position, localPosition = baseline.position;
+        try {
+            const a = JSON.parse(saved.source_anchor || "null"), b = JSON.parse(baseline.sourceAnchor || "null");
+            if (a?.version === 1 && b?.version === 1 && a.rulesDigest !== b.rulesDigest && (a.section !== b.section || a.originalDigest === b.originalDigest)) {
+                serverPosition = [valid(saved.position) ? saved.position[0] : a.section, a.position.index, a.position.offset];
+                localPosition = [valid(baseline.position) ? baseline.position[0] : b.section, b.position.index, b.position.offset];
+            }
+        } catch { /* Legacy clients still compare displayed positions. */ }
+        if (valid(serverPosition) && valid(localPosition)) {
+            const difference = serverPosition.map((n, i) => n - localPosition[i]).find(n => n !== 0) || 0;
             if (difference <= 0) return;
         } else if (there <= baseline.sent + 1) return;
-        baseline.root.dataset.resumePending = "true";
-        window.location.replace(saved.resume_url);
+        replaceSaved();
     }
 })();

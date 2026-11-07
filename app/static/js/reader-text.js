@@ -66,7 +66,8 @@
     // tag is missing: one that is there but failed to load would reload
     // forever.
     if ((!window.readerBlocks && !document.querySelector('script[src*="/reader-blocks.js"]')) ||
-            (!window.readerPagination && !document.querySelector('script[src*="/reader-pagination.js"]'))) {
+            (!window.readerPagination && !document.querySelector('script[src*="/reader-pagination.js"]')) ||
+            (!window.readerSourceAnchor && !document.querySelector('script[src*="/reader-source-anchor.js"]'))) {
         window.location.reload();
         return;
     }
@@ -122,7 +123,7 @@
     const itemId = root.dataset.itemId;
     const startLocationRaw = root.dataset.startCfi || undefined;
     const startSpineIndexRaw = root.dataset.startSpineIndex;
-    const startSpineIndex = startSpineIndexRaw !== "" && startSpineIndexRaw !== undefined
+    let startSpineIndex = startSpineIndexRaw !== "" && startSpineIndexRaw !== undefined
         ? parseInt(startSpineIndexRaw, 10)
         : undefined;
     const stylesheetUrl = `${window.location.origin}${root.dataset.stylesheetUrl}`;
@@ -208,6 +209,7 @@
     // reader/router.py's _content_cache_headers.
     let contentVersion = "";
     const timingSourceVersions = new Map();
+    const resourceEtags = new Map();
     const versionQuery = () => (contentVersion ? `?v=${encodeURIComponent(contentVersion)}` : "");
 
     const adapters = {
@@ -295,7 +297,7 @@
     // progress is posted to, read rather than written. See
     // reader-resume.js; a novel is sent somewhere else than where it
     // asked from, because its reader is opened per chapter.
-    window.readerResume?.watch(adapter.progressUrl, root.dataset.startPercent, [startSpineIndex || 0, startPosition.index, startPosition.offset]);
+
 
     // Times each page visit and posts the spans (see reading-time.js).
     const readingTime = Object.assign({activate() {},interrupt() {},finish() {}}, createReadingTimeTracker());
@@ -720,12 +722,14 @@
         wrapper.dataset.mounted = "pending";
 
         const entry = spineList[index];
-        let html;
+        let html, originalHtml;
         try {
             const res = await fetch(adapter.resourceUrl(entry));
             if (!res.ok) throw new Error("HTTP " + res.status);
             timingSourceVersions.set(index,res.headers.get('X-Reading-Source') || res.headers.get('ETag'));
-            html = applyReplacements(await res.text());
+            resourceEtags.set(index,res.headers.get('ETag'));
+            originalHtml = await res.text();
+            html = applyReplacements(originalHtml);
         } catch (err) {
             // NOT mounted, so it is fetched again -- see advanceMount.
             warnChapterNotLoaded(err);
@@ -748,6 +752,7 @@
             }
             return null;
         }
+        await prepareSourceMap(index, originalHtml, window.readerBlocks.collect(iframe.contentDocument.body));
         // A chapter's height is read ONCE and becomes the wrapper's height
         // for the rest of the session, so anything that arrives after the
         // measurement is clipped by the iframe for good -- the same
@@ -1048,6 +1053,7 @@
         if (followingIndex < spineList.length && await mountSection(followingIndex)) {
             mountedUpTo = followingIndex;
         }
+        if (targetIndexOverride === undefined) targetElementIndex = restoredSourcePosition(targetIndex, targetElementIndex);
         scrollToCustomPosition(targetIndex, targetElementIndex);
         placeBottomSentinel();
         placeTopSentinel();
@@ -1138,6 +1144,7 @@
     // page they are placed into (its own stylesheets and body attributes).
     const pgChapterCache = new Map();
     let pgSpineIndex = null;
+    let pgRequestedSpineIndex = null;
     let pgPageStart = pagination.position(0);
     let pgPageEnd = pagination.position(0);
     let pgHasNavigated = false;
@@ -1151,6 +1158,7 @@
         const res = await fetch(adapter.resourceUrl(spineList[spineIndex]));
         if (!res.ok) throw new Error("HTTP " + res.status);
         timingSourceVersions.set(spineIndex,res.headers.get('X-Reading-Source') || res.headers.get('ETag'));
+        resourceEtags.set(spineIndex,res.headers.get('ETag'));
         return res.text();
     }
 
@@ -1170,17 +1178,69 @@
         const pending = fetchChapterText(spineIndex);
         pending.catch(() => pgPrefetched.delete(spineIndex));
         pgPrefetched.set(spineIndex, pending);
+        while (pgPrefetched.size > 2) pgPrefetched.delete(pgPrefetched.keys().next().value);
+    }
+
+    const sourceMaps = new Map();
+    let mapsDisposed = false;
+    function trimPreparedCaches() {
+        if (customMode) return; // Scrolled documents stay available for native find/scroll.
+        const pinned = new Set([pgSpineIndex,pgRequestedSpineIndex]);
+        for (const index of pgChapterCache.keys()) {
+            if (pgChapterCache.size <= 4) break;
+            if (!pinned.has(index)) pgChapterCache.delete(index);
+        }
+        const retained = new Set([...pgChapterCache.keys(),...pinned]);
+        for (const index of sourceMaps.keys()) if (!retained.has(index)) sourceMaps.delete(index);
+        for (const index of resourceEtags.keys()) if (!retained.has(index) && !pgPrefetched.has(index)) resourceEtags.delete(index);
+        for (const index of timingSourceVersions.keys()) if (!retained.has(index) && !pgPrefetched.has(index)) timingSourceVersions.delete(index);
+    }
+    outside.push(() => {
+        mapsDisposed = true;
+        cancelScrollSave();
+        bottomSentinelObserver?.disconnect();
+        topSentinelObserver?.disconnect();
+        window.readerFullscreen.releaseButton?.(root.querySelector("#btn-fullscreen"));
+        pgChapterCache.clear(); sourceMaps.clear(); pgPrefetched.clear();
+        resourceEtags.clear(); timingSourceVersions.clear();
+        window.readerResume?.unwatch(root);
+    });
+    async function prepareSourceMap(index, originalHtml, blocks) {
+        const prepared = {
+            anchorMap: window.readerSourceAnchor.buildHtml(originalHtml, blocks, replacementRules),
+            originalDigest: await window.readerSourceAnchor.digest(originalHtml),
+            rulesDigest: await window.readerSourceAnchor.digest(JSON.stringify(replacementRules)),
+        };
+        if (!mapsDisposed) sourceMaps.set(index, prepared);
+    }
+    function restoredSourcePosition(index, fallback) {
+        try {
+            const saved = JSON.parse(root.dataset.sourceAnchor || "null");
+            const chapter = sourceMaps.get(index);
+            if (saved?.version === 1
+                    && (source === "novel" ? saved.chapterId === spineList[index]?.chapterId : saved.section === index)
+                    && saved.originalDigest === chapter?.originalDigest
+                    && saved.rulesDigest !== chapter.rulesDigest) {
+                return chapter.anchorMap?.toDisplay(saved.position) || fallback;
+            }
+        } catch { /* Malformed/old metadata uses legacy coordinates. */ }
+        return fallback;
     }
 
     async function loadChapterBlocks(spineIndex) {
-        if (pgChapterCache.has(spineIndex)) return pgChapterCache.get(spineIndex);
+        if (pgChapterCache.has(spineIndex)) {
+            const chapter = pgChapterCache.get(spineIndex);
+            pgChapterCache.delete(spineIndex); pgChapterCache.set(spineIndex,chapter);
+            return chapter;
+        }
         const pending = pgPrefetched.get(spineIndex);
         pgPrefetched.delete(spineIndex);
-        let html;
+        let html, originalHtml;
         try {
             const text = pending
                 ? await pending.catch(() => fetchChapterText(spineIndex))
                 : await fetchChapterText(spineIndex);
+            originalHtml = text;
             html = applyReplacements(text);
         } catch (err) {
             // Thrown, and NOT cached: a failure cached as an empty chapter
@@ -1191,7 +1251,9 @@
         }
         const doc = new DOMParser().parseFromString(html, "text/html");
         const result = { blocks: window.readerBlocks.collect(doc.body), shell: window.readerBlocks.pageShell(doc) };
-        pgChapterCache.set(spineIndex, result);
+        await prepareSourceMap(spineIndex, originalHtml, result.blocks);
+        Object.assign(result, sourceMaps.get(spineIndex));
+        if (!mapsDisposed) { pgChapterCache.set(spineIndex, result); trimPreparedCaches(); }
         return result;
     }
 
@@ -1325,6 +1387,11 @@
         }
         return {text, length: domOffset, offsetAt};
     }
+    function markDisplayedSource(index) {
+        root.dataset.readingSourceIdentity = String(source === "epub" ? itemId : spineList[index]?.chapterId);
+        root.dataset.readingSourceVersion = source === "epub" ? contentVersion : resourceEtags.get(index) || "";
+    }
+
     function timingPassage(blocks, start, end) {
         const result = [];
         for (let i = start.index; i < blocks.length && i <= end.index; i++) {
@@ -1376,6 +1443,7 @@
         reportTextTiming(pos.spineIndex, blocks, start, end, normal, true);
     }
     function reportTextTiming(spine, blocks, start, end, normal = false, continuous = false) {
+        markDisplayedSource(spine);
         const payload = {...adapter.buildTimingPayload(spine, spineList[spine], start.index),
             source_version:source === 'epub' ? contentVersion : timingSourceVersions.get(spine),
             character_offset:start.offset || 0, passage:timingPassage(blocks, start, end)};
@@ -1454,6 +1522,7 @@
     let pgGeneration = 0;
 
     async function renderPage(spineIndex, edge, direction = "forward", normal = false) {
+        pgRequestedSpineIndex = spineIndex;
         pageViewportSize = `${paginatedViewerEl.clientWidth}:${paginatedViewerEl.clientHeight}`;
         const gen = ++pgGeneration;
         const stale = () => gen !== pgGeneration || customMode || !root.isConnected;
@@ -1764,15 +1833,22 @@
     function saveProgress(spineIndex, entry, location, percentage, chapterFraction, useBeacon = false) {
         const {index: elidx, offset} = pagination.position(location);
         if (!entry || root.dataset.resumePending === "true" || !root.isConnected) return;
+        const chapter = sourceMaps.get(spineIndex);
+        const originalPosition = chapter?.anchorMap?.toSource({index: elidx, offset});
+        const sourceAnchor = originalPosition ? JSON.stringify({
+            version: 1, section: spineIndex, position: originalPosition,
+            ...(source === "novel" ? {chapterId: entry.chapterId} : {}),
+            originalDigest: chapter.originalDigest, rulesDigest: chapter.rulesDigest,
+        }) : null;
         const payload = JSON.stringify(
-            { ...adapter.buildProgressPayload(spineIndex, entry, elidx, percentage || 0, chapterFraction || 0, offset),
+            { source_anchor: sourceAnchor, ...adapter.buildProgressPayload(spineIndex, entry, elidx, percentage || 0, chapterFraction || 0, offset),
               on_exit: useBeacon,
               ...(source === "epub" ? {save_session: progressSaveSession, save_sequence: ++progressSaveSequence} : {}) });
         // The baseline a restored page measures the server against -- see
         // reader-resume.js. The WHOLE-book fraction, not the chapter's:
         // 90% of chapter 2 is behind 10% of chapter 40, and the two ends
         // have to be on one scale for "ahead" to mean anything.
-        window.readerResume?.sent((percentage || 0) * 100, [spineIndex, elidx, offset]);
+        window.readerResume?.sent((percentage || 0) * 100, [spineIndex, elidx, offset], sourceAnchor);
         const url = adapter.progressUrl;
         if (useBeacon && navigator.sendBeacon) {
             navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
@@ -2104,6 +2180,12 @@
 
     async function init() {
         await fetchSpine();
+        if (source === "novel" && root.dataset.startChapterId) {
+            const index = spineList.findIndex(entry => entry.chapterId === Number(root.dataset.startChapterId));
+            if (index >= 0) startSpineIndex = index;
+        }
+        await window.readerResume?.watch(adapter.progressUrl, root.dataset.startPercent, [startSpineIndex || 0, startPosition.index, startPosition.offset], root.dataset.sourceAnchor);
+        if (root.dataset.resumePending === "true" || !root.isConnected) return;
         if (prefs.flow === "scrolled-doc") {
             customMode = true;
             document.getElementById("custom-scroll").classList.remove("hidden");
@@ -2112,7 +2194,9 @@
         } else {
             customMode = false;
             paginatedViewerEl.classList.remove("hidden");
-            await initPaginated(startSpineIndex || 0, startPosition);
+            await loadChapterBlocks(startSpineIndex || 0);
+            const position = restoredSourcePosition(startSpineIndex || 0, startPosition);
+            await initPaginated(startSpineIndex || 0, position);
         }
     }
 

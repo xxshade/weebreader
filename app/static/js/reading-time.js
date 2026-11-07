@@ -11,7 +11,7 @@
         const prefix = `reading-activity:v1:${account}:`;
         const memory = new Map();
         let current = null, lastPayload = null, anchor = null, claiming = null;
-        let stopped = false, sending = false, lastClaim = -Infinity, lastFlush = 0;
+        let stopped = false, sending = false, flushAgain = false, lastClaim = -Infinity, lastFlush = 0;
         const now = () => anchor === null ? null : anchor + performance.now() / 1000;
 
         function notice(message) {
@@ -107,7 +107,8 @@
             return claiming;
         }
         async function flush(useBeacon = false) {
-            if (!account || sending) return;
+            if (!account) return;
+            if (sending) { flushAgain = true; return; }
             const activities = pending();
             if (!activities.length) return;
             const body = JSON.stringify({activities});
@@ -131,7 +132,10 @@
                     notice("Some reading activity could not be saved. Your reading position is saved separately.");
                 }
             } catch { /* Persisted activity is retried after reconnect or reopening. */ }
-            finally { sending = false; }
+            finally {
+                sending = false;
+                if (flushAgain) { flushAgain = false; void flush(); }
+            }
         }
         function at(payload, transition = {}) {
             if (!payload) return;

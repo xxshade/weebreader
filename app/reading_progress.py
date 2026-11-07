@@ -35,6 +35,7 @@ async def mark_item_read(db, user_id: int, item_id: int, last_page: int | None) 
             -- paragraph kept on its own was applied to spine 0: a blank
             -- page reading "41 / 3" on the next open.
             current_location = excluded.current_location,
+            source_anchor = NULL,
             progress_percent = 100,
             last_read_at = datetime('now'),
             -- Kept on a row already completed, like the percentage below:
@@ -100,6 +101,7 @@ async def mark_series_read(db, user_id: int, series_id: int) -> None:
             status = 'completed',
             current_page = excluded.current_page,
             current_location = NULL,
+            source_anchor = NULL,
             progress_percent = 100,
             last_read_at = datetime('now'),
             completed_at = CASE
@@ -163,6 +165,7 @@ async def mark_series_read_up_to(db, user_id: int, series_id: int, number: float
             status = 'completed',
             current_page = excluded.current_page,
             current_location = NULL,
+            source_anchor = NULL,
             progress_percent = 100,
             last_read_at = datetime('now'),
             completed_at = datetime('now'),
