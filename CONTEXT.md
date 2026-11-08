@@ -2,6 +2,16 @@
 
 Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 
+## Web novel synchronization
+
+| Term | Meaning |
+| --- | --- |
+| Scheduled novel synchronization | An automatic check for updates to one active web novel. Its next due time is distinct from the time the application starts. |
+| Next synchronization time | The saved time at which one novel is next due for automatic synchronization. Other novels can have different due times. |
+| Manual synchronization | A synchronization requested by a person for one novel. It postpones that novel's next automatic check without postponing checks for other novels. |
+| Recovery synchronization | One synchronization replacing an absent or missed schedule. Multiple missed times do not represent a backlog of separate checks to replay. |
+| Interrupted synchronization | A synchronization that started but did not finish because execution stopped. It is distinct from an attempt that finished with a recorded error. |
+
 ## Library navigation
 
 | Term | Meaning |

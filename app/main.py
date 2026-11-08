@@ -142,7 +142,7 @@ async def lifespan(app: FastAPI):
     for lib in libraries:
         watcher.start(lib["id"], lib["root_path"], loop)
 
-    start_novel_scheduler()
+    await start_novel_scheduler()
     start_scan_scheduler()
 
     # The same idea as the six backfills above -- reaching rows nothing
@@ -179,7 +179,7 @@ async def lifespan(app: FastAPI):
     # time instead of exiting as soon as it's actually done.
     logger.info("Shutting down: stopping library watchers and schedulers...")
     watcher.stop_all()
-    stop_novel_scheduler()
+    await stop_novel_scheduler()
     stop_scan_scheduler()
     # A queued tracker push holds a database connection whose worker thread
     # is not a daemon, so an abandoned one keeps the process alive with
