@@ -28,28 +28,10 @@ def point(value, edits, back=False):
     return value + shift
 
 
-def literal(text, rules):
-    stages = []
-    for rule in rules:
-        find = rule.get("find")
-        if not find:
-            continue
-        replace = rule.get("replace") or ""
-        pieces = []
-        edits = []
-        cursor = before = after = 0
-        while (at := text.find(find, cursor)) >= 0:
-            gap = text[cursor:at]
-            units = utf16(gap)
-            a, b, c = before + units, before + units + utf16(find), after + units
-            pieces.extend((gap, replace))
-            before, after = b, c + utf16(replace)
-            edits.append((a, b, c, after))
-            cursor = at + len(find)
-        pieces.append(text[cursor:])
-        text = "".join(pieces)
-        stages.append(edits)
-    return text, stages
+def literal(text, rules, version=2):
+    from app.replacement_matching import trace
+    output, stages = trace(text, rules, raw=True, version=version)
+    return output, [[tuple(edit[k] for k in ('a','b','c','d')) for edit in stage] for stage in stages]
 
 
 def translate(value, stages, back=False):
@@ -125,7 +107,7 @@ def lexical(source):
     return tokens
 
 
-def transform(source, rules):
+def transform(source, rules, version=2):
     spans = []
     pieces = []
     cursor = delta = 0
@@ -133,7 +115,7 @@ def transform(source, rules):
         if m[2] is None:
             continue
         a, b = m.start() + 1, m.end() - 1
-        output, stages = literal(m[2], rules)
+        output, stages = literal(m[2], rules, version)
         c = a + delta
         pieces.extend((source[cursor:a], output))
         spans.append((a, b, c, c + len(output), m[2], output, stages))
@@ -280,11 +262,42 @@ def from_raw(mapping, value):
     )
 
 
-def convert_position(source, rules, index, offset, backwards=False):
-    output, change = transform(source, rules)
+def convert_position(source, rules, index, offset, backwards=False, version=2):
+    output, change = transform(source, rules, version)
     original, display = parsed(source), parsed(output)
     if original is None or display is None:
         return None
     a, b = (display, original) if backwards else (original, display)
     raw = to_raw(a, index, offset)
     return from_raw(b, change(raw, backwards)) if raw is not None else None
+
+
+def migrate_position(source, rules, index, offset):
+    """Map old rendered coordinates through the same source's new rendering."""
+    from app.replacement_matching import HTML_TEXT, migrate, replace_html
+
+    old, new = replace_html(source, rules, version=1), replace_html(source, rules)
+    if old == new:
+        return index, offset
+    before, after = parsed(old), parsed(new)
+    if before is None or after is None:
+        return None
+    raw = to_raw(before, index, offset)
+    if raw is None:
+        return None
+    old_delta = new_delta = 0
+    for match in HTML_TEXT.finditer(source):
+        if match[2] is None:
+            continue
+        a = match.start() + 1
+        old_text, _ = literal(match[2], rules, 1)
+        new_text, _ = literal(match[2], rules, 2)
+        old_start, new_start = a + old_delta, a + new_delta
+        if raw < old_start:
+            break
+        if raw <= old_start + len(old_text):
+            units = migrate(match[2], rules, utf16(old_text[:raw - old_start]))
+            return from_raw(after, new_start + cp_at(new_text, units))
+        old_delta += len(old_text) - len(match[2])
+        new_delta += len(new_text) - len(match[2])
+    return from_raw(after, raw + new_delta - old_delta)

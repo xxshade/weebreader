@@ -92,16 +92,9 @@ def normalize(text):
     return ' '.join(text.split())
 
 
-def readable_text(source, rules, *, html5=False):
-    # Match the reader's display-only replacements before parsing HTML.
-    def replace(match):
-        text = match.group(2)
-        if text is None:
-            return match.group(0)
-        for rule in rules:
-            text = text.replace(rule['find'], rule['replace'] or '')
-        return '>' + text + '<'
-    source = re.sub(r'<(script|style)\b[\s\S]*?</\1\s*>|>([^<]+)<', replace, source, flags=re.I)
+def readable_text(source, rules, *, html5=False, matching_version=2):
+    from app.replacement_matching import replace_html
+    source = replace_html(source, rules, version=matching_version)
     if html5 or re.search(r'<(?:table|select|template|svg|math)\b',source,re.I):
         from app.reader.html_source import repaired_readable
         return repaired_readable(source,SKIP)
@@ -185,7 +178,7 @@ async def content(db, user_id, value):
         if value.get('source_version') is not None and value['source_version'] not in versions:
             raise ValueError('Reading content has changed.')
         rules = await text_replacements.rules_for(db, user_id, novel_id=novel_id)
-    readable = await asyncio.to_thread(readable_text, source, rules)
+    readable = await asyncio.to_thread(readable_text, source, rules, matching_version=value.get("replacement_version", 1))
     try:
         positions = await asyncio.to_thread(passage_positions, value.get('passage'), readable)
     except ValueError as exc:
@@ -193,7 +186,7 @@ async def content(db, user_id, value):
             raise
         # DOMParser uses HTML5 repair (notably table foster parenting). Recheck
         # against that exact source order; never relax passage/offset validation.
-        readable = await asyncio.to_thread(readable_text, source, rules, html5=True)
+        readable = await asyncio.to_thread(readable_text, source, rules, html5=True, matching_version=value.get("replacement_version", 1))
         positions = await asyncio.to_thread(passage_positions, value.get('passage'), readable)
     return kind, item_id, novel_id, chapter_id, positions
 
@@ -236,11 +229,16 @@ async def record_activity(db, user_id, comic_cap, text_cap, value, now=None):
     version = value.get('source_version')
     if version is not None and (not isinstance(version,str) or len(version)>256):
         raise ValueError('Invalid reading content version.')
+    matching_version = value.get('replacement_version', 1)
+    if type(matching_version) is not int or matching_version not in (1, 2):
+        raise ValueError('Invalid replacement version.')
     session = await row(db, 'SELECT * FROM reading_sessions WHERE id=? AND user_id=?', (session_id, user_id))
     if not session:
         raise ValueError('Unknown reading session.')
     visible = intervals(value, now, session['created'])
     identity_data = {k:value.get(k) for k in ('item_id','chapter_id','section_index','page_index','character_offset','source_version')}
+    if 'replacement_version' in value:
+        identity_data['replacement_version'] = matching_version
     parts = value.get('passage') or []
     if not isinstance(parts,list) or len(parts) > 100:
         raise ValueError('Invalid passage.')

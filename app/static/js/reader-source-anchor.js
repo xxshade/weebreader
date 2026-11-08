@@ -3,33 +3,9 @@
  * Offsets use UTF-16. Inside replacement text, the original start is the anchor.
  */
 (() => {
-    function edit(text, rules) {
-        const stages = [];
-        for (const rule of rules) {
-            const find = rule.find,
-                replacement = rule.replace || "";
-            if (!find) continue;
-            let cursor = 0,
-                output = "",
-                at;
-            const changes = [];
-            while ((at = text.indexOf(find, cursor)) !== -1) {
-                output += text.slice(cursor, at);
-                const start = output.length;
-                output += replacement;
-                changes.push({
-                    a: at,
-                    b: at + find.length,
-                    c: start,
-                    d: output.length,
-                });
-                cursor = at + find.length;
-            }
-            output += text.slice(cursor);
-            stages.push(changes);
-            text = output;
-        }
-        return { text, ...stageMapper(stages) };
+    function edit(text, rules, options = {}) {
+        const value = window.readerReplacements.trace(text, rules, options);
+        return {text: value.text, ...stageMapper(value.stages)};
     }
     function stageMapper(stages) {
         function translate(point, backwards) {
@@ -152,7 +128,7 @@
             /<(script|style)\b[\s\S]*?<\/\1\s*>|>([^<]+)</gi,
             (match, tag, text, at) => {
                 if (text === undefined) return match;
-                const value = edit(text, rules),
+                const value = edit(text, rules, {raw: true}),
                     a = at + 1,
                     c = a + delta;
                 spans.push({
@@ -470,5 +446,31 @@
         };
     }
 
-    globalThis.readerSourceAnchor = { build, buildHtml, edit, digest };
+    function migrateHtml(html, display, rules, position) {
+        const old = window.readerReplacements.replaceHtml(html, rules, {legacy: true});
+        const next = window.readerReplacements.replaceHtml(html, rules);
+        if (old === next) return {...position};
+        const originalDisplay = window.readerBlocks.collect(new DOMParser().parseFromString(old, "text/html").body);
+        const before = parsedProvenance(old, originalDisplay), after = parsedProvenance(next, display);
+        if (!before || !after) return null;
+        const point = before.toRaw(position);
+        if (point === null) return null;
+        const scanner = /<(script|style)\b[\s\S]*?<\/\1\s*>|>([^<]+)</gi;
+        let oldDelta = 0, newDelta = 0, match;
+        while ((match = scanner.exec(html))) {
+            if (match[2] === undefined) continue;
+            const oldText = edit(match[2], rules, {raw: true, legacy: true}).text;
+            const newText = edit(match[2], rules, {raw: true}).text;
+            const a = match.index + 1 + oldDelta, c = match.index + 1 + newDelta;
+            if (point < a) break;
+            if (point <= a + oldText.length) {
+                return after.fromRaw(c + window.readerReplacements.migrate(match[2], rules, point - a));
+            }
+            oldDelta += oldText.length - match[2].length;
+            newDelta += newText.length - match[2].length;
+        }
+        return after.fromRaw(point + newDelta - oldDelta);
+    }
+    globalThis.readerSourceAnchor = { build, buildHtml, edit, digest, migrateHtml,
+        version: 2, assetUrl: document.currentScript?.src };
 })();

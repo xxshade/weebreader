@@ -194,6 +194,7 @@
     <script src="{{ asset_url('js/reading-time.js') }}" defer></script>
     <script src="{{ asset_url('js/reader-blocks.js') }}" defer></script>
     <script src="{{ asset_url('js/reader-pagination.js') }}" defer></script>
+    <script src="{{ asset_url('js/reader-replacements.js') }}" defer></script>
     <script src="{{ asset_url('js/reader-source-anchor.js') }}" defer></script>
     {# The plain dialogs (New library, Edit name and cover) and the cover
        preview inside one. Here for the reason above: both are delegated
@@ -370,6 +371,8 @@
     <main {% block main_attrs %}class="p-4"{% endblock %}
           data-thumb-size-key="{{ thumb_key }}" data-viewport="{{ viewport_content }}"
           {% if user %}data-reading-account="{{ user.id }}"{% endif %}
+          data-reader-replacements-url="{{ asset_url('js/reader-replacements.js') }}"
+          data-reader-source-anchor-url="{{ asset_url('js/reader-source-anchor.js') }}"
           data-reading-tracker-url="{{ asset_url('js/reading-time.js') }}"
           {%- set thumb_px = ui_thumb_size(request, thumb_key) %}{% if thumb_px %} style="--thumb-size: {{ thumb_px }}px"{% endif %}
           {%- block main_state %}{% endblock %}>

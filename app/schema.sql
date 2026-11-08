@@ -239,6 +239,7 @@ CREATE TABLE IF NOT EXISTS reading_progress (
     current_page        INTEGER,
     current_location    TEXT,
     source_anchor       TEXT,
+    replacement_version INTEGER NOT NULL DEFAULT 1,
     progress_percent    REAL NOT NULL DEFAULT 0,
     last_read_at        TEXT,
     completed_at        TEXT,
@@ -708,6 +709,7 @@ CREATE TABLE IF NOT EXISTS novel_reading_progress (
     paragraph_index     INTEGER,
     character_offset    INTEGER NOT NULL DEFAULT 0,
     source_anchor       TEXT,
+    replacement_version INTEGER NOT NULL DEFAULT 1,
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (user_id, novel_id)
 );
