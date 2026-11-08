@@ -95,6 +95,8 @@ CREATE INDEX IF NOT EXISTS idx_page_reads_user_chapter_activity
 # every start used to run all of these ALTERs and swallow the "duplicate
 # column" error of each one.
 ADDED_COLUMNS = (
+    ("reading_progress", "replacement_version", "INTEGER NOT NULL DEFAULT 1"),
+    ("novel_reading_progress", "replacement_version", "INTEGER NOT NULL DEFAULT 1"),
     ("novel_reading_progress", "source_anchor", "TEXT"),
     ("reading_progress", "source_anchor", "TEXT"),
     ("users", "hidden_statuses", "TEXT"),

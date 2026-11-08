@@ -165,7 +165,7 @@ def _rules(rules):
     return tuple((rule['find'], rule.get('replace') or '') for rule in rules if rule.get('find'))
 
 
-def _section(source, rules, build=None, *, force_html5=False):
+def _section(source, rules, build=None, *, force_html5=False, matching_version=2):
     build = _block if build is None else build
     if not source.strip():
         return ()
@@ -175,7 +175,8 @@ def _section(source, rules, build=None, *, force_html5=False):
             if value is None:
                 return match.group(0)
             for find, replacement in rules:
-                value = value.replace(find, replacement)
+                from app.replacement_matching import replace as replace_literal
+                value = replace_literal(value, find, replacement, version=matching_version)
             return '>' + value + '<'
         source = re.sub(r'<(script|style)\b[\s\S]*?</\1\s*>|>([^<]+)<', replace, source, flags=re.I)
     if force_html5 or re.search(r'<(?:table|select|template|svg|math)\b',source,re.I):
@@ -389,7 +390,8 @@ def _inventory(key, sections):
 
 
 def _html_key(source, rules):
-    return ('html', hashlib.sha256(source.encode('utf-8')).hexdigest(), rules)
+    from app.replacement_matching import cache_basis
+    return ('html', hashlib.sha256(source.encode('utf-8')).hexdigest(), cache_basis(rules))
 
 
 def inventory_html(source, rules=()):
@@ -400,7 +402,8 @@ def inventory_html(source, rules=()):
 def _epub_key(file_path, version, rules):
     path = Path(file_path)
     stat = path.stat()
-    return ('epub', str(path.resolve()), version, stat.st_size, stat.st_mtime_ns, rules)
+    from app.replacement_matching import cache_basis
+    return ('epub', str(path.resolve()), version, stat.st_size, stat.st_mtime_ns, cache_basis(rules))
 
 
 def inventory_epub(file_path, version, rules=()):

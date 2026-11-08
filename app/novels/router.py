@@ -367,7 +367,7 @@ async def _load_chapter_context(novel_id: int, volume_number: int, chapter_numbe
 
     progress = await (
         await db.execute(
-            "SELECT chapter_id, paragraph_index, character_offset, scroll_percent, source_anchor FROM novel_reading_progress "
+            "SELECT chapter_id, paragraph_index, character_offset, scroll_percent, source_anchor, replacement_version FROM novel_reading_progress "
             "WHERE user_id = ? AND novel_id = ?",
             (user["id"], novel_id),
         )
@@ -383,6 +383,7 @@ async def _load_chapter_context(novel_id: int, volume_number: int, chapter_numbe
     return {
         "novel": novel, "chapter": chapter, "saved_paragraph": saved_paragraph,
         "source_anchor": progress["source_anchor"] if saved_paragraph >= 0 else None,
+        "replacement_version": progress["replacement_version"] if saved_paragraph >= 0 else 2,
         "saved_offset": progress["character_offset"] if saved_paragraph >= 0 else 0,
         # What the SERVER thought when this page was rendered, for
         # reader-resume.js to measure a later answer against. See
@@ -432,7 +433,7 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
             """
             SELECT novel_reading_progress.scroll_percent AS percent,
                    novel_reading_progress.paragraph_index, novel_reading_progress.character_offset,
-                   novel_reading_progress.source_anchor, chapters.id AS source_id, chapters.content_size, chapters.content_fetched_at,
+                   novel_reading_progress.source_anchor, novel_reading_progress.replacement_version, chapters.id AS source_id, chapters.content_size, chapters.content_fetched_at,
                    (SELECT COUNT(*) FROM chapters earlier WHERE earlier.novel_id=chapters.novel_id
                      AND (earlier.order_index<chapters.order_index OR
                        (earlier.order_index=chapters.order_index AND earlier.id<chapters.id))) AS order_index,
@@ -449,7 +450,7 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
         # A first opening has no progress row. Its current chapter still supplies
         # the context needed to refresh stale rules/source on history restore.
         row = await (await db.execute('''SELECT 0 AS percent,NULL AS paragraph_index,
-            0 AS character_offset,NULL AS source_anchor,c.id AS source_id,c.content_size,c.content_fetched_at,
+            0 AS character_offset,NULL AS source_anchor,2 AS replacement_version,c.id AS source_id,c.content_size,c.content_fetched_at,
             (SELECT COUNT(*) FROM chapters earlier WHERE earlier.novel_id=c.novel_id
              AND (earlier.order_index<c.order_index OR (earlier.order_index=c.order_index AND earlier.id<c.id))) AS order_index,
             v.number AS volume_number,c.number AS chapter_number
@@ -466,7 +467,8 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
     return JSONResponse({
         "progress_percent": row["percent"] or 0,
         "source_anchor": row["source_anchor"],
-        "current_replacements": await text_replacements.rules_for(db,user["id"],novel_id=novel_id),
+        "replacement_version": row["replacement_version"],
+        "current_replacements": text_replacements.client_rules(await text_replacements.rules_for(db,user["id"],novel_id=novel_id)),
         "source_identity": row["source_id"],
         "source_version": f'W/"{row["source_id"]}-{row["content_fetched_at"] or ""}-{row["content_size"] or 0}"',
         "position": ([row["order_index"], row["paragraph_index"], row["character_offset"]]
@@ -501,8 +503,9 @@ async def save_novel_progress(novel_id: int, request: Request, user=Depends(get_
     chapter_percent = percent(body.get("chapter_percent", 0.0), "chapter_percent")
     paragraph_index = optional_index(body.get("paragraph_index"), "paragraph_index")
     character_offset = optional_index(body.get("character_offset", 0), "character_offset") or 0
-    from app.reader.source_anchors import validate_anchor
+    from app.reader.source_anchors import validate_anchor, progress_version
     source_anchor = validate_anchor(body.get("source_anchor"), chapter_id=chapter_id)
+    replacement_version = progress_version(body, source_anchor)
 
     # A chapter of THIS novel -- the foreign key only says the chapter
     # exists, not that it belongs here, and the progress row is keyed by
@@ -517,8 +520,8 @@ async def save_novel_progress(novel_id: int, request: Request, user=Depends(get_
         await db.execute(
             """
             INSERT INTO novel_reading_progress
-                (user_id, novel_id, chapter_id, scroll_percent, chapter_percent, paragraph_index, character_offset, source_anchor, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                (user_id, novel_id, chapter_id, scroll_percent, chapter_percent, paragraph_index, character_offset, source_anchor, replacement_version, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(user_id, novel_id) DO UPDATE SET
                 chapter_id = excluded.chapter_id,
                 scroll_percent = excluded.scroll_percent,
@@ -526,9 +529,10 @@ async def save_novel_progress(novel_id: int, request: Request, user=Depends(get_
                 paragraph_index = excluded.paragraph_index,
                 character_offset = excluded.character_offset,
                 source_anchor = excluded.source_anchor,
+                replacement_version = excluded.replacement_version,
                 updated_at = datetime('now')
             """,
-            (user["id"], novel_id, chapter_id, scroll_percent, chapter_percent, paragraph_index, character_offset, source_anchor),
+            (user["id"], novel_id, chapter_id, scroll_percent, chapter_percent, paragraph_index, character_offset, source_anchor, replacement_version),
         )
         await db.commit()
 

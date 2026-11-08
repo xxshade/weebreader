@@ -44,7 +44,7 @@
          * percent -- what this page was rendered at, 0-100.
          */
         watch(url, percent, position = null, sourceAnchor = null) {
-            watched = { url, sent: Number(percent) || 0, position, sourceAnchor, root: document.getElementById("reader-root") };
+            watched = { url, sent: Number(percent) || 0, position, sourceAnchor, replacementVersion: Number(document.getElementById("reader-root")?.dataset.replacementVersion || 1), root: document.getElementById("reader-root") };
             if (restoring) {
                 restoring = false;
                 return catchUp();
@@ -52,8 +52,8 @@
         },
         unwatch(root) { if (watched?.root === root) watched = null; },
         /** Every progress POST reports its percentage here. */
-        sent(percent, position = null, sourceAnchor = null) {
-            if (watched && Number.isFinite(percent)) { watched.sent = percent; watched.position = position; watched.sourceAnchor = sourceAnchor; }
+        sent(percent, position = null, sourceAnchor = null, replacementVersion = null) {
+            if (watched && Number.isFinite(percent)) { watched.sent = percent; watched.position = position; watched.sourceAnchor = sourceAnchor; if (replacementVersion !== null) watched.replacementVersion = replacementVersion; }
         },
     };
 
@@ -137,6 +137,9 @@
                 replaceSaved();
                 return;
             }
+        }
+        if (baseline.root.dataset.replacementVersion !== undefined && saved.replacement_version !== undefined && saved.replacement_version !== baseline.replacementVersion) {
+            replaceSaved(); return;
         }
         const valid = p => Array.isArray(p) && p.length === 3 && p.every(n => Number.isSafeInteger(n) && n >= 0);
         let serverPosition = saved.position, localPosition = baseline.position;

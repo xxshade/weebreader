@@ -75,6 +75,34 @@ controls. Desktop viewport simulations are not native Android or LibreWolf tests
 No manual migration is required: startup adds the optional progress columns;
 legacy positions are captured lazily before their replacement rules change.
 
+## Ordinary and nonbreaking spaces
+
+Matching treats U+0020 and U+00A0 as equivalent, including raw HTML `&nbsp;`,
+`&#160;` and hexadecimal encodings. This applies only within a match: case,
+punctuation, tabs, line breaks and other Unicode spaces remain distinct. Text
+outside the match and the original book files are unchanged. Matching still
+operates on individual raw HTML text segments; it does not span element tags.
+Replacement strings retain their existing literal/HTML semantics.
+
+Displayed coordinates carry a matching version independently of the original
+source reference. Startup adds columns defaulting existing positions to version
+1; new readers save version 2. When the source and rules still agree, a legacy
+position is translated through the old and new matching passes. Unchanged
+inserted passages retain their exact interior offset; newly rewritten passages
+resume at their beginning. Changed rules continue using the original-source
+reference. Boosted visits and history restores refresh stale matching assets.
+
+Reading activity declares the matching version of its displayed passage.
+Versionless pending activity still validates against the old literal matcher,
+including after a restart; existing ledger identities are preserved. New visits
+cannot change matching version in a later checkpoint. This is protocol metadata,
+not a user-visible replacement history.
+
+Only cache identities whose Find text contains an affected space spelling
+change. Unaffected disk inventories and snapshots retain their existing keys;
+affected estimates rebuild on demand or during normal preparation. There is no
+global cache-version bump or rewrite of reading history.
+
 
 ## Replacement settings and upgrade cleanup
 

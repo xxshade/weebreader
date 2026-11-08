@@ -72,6 +72,23 @@
         return;
     }
 
+    // A boosted body can arrive in a head using older matching semantics.
+    // Reload once to acquire a consistent renderer and position mapper.
+    const main = root?.closest('main');
+    const sharedAssets = [
+        [window.readerReplacements, main?.dataset.readerReplacementsUrl],
+        [window.readerSourceAnchor, main?.dataset.readerSourceAnchorUrl],
+    ];
+    if ((!window.readerReplacements && !document.querySelector('script[src*="/reader-replacements.js"]')) ||
+        sharedAssets.some(([api, url]) => api && (api.version !== 2 || (url && api.assetUrl !== new URL(url,location.href).href)))) {
+        window.location.reload(); return;
+    }
+    if (!window.readerReplacements || window.readerSourceAnchor?.version !== 2) {
+        const indicator = document.getElementById('loading-indicator');
+        if (indicator) indicator.textContent = "Couldn't load the reader. Reload to try again.";
+        return;
+    }
+
     // ---- Listeners that end with this reader ----
     //
     // Under hx-boost the document is never unloaded: a boosted link
@@ -147,34 +164,20 @@
     // reason -- they sit between tags but are not text anyone reads.
     // Consequences of working on the raw HTML, both accepted: a rule
     // cannot match across a tag boundary ("the <em>end</em>"), and it
-    // matches the source spelling, so a rule containing & or < has to be
-    // written the way the file writes it.
+    // otherwise matches the source spelling, so a rule containing & or <
+    // has to be written the way the file writes it. Ordinary and NBSP
+    // spaces (including their HTML encodings) are the sole exception.
     const replacementRules = (() => {
         try {
             const parsed = JSON.parse(root.dataset.replacements || "[]");
-            return Array.isArray(parsed) ? parsed.filter((r) => r && r.find) : [];
+            return Array.isArray(parsed) ? parsed.filter((r) => r && r.find).map(r => ({find:r.find, replace:r.replace || ""})) : [];
         } catch {
             return []; // malformed attribute: read the book unmodified
         }
     })();
 
-    const SKIP_ELEMENT_BODIES = /<(script|style)\b[\s\S]*?<\/\1\s*>/gi;
-
     function applyReplacements(html) {
-        if (!replacementRules.length) return html;
-        return html.replace(
-            new RegExp(`${SKIP_ELEMENT_BODIES.source}|>([^<]+)<`, "gi"),
-            (match, _tag, text) => {
-                if (text === undefined) return match; // a <script>/<style> body
-                let out = text;
-                // In order, each rule seeing the previous one's output --
-                // which is why the settings list keeps them oldest first.
-                for (const rule of replacementRules) {
-                    out = out.split(rule.find).join(rule.replace || "");
-                }
-                return `>${out}<`;
-            },
-        );
+        return window.readerReplacements.replaceHtml(html, replacementRules);
     }
 
     // New positions are "elidx:N:OFFSET"; "elidx:N" still means block start. A
@@ -1319,6 +1322,8 @@
             anchorMap: window.readerSourceAnchor.buildHtml(originalHtml, blocks, replacementRules),
             originalDigest: await window.readerSourceAnchor.digest(originalHtml),
             rulesDigest: await window.readerSourceAnchor.digest(JSON.stringify(replacementRules)),
+            upgradedPosition: Number(root.dataset.replacementVersion || 1) === 1 && index === (startSpineIndex || 0)
+                ? window.readerSourceAnchor.migrateHtml(originalHtml, blocks, replacementRules, startPosition) : null,
         };
         if (!mapsDisposed) sourceMaps.set(index, prepared);
     }
@@ -1331,6 +1336,10 @@
                     && saved.originalDigest === chapter?.originalDigest
                     && saved.rulesDigest !== chapter.rulesDigest) {
                 return chapter.anchorMap?.toDisplay(saved.position) || fallback;
+            }
+            if (Number(root.dataset.replacementVersion || 1) === 1 && index === (startSpineIndex || 0)
+                    && (!saved || (saved.originalDigest === chapter?.originalDigest && saved.rulesDigest === chapter.rulesDigest))) {
+                return chapter?.upgradedPosition || chapter?.anchorMap?.toDisplay(saved?.position) || fallback;
             }
         } catch { /* Malformed/old metadata uses legacy coordinates. */ }
         return fallback;
@@ -1555,7 +1564,7 @@
         markDisplayedSource(spine);
         const payload = {...adapter.buildTimingPayload(spine, spineList[spine], start.index),
             source_version:source === 'epub' ? contentVersion : timingSourceVersions.get(spine),
-            character_offset:start.offset || 0, passage:timingPassage(blocks, start, end)};
+            replacement_version:2, character_offset:start.offset || 0, passage:timingPassage(blocks, start, end)};
         normal = normal && performance.now() >= timingReflowUntil;
         let completed = normal, traversedEnd = null;
         if (continuous && previousTiming) {
@@ -1946,19 +1955,19 @@
         const chapter = sourceMaps.get(spineIndex);
         const originalPosition = chapter?.anchorMap?.toSource({index: elidx, offset});
         const sourceAnchor = originalPosition ? JSON.stringify({
-            version: 1, section: spineIndex, position: originalPosition,
+            version: 1, matchingVersion: 2, section: spineIndex, position: originalPosition,
             ...(source === "novel" ? {chapterId: entry.chapterId} : {}),
             originalDigest: chapter.originalDigest, rulesDigest: chapter.rulesDigest,
         }) : null;
         const payload = JSON.stringify(
-            { source_anchor: sourceAnchor, ...adapter.buildProgressPayload(spineIndex, entry, elidx, percentage || 0, chapterFraction || 0, offset),
+            { source_anchor: sourceAnchor, replacement_version: 2, ...adapter.buildProgressPayload(spineIndex, entry, elidx, percentage || 0, chapterFraction || 0, offset),
               on_exit: useBeacon,
               ...(source === "epub" ? {save_session: progressSaveSession, save_sequence: ++progressSaveSequence} : {}) });
         // The baseline a restored page measures the server against -- see
         // reader-resume.js. The WHOLE-book fraction, not the chapter's:
         // 90% of chapter 2 is behind 10% of chapter 40, and the two ends
         // have to be on one scale for "ahead" to mean anything.
-        window.readerResume?.sent((percentage || 0) * 100, [spineIndex, elidx, offset], sourceAnchor);
+        window.readerResume?.sent((percentage || 0) * 100, [spineIndex, elidx, offset], sourceAnchor, 2);
         const url = adapter.progressUrl;
         if (useBeacon && navigator.sendBeacon) {
             navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));

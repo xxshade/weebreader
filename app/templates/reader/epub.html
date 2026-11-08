@@ -18,6 +18,7 @@
 {% block content %}
     <div id="reader-root"
          data-source="epub"
+         data-replacement-version="{{ progress.replacement_version if progress else 2 }}"
          data-reader-user-id="{{ user.id if user is defined else '' }}"
          data-item-id="{{ item.id }}"
          data-source-anchor="{{ progress.source_anchor if progress and progress.source_anchor else '' }}"

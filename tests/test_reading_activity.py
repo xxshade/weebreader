@@ -191,3 +191,27 @@ class ReadingActivity(StatsCase):
             capped.update(closed=True, completed=True)
             await send(capped)
             self.assertEqual(len(published), 1, 'Retries and capped passages must not refresh the learned pace')
+
+    async def test_old_and_new_space_matching_visits_validate_their_original_text(self):
+        source='Mr.\u00a0Dentelle hello '
+        await self.db.execute('UPDATE chapters SET content_html=? WHERE id=1',('<p>'+source+'</p>',))
+        await self.db.execute("INSERT INTO text_replacements(user_id,novel_id,find_text,replace_text) VALUES(1,1,'Mr. Dentelle','Renamed')")
+        for suffix,text,version,words in [('old',source,None,3),('new','Renamed hello ',2,2)]:
+            value=self.visit('visit-space-'+suffix+'-00000000')
+            value['passage']=[dict(text=text,start=0,end=len(text))]
+            if version is not None:value['replacement_version']=version
+            await self.record(value)
+            saved=await (await self.db.execute('SELECT word_count,identity FROM reading_activity WHERE id=?',(value['id'],))).fetchone()
+            self.assertEqual(saved['word_count'],words)
+            self.assertEqual('replacement_version' in json.loads(saved['identity']),version is not None)
+        value['revision']=2
+        value['replacement_version']=1
+        with self.assertRaisesRegex(ValueError,'cannot change'):
+            await self.record(value)
+
+    async def test_invalid_matching_version_is_rejected(self):
+        for version in [True,0,3,'2']:
+            value=self.visit()
+            value['replacement_version']=version
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError,'replacement version'):
+                await self.record(value)

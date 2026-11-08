@@ -6,6 +6,7 @@ The fixture instruments cache observation, not replacement or position behavior.
 """
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -396,6 +397,246 @@ class ReplacementChecks(PaginationChecks):
         self.assertFalse(
             self.js("return readerFullscreen.fixtureHasButton()"),
             "Departed fullscreen button must be released",
+        )
+
+    @contextmanager
+    def space_document(self, html, rules):
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            path = Path(
+                db.execute("SELECT file_path FROM items WHERE id=100").fetchone()[0]
+            )
+            chapter = db.execute(
+                "SELECT content_html,content_size FROM chapters WHERE id=100"
+            ).fetchone()
+            original = path.read_bytes()
+            with zipfile.ZipFile(path) as book:
+                files = {name: book.read(name) for name in book.namelist()}
+            files["OEBPS/ch0.xhtml"] = html.encode()
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as book:
+                for name, value in files.items():
+                    book.writestr(name, value)
+            db.execute(
+                "UPDATE chapters SET content_html=?,content_size=? WHERE id=100",
+                (html, len(html)),
+            )
+            db.execute("DELETE FROM text_replacements")
+            for rule in rules:
+                for column in ("series_id", "novel_id"):
+                    db.execute(
+                        "INSERT INTO text_replacements(user_id,"
+                        + column
+                        + ",find_text,replace_text) VALUES(1,100,?,?)",
+                        (rule["find"], rule["replace"]),
+                    )
+        try:
+            yield
+        finally:
+            path.write_bytes(original)
+            with sqlite3.connect(self.fixture.data / "library.db") as db:
+                db.execute(
+                    "UPDATE chapters SET content_html=?,content_size=? WHERE id=100",
+                    chapter,
+                )
+                db.execute("DELETE FROM text_replacements")
+
+    def test_equivalent_spaces_render_and_record_epub_and_novel(self):
+        source = (
+            '<html><body><p id="space-match">Mr. Dentelle Mr.\u00a0Dentelle Mr.&nbsp;Dentelle Mr.&#160;Dentelle</p><p id="long">'
+            + WORDS
+            + "</p></body></html>"
+        )
+        with self.space_document(
+            source, [{"find": "Mr. Dentelle", "replace": "Dentelle-san"}]
+        ):
+            for flow in ("paginated", "scrolled-doc"):
+                for novel in (False, True):
+                    with self.subTest(flow=flow, novel=novel):
+                        with sqlite3.connect(self.fixture.data / "library.db") as db:
+                            before = {
+                                row[0]
+                                for row in db.execute("SELECT id FROM reading_activity")
+                            }
+                            db.execute("DELETE FROM reading_progress WHERE item_id=100")
+                            db.execute(
+                                "DELETE FROM novel_reading_progress WHERE novel_id=100"
+                            )
+                        self.driver.get(self.base + "/")
+                        self.driver.execute_script(
+                            "localStorage.setItem('text-reader-prefs',JSON.stringify({flow:arguments[0],font:'original',fontSize:100,lineHeight:1.6,width:720,bottomGap:0}))",
+                            flow,
+                        )
+                        self.driver.get(
+                            self.base
+                            + ("/novels/100/read/1/1" if novel else "/reader/100")
+                        )
+                        selector = (
+                            "#custom-scroll iframe"
+                            if flow == "scrolled-doc"
+                            else "#paginated-viewer iframe"
+                        )
+                        self.wait(
+                            "document.querySelector("
+                            + repr(selector)
+                            + ")?.style.visibility==='visible'"
+                        )
+                        text = self.driver.execute_script(
+                            "return document.querySelector(arguments[0]).contentDocument.getElementById('space-match').textContent",
+                            selector,
+                        )
+                        self.assertEqual(
+                            text.count("Dentelle-san"),
+                            4,
+                            "Every equivalent-space occurrence must be replaced",
+                        )
+                        self.assertNotIn("Mr.", text)
+                        time.sleep(1.1)
+                        # Opening alone deliberately does not rewrite progress.
+                        # Navigate with the real controls/gesture before checking it.
+                        if flow == "paginated":
+                            self.show_controls()
+                            self.next_page()
+                        else:
+                            from selenium.webdriver.common.action_chains import (
+                                ActionChains,
+                            )
+                            from selenium.webdriver.common.actions.wheel_input import (
+                                ScrollOrigin,
+                            )
+
+                            ActionChains(self.driver).scroll_from_origin(
+                                ScrollOrigin.from_element(
+                                    self.driver.find_element(
+                                        "css selector", "#custom-scroll iframe"
+                                    )
+                                ),
+                                0,
+                                400,
+                            ).perform()
+                            time.sleep(0.4)
+                        self.driver.get(
+                            self.base + ("/novels/100" if novel else "/series/100")
+                        )
+                        table = (
+                            "novel_reading_progress WHERE novel_id=100"
+                            if novel
+                            else "reading_progress WHERE item_id=100"
+                        )
+
+                        def saved(_):
+                            with sqlite3.connect(
+                                self.fixture.data / "library.db"
+                            ) as db:
+                                row = db.execute(
+                                    "SELECT replacement_version,source_anchor FROM "
+                                    + table
+                                ).fetchone()
+                                visits = [
+                                    r
+                                    for r in db.execute(
+                                        "SELECT id,identity,word_count FROM reading_activity"
+                                    )
+                                    if r[0] not in before
+                                ]
+                            return row and row[0] == 2 and visits and (row, visits)
+
+                        row, visits = WebDriverWait(self.driver, 10).until(saved)
+                        self.assertEqual(json.loads(row[1])["matchingVersion"], 2)
+                        self.assertTrue(
+                            all(
+                                json.loads(r[1]).get("replacement_version") == 2
+                                for r in visits
+                            )
+                        )
+                        self.assertTrue(
+                            any(r[2] >= 8 for r in visits),
+                            "Displayed replacement activity must be accepted",
+                        )
+
+    def test_matching_upgrade_preserves_legacy_resume_inside_unchanged_replacement(
+        self,
+    ):
+        source = (
+            '<html><body><p id="long">😀 Mr.&nbsp;Dentelle name target '
+            + WORDS
+            + "</p></body></html>"
+        )
+        rules = [
+            {"find": "Mr. Dentelle", "replace": "D"},
+            {"find": "name", "replace": "expanded name"},
+        ]
+        with self.space_document(source, rules):
+            for novel in (False, True):
+                with self.subTest(novel=novel):
+                    with sqlite3.connect(self.fixture.data / "library.db") as db:
+                        if novel:
+                            db.execute(
+                                "INSERT OR REPLACE INTO novel_reading_progress(user_id,novel_id,chapter_id,paragraph_index,character_offset,replacement_version) VALUES(1,100,100,0,20,1)"
+                            )
+                        else:
+                            db.execute(
+                                "INSERT OR REPLACE INTO reading_progress(user_id,item_id,status,current_page,current_location,replacement_version) VALUES(1,100,'reading',0,'elidx:0:20',1)"
+                            )
+                    self.driver.get(self.base + "/")
+                    self.js(
+                        "localStorage.setItem('text-reader-prefs',JSON.stringify({flow:'paginated',font:'original',fontSize:100,lineHeight:1.6,width:720,bottomGap:0}))"
+                    )
+                    path = "/novels/100/read/1/1" if novel else "/reader/100"
+                    expected = None
+                    for repeat in range(2):
+                        self.driver.get(self.base + path)
+                        self.wait(
+                            "document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
+                        )
+                        if expected is None:
+                            self.assertTrue(
+                                self.page()["long"].startswith("nded name target"),
+                                "Legacy matching upgrade must retain the exact unchanged inserted passage",
+                            )
+                            self.show_controls()
+                            self.next_page()
+                            expected = self.first_marker()
+                        else:
+                            self.assertEqual(
+                                self.first_marker(),
+                                expected,
+                                "A saved matching upgrade must not be applied twice",
+                            )
+                        self.driver.get(
+                            self.base + ("/novels/100" if novel else "/series/100")
+                        )
+
+                        def version_saved(_):
+                            with sqlite3.connect(
+                                self.fixture.data / "library.db"
+                            ) as db:
+                                row = db.execute(
+                                    "SELECT replacement_version FROM "
+                                    + (
+                                        "novel_reading_progress WHERE novel_id=100"
+                                        if novel
+                                        else "reading_progress WHERE item_id=100"
+                                    )
+                                ).fetchone()
+                                return row and row[0] == 2
+
+                        WebDriverWait(self.driver, 10).until(version_saved)
+
+    def test_old_boosted_matching_modules_refresh_before_reading(self):
+        self.driver.get(self.base + "/series/100")
+        before = self.js("return audit.document")
+        self.js("readerReplacements.version=1")
+        self.driver.find_element("css selector", 'a[href="/reader/100"]').click()
+        self.wait(
+            "document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
+        )
+        self.assertNotEqual(
+            self.js("return audit.document"),
+            before,
+            "Stale matching modules must refresh together",
+        )
+        self.assertEqual(
+            self.js("return [readerReplacements.version,readerSourceAnchor.version]"),
+            [2, 2],
         )
 
     def test_settings_save_feedback_duplicate_and_resync(self):
@@ -789,6 +1030,27 @@ def main():
     if audit.ARGS.baseline_only or audit.ARGS.test:
         return 0
     for filename, before, after, test, signal in [
+        (
+            "app/static/js/reader-text.js",
+            "api.version !== 2 ||",
+            "false ||",
+            "test_old_boosted_matching_modules_refresh_before_reading",
+            "Stale matching modules must refresh together",
+        ),
+        (
+            "app/static/js/reader-replacements.js",
+            'const space = "[ \\u00a0]";',
+            'const space = "[ ]";',
+            "test_equivalent_spaces_render_and_record_epub_and_novel",
+            "Every equivalent-space occurrence must be replaced",
+        ),
+        (
+            "app/static/js/reader-text.js",
+            "return chapter?.upgradedPosition || chapter?.anchorMap?.toDisplay(saved?.position) || fallback;",
+            "return fallback;",
+            "test_matching_upgrade_preserves_legacy_resume_inside_unchanged_replacement",
+            "Legacy matching upgrade must retain the exact unchanged inserted passage",
+        ),
         (
             "app/templates/_replacement_rules.html",
             "{% set retry = replacement_edit if replacement_edit and replacement_edit.id == rule.id else none %}",

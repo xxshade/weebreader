@@ -331,7 +331,7 @@ async def read_progress(item_id: int, user=Depends(get_current_user), db=Depends
     item = await _get_item(db, item_id)
     row = await (
         await db.execute(
-            "SELECT progress_percent, current_page, current_location, source_anchor FROM reading_progress WHERE user_id = ? AND item_id = ?",
+            "SELECT progress_percent, current_page, current_location, source_anchor, replacement_version FROM reading_progress WHERE user_id = ? AND item_id = ?",
             (user["id"], item_id),
         )
     ).fetchone()
@@ -339,7 +339,8 @@ async def read_progress(item_id: int, user=Depends(get_current_user), db=Depends
         "progress_percent": (row["progress_percent"] if row else 0) or 0,
         "resume_url": f"/reader/{item_id}",
         "source_anchor": row["source_anchor"] if row else None,
-        "current_replacements": await text_replacements.rules_for(db,user["id"],series_id=item["series_id"]),
+        "replacement_version": row["replacement_version"] if row else 2,
+        "current_replacements": text_replacements.client_rules(await text_replacements.rules_for(db,user["id"],series_id=item["series_id"])),
         "source_version": item["file_hash"],
         "source_identity": item_id,
         "position": text_position(row["current_page"], row["current_location"]) if row else None,
@@ -369,8 +370,9 @@ async def save_progress(
     current_location = body.get("current_location")
     if current_location is not None and not isinstance(current_location, str):
         raise HTTPException(400, "current_location must be a string")
-    from app.reader.source_anchors import validate_anchor
+    from app.reader.source_anchors import validate_anchor, progress_version
     source_anchor = validate_anchor(body.get("source_anchor"), section=current_page)
+    replacement_version = progress_version(body, source_anchor)
     progress_percent = percent(body.get("progress_percent", 0), "progress_percent")
     status = one_of(body.get("status", "reading"), PROGRESS_STATUSES, "status")
 
@@ -405,16 +407,17 @@ async def save_progress(
             """
             INSERT INTO reading_progress
                 (user_id, item_id, status, current_page, current_location, progress_percent,
-                 last_read_at, completed_at, completed_from_percent, source_anchor)
+                 last_read_at, completed_at, completed_from_percent, source_anchor, replacement_version)
             VALUES (?, ?, ?, ?, ?, ?, datetime('now'),
                     -- A first save can already be the finish (a book opened
                     -- at its last page); it had no finish date at all.
-                    CASE WHEN ?3 = 'completed' THEN datetime('now') END, ?, ?)
+                    CASE WHEN ?3 = 'completed' THEN datetime('now') END, ?, ?, ?)
             ON CONFLICT(user_id, item_id) DO UPDATE SET
                 status = excluded.status,
                 current_page = excluded.current_page,
                 current_location = excluded.current_location,
                 source_anchor = excluded.source_anchor,
+                replacement_version = excluded.replacement_version,
                 progress_percent = excluded.progress_percent,
                 last_read_at = datetime('now'),
                 completed_at = CASE
@@ -436,7 +439,7 @@ async def save_progress(
              # Only meaningful when this first save is already a
              # completion; every other row gets it on the transition in the
              # ON CONFLICT clause above.
-             progress_percent if status == "completed" else None, source_anchor),
+             progress_percent if status == "completed" else None, source_anchor, replacement_version),
         )
         await wdb.commit()
 

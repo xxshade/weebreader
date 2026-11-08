@@ -34,6 +34,8 @@ def parse_anchor(value):
             for k in ("originalDigest", "rulesDigest")
         ):
             return None
+        if type(data.get("matchingVersion", 1)) is not int or data.get("matchingVersion", 1) not in (1, 2):
+            return None
         if "chapterId" in data and (
             type(data["chapterId"]) is not int or data["chapterId"] < 1
         ):
@@ -56,52 +58,28 @@ def validate_anchor(value, *, section=None, chapter_id=None):
     return value
 
 
+def progress_version(body, anchor):
+    saved = parse_anchor(anchor)
+    version = body.get("replacement_version", saved.get("matchingVersion", 1) if saved else 1)
+    if type(version) is not int or version not in (1, 2):
+        raise HTTPException(400, "Invalid replacement version")
+    if saved and version != saved.get("matchingVersion", 1):
+        raise HTTPException(400, "Replacement version does not match the source anchor")
+    return version
+
+
 def utf16(text):
     return len(text.encode("utf-16-le", errors="surrogatepass")) // 2
 
 
-def mapped_offset(text, offset, rules, *, backwards=False):
+def mapped_offset(text, offset, rules, *, backwards=False, matching_version=2):
     """UTF-16 mapping through ordered literal edits, in either direction."""
-    stages = []
-    for rule in rules:
-        find = rule.get("find")
-        if not find:
-            continue
-        replacement = rule.get("replace") or ""
-        cursor = source_units = output_units = 0
-        pieces, edits = [], []
-        find_units, replacement_units = utf16(find), utf16(replacement)
-        while (at := text.find(find, cursor)) >= 0:
-            unchanged = text[cursor:at]
-            units = utf16(unchanged)
-            a, b, c = (
-                source_units + units,
-                source_units + units + find_units,
-                output_units + units,
-            )
-            pieces.extend((unchanged, replacement))
-            output_units, source_units = c + replacement_units, b
-            edits.append((a, b, c, output_units))
-            cursor = at + len(find)
-        pieces.append(text[cursor:])
-        text = "".join(pieces)
-        stages.append(edits)
-    for edits in reversed(stages) if backwards else stages:
-        shift = 0
-        for a, b, c, d in edits:
-            if backwards:
-                a, b, c, d = c, d, a, b
-            if offset < a:
-                break
-            if offset < b:
-                offset, shift = c, 0
-                break
-            shift = d - b
-        offset += shift
-    return text, offset
+    from app.replacement_matching import trace, translate
+    output, stages = trace(text, rules, raw=False, version=matching_version)
+    return output, translate(offset, stages, backwards=backwards)
 
 
-def _convert_position_fast(source, rules, index, offset, *, backwards=False):
+def _convert_position_fast(source, rules, index, offset, *, backwards=False, matching_version=2):
     from app.stats.text_inventory import _section, _chunks, _rules
 
     def chunks(nodes):
@@ -109,7 +87,7 @@ def _convert_position_fast(source, rules, index, offset, *, backwards=False):
 
     original, rendered = (
         _section(source, (), chunks),
-        _section(source, _rules(rules), chunks),
+        _section(source, _rules(rules), chunks, matching_version=matching_version),
     )
     if len(original) != len(rendered) or index >= len(original):
         return None
@@ -124,7 +102,7 @@ def _convert_position_fast(source, rules, index, offset, *, backwards=False):
             before,
             max(0, min(length, offset - input_start)),
             rules,
-            backwards=backwards,
+            backwards=backwards, matching_version=matching_version,
         )
         if expected != after:
             return None
@@ -135,13 +113,13 @@ def _convert_position_fast(source, rules, index, offset, *, backwards=False):
     return index, answer or 0
 
 
-def _convert_position(source, rules, index, offset, *, backwards=False):
-    result = _convert_position_fast(source, rules, index, offset, backwards=backwards)
+def _convert_position(source, rules, index, offset, *, backwards=False, matching_version=2):
+    result = _convert_position_fast(source, rules, index, offset, backwards=backwards, matching_version=matching_version)
     if result is not None:
         return result
     from app.reader.raw_positions import convert_position
 
-    return convert_position(source, rules, index, offset, backwards)
+    return convert_position(source, rules, index, offset, backwards, matching_version)
 
 
 def display_position(source, rules, anchor):
@@ -153,12 +131,12 @@ def display_position(source, rules, anchor):
     )
 
 
-def capture_anchor(source, rules, section, index, offset, chapter_id=None):
+def capture_anchor(source, rules, section, index, offset, chapter_id=None, matching_version=2):
     if not isinstance(source, str) or any(
         type(v) is not int or not 0 <= v <= 2**53 - 1 for v in (section, index, offset)
     ):
         return None
-    position = _convert_position(source, rules, index, offset, backwards=True)
+    position = _convert_position(source, rules, index, offset, backwards=True, matching_version=matching_version)
     if position is None:
         return None
     data = dict(
@@ -170,49 +148,55 @@ def capture_anchor(source, rules, section, index, offset, chapter_id=None):
             json.dumps(rules, ensure_ascii=False, separators=(",", ":")).encode()
         ).hexdigest(),
     )
+    if matching_version != 1:
+        data["matchingVersion"] = matching_version
     if chapter_id is not None:
         data["chapterId"] = chapter_id
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
-def remaining_html(source, rules, value):
-    from app.stats.text_inventory import inventory_html
-
+def saved_display_position(source, rules, value, legacy=None):
+    """Keep exact display offsets when their rule basis is still identifiable."""
     anchor = parse_anchor(value)
-    if (
-        anchor
-        and "chapterId" in anchor
-        and hashlib.sha256(source.encode("utf-8")).hexdigest()
-        != anchor["originalDigest"]
-    ):
-        from app.novels.scraper import tag_paragraphs
+    if anchor and hashlib.sha256(source.encode("utf-8")).hexdigest() != anchor["originalDigest"]:
+        return None
+    digest = hashlib.sha256(json.dumps(rules, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    if legacy is not None and (anchor is None or anchor["rulesDigest"] == digest):
+        index, offset, version = legacy
+        if version == 1 and (index or offset):
+            from app.replacement_matching import affected
+            if affected(rules):
+                from app.reader.raw_positions import migrate_position
+                return migrate_position(source, rules, index, offset)
+        return index, offset
+    return display_position(source, rules, anchor) if anchor else None
 
+
+def remaining_html(source, rules, value, legacy=None):
+    from app.stats.text_inventory import inventory_html
+    anchor = parse_anchor(value)
+    if anchor and "chapterId" in anchor and hashlib.sha256(source.encode("utf-8")).hexdigest() != anchor["originalDigest"]:
+        from app.novels.scraper import tag_paragraphs
         source = tag_paragraphs(source)
-    position = display_position(source, rules, anchor) if anchor else None
+    position = saved_display_position(source, rules, value, legacy)
     return inventory_html(source, rules).remaining(0, *position) if position else None
 
 
-def remaining_epub(path, version, rules, value):
+def remaining_epub(path, version, rules, value, legacy=None):
     import zipfile
     from app.library.parsers.epub import list_spine_resources
     from app.stats.text_inventory import inventory_epub
-
     anchor = parse_anchor(value)
-    if anchor is None:
+    if anchor is None and legacy is None:
         return None
+    section = anchor["section"] if anchor else legacy[0]
     with zipfile.ZipFile(path) as archive:
         spine = list_spine_resources(str(path))
-        if anchor["section"] >= len(spine):
+        if section >= len(spine):
             return None
-        source = archive.read(spine[anchor["section"]]["href"]).decode(
-            "utf-8-sig", errors="replace"
-        )
-    position = display_position(source, rules, anchor)
-    return (
-        inventory_epub(path, version, rules).remaining(anchor["section"], *position)
-        if position
-        else None
-    )
+        source = archive.read(spine[section]["href"]).decode("utf-8-sig", errors="replace")
+    position = saved_display_position(source, rules, value, legacy[1:] if legacy else None)
+    return inventory_epub(path, version, rules).remaining(section, *position) if position else None
 
 
 def _capture_item(row, rules):
@@ -232,7 +216,8 @@ def _capture_item(row, rules):
             source = archive.read(spine[section]["href"]).decode(
                 "utf-8-sig", errors="replace"
             )
-        return capture_anchor(source, rules, section, int(match[1]), int(match[2] or 0))
+        return capture_anchor(source, rules, section, int(match[1]), int(match[2] or 0),
+                              matching_version=row["replacement_version"])
     except (
         OSError,
         ValueError,
@@ -253,7 +238,7 @@ async def _legacy_basis(db, user_id, series_id, novel_id):
     if novel_id is not None:
         rows = await (
             await db.execute(
-                """SELECT p.chapter_id,p.paragraph_index,p.character_offset,
+                """SELECT p.chapter_id,p.paragraph_index,p.character_offset,p.replacement_version,
             (SELECT COUNT(*) FROM chapters earlier WHERE earlier.novel_id=c.novel_id
              AND (earlier.order_index<c.order_index OR (earlier.order_index=c.order_index AND earlier.id<c.id))) AS section_index,
             c.content_html FROM novel_reading_progress p JOIN chapters c ON c.id=p.chapter_id
@@ -264,7 +249,7 @@ async def _legacy_basis(db, user_id, series_id, novel_id):
     else:
         rows = await (
             await db.execute(
-                """SELECT p.item_id,p.current_page,p.current_location,i.file_path,i.file_hash
+                """SELECT p.item_id,p.current_page,p.current_location,p.replacement_version,i.file_path,i.file_hash
             FROM reading_progress p JOIN items i ON i.id=p.item_id WHERE p.user_id=? AND i.series_id=?
             AND i.file_format='epub' AND p.status!='completed' AND p.source_anchor IS NULL
             AND p.current_location IS NOT NULL ORDER BY p.item_id""",
@@ -293,7 +278,7 @@ async def prepare_legacy_target(db, user_id, *, series_id=None, novel_id=None):
                 row["section_index"],
                 row["paragraph_index"],
                 row["character_offset"],
-                row["chapter_id"],
+                row["chapter_id"], row["replacement_version"],
             )
             identity = novel_id
         else:

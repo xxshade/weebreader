@@ -48,7 +48,7 @@ async def rules_json(db, user_id: int, *, series_id=None, novel_id=None) -> str:
     Always a valid JSON array, "[]" when there is nothing -- the reader
     parses this unconditionally, and an empty attribute is not JSON.
     """
-    return json.dumps(await rules_for(db, user_id, series_id=series_id, novel_id=novel_id))
+    return json.dumps(client_rules(await rules_for(db, user_id, series_id=series_id, novel_id=novel_id)))
 
 
 async def rules_for_series(db, user_id: int, series_ids) -> dict[int, list[dict]]:
@@ -152,3 +152,9 @@ async def remove_duplicates():
                     break
     finally:
         await db.close()
+
+
+def client_rules(rules):
+    """The extra field makes old restored readers refresh changed semantics."""
+    from app.replacement_matching import affected
+    return [dict(rule, space_matching=2) if affected([rule]) else rule for rule in rules]
