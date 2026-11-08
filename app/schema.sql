@@ -651,6 +651,14 @@ CREATE TABLE IF NOT EXISTS novels (
     created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- A sync is interrupted until its attempt settles; absolute UTC times survive
+-- restarts and manual synchronization only advances its own novel.
+CREATE TABLE IF NOT EXISTS novel_sync_schedule (
+    novel_id INTEGER PRIMARY KEY REFERENCES novels(id) ON DELETE CASCADE,
+    next_run_at REAL NOT NULL,
+    running INTEGER NOT NULL DEFAULT 0 CHECK (running IN (0,1))
+);
+
 CREATE TABLE IF NOT EXISTS volumes (
     id              INTEGER PRIMARY KEY,
     novel_id        INTEGER NOT NULL REFERENCES novels(id) ON DELETE CASCADE,

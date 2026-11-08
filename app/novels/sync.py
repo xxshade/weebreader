@@ -1,7 +1,7 @@
 """
 Background sync job for web novels. Ported from a standalone companion
-app's APScheduler-based scheduler.py (SQLAlchemy ORM) to this project's
-raw-SQL / write_transaction pattern.
+app to this project's raw-SQL / write_transaction pattern. Durable
+per-novel automatic scheduling lives in schedule.py.
 
 Each phase acquires the write lock only for its own short DB write --
 mirrors the fix already applied to the comic/EPUB library scanner (see
@@ -10,14 +10,9 @@ fetch_novel_index/fetch_all_chapter_contents themselves are network-bound
 and don't touch the database at all, so they run fully outside any lock.
 """
 
-import asyncio
-import datetime as dt
 import hashlib
 import logging
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-from app.config import settings
 from app.covers.thumbnails import THUMBNAIL_EXTENSION, encode_cover_thumbnail
 from app.database import get_connection, write_transaction
 from app.library import events
@@ -34,7 +29,6 @@ def _cover_version(image_bytes: bytes) -> str:
     in the row, not in a file whose name we get to choose."""
     return hashlib.sha256(image_bytes).hexdigest()[:12]
 
-scheduler = AsyncIOScheduler()
 
 # Guards against two overlapping syncs for the same novel -- e.g. clicking
 # "sync now" right as the periodic job picks the same novel up. Without
@@ -116,7 +110,7 @@ def reconcile_editable_metadata(*, title, synopsis, source_title, source_synopsi
     )
 
 
-async def sync_novel(novel_id: int, *, manual: bool = False) -> int:
+async def sync_novel(novel_id: int, *, manual: bool = False, scheduled: bool = False) -> int:
     """Re-scrape a novel's index. Inserts newly discovered chapters, and also
     refreshes title/release_date/volume on chapters that already exist (so a
     parser fix retroactively repairs previously-scraped rows, not just new
@@ -139,17 +133,13 @@ async def sync_novel(novel_id: int, *, manual: bool = False) -> int:
         logger.info("novel_id=%s sync already in progress, skipping this trigger", novel_id)
         return 0
     _syncing_novel_ids.add(novel_id)
+    started = settled = False
+    from app.novels import schedule
     try:
-        db = await get_connection()
-        try:
-            novel = await (
-                await db.execute("SELECT active, source_url FROM novels WHERE id = ?", (novel_id,))
-            ).fetchone()
-        finally:
-            await db.close()
-        if novel is None or (not novel["active"] and not manual):
+        source_url = await schedule.claim(novel_id, manual=manual, scheduled=scheduled)
+        if source_url is None:
             return 0
-        source_url = novel["source_url"]
+        started = True
 
         await _set_status(novel_id, "launching headless browser")
         meta = await fetch_novel_index(source_url)
@@ -362,63 +352,31 @@ async def sync_novel(novel_id: int, *, manual: bool = False) -> int:
         logger.info(
             "Synced novel_id=%s: %d new chapters, %d bodies downloaded", novel_id, new_count, fetched_count
         )
+        settled = True
         return new_count
 
     except Exception as exc:
         logger.exception("Sync failed for novel_id=%s", novel_id)
         await _set_status(novel_id, "error", error=str(exc))
+        settled = True
         raise
     finally:
-        _syncing_novel_ids.discard(novel_id)
-
-
-async def sync_all_active_novels() -> None:
-    db = await get_connection()
-    try:
-        rows = await (await db.execute("SELECT id FROM novels WHERE active = 1")).fetchall()
-    finally:
-        await db.close()
-    ids = [r["id"] for r in rows]
-    for i, novel_id in enumerate(ids):
-        if i > 0:
-            # A short pause between different novels' initial page loads --
-            # the per-chapter delay inside fetch_all_chapter_contents only
-            # covers requests within one novel, so back-to-back novels would
-            # otherwise hit the site with no gap at all.
-            await asyncio.sleep(settings.novel_scrape_request_delay_seconds)
         try:
-            await sync_novel(novel_id)
-        except Exception:
-            # sync_novel already logged + persisted the error; this catch
-            # only prevents one novel's failure from stopping the batch.
-            pass
+            if started and settled:
+                await schedule.finish(novel_id)
+        finally:
+            _syncing_novel_ids.discard(novel_id)
+            schedule.notify()
 
 
-def start_scheduler() -> None:
-    if scheduler.running:
-        return
-    jitter_seconds = int(settings.novel_scrape_interval_minutes * 60 * 0.10)  # ±10%
-    scheduler.add_job(
-        sync_all_active_novels,
-        "interval",
-        minutes=settings.novel_scrape_interval_minutes,
-        jitter=jitter_seconds,
-        id="sync_all_active_novels",
-        next_run_time=dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=10),
-        max_instances=1,
-        coalesce=True,
-    )
-    scheduler.start()
+async def start_scheduler() -> None:
+    from app.novels.schedule import start
+    await start()
 
 
-def stop_scheduler() -> None:
-    """Called from app.main's lifespan shutdown. wait=False: a sync in
-    progress may have a headless Chromium mid-scrape (see scraper.py), which
-    can run far longer than Docker's stop grace period (10s by default)
-    before it sends SIGKILL -- blocking here would just mean the container
-    gets killed anyway, mid-write, instead of shutting down cleanly."""
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
+async def stop_scheduler() -> None:
+    from app.novels.schedule import stop
+    await stop()
 
 
 async def backfill_chapter_content_size() -> int:

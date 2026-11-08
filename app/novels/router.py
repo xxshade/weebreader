@@ -778,6 +778,8 @@ async def toggle_novel_active(novel_id: int, return_to: str | None = Form(defaul
     async with write_transaction() as db:
         await db.execute("UPDATE novels SET active = 1 - active WHERE id = ?", (novel_id,))
         await db.commit()
+    from app.novels.schedule import notify
+    notify()
     return RedirectResponse(safe_redirect_target(return_to) or "/settings", status_code=302)
 
 

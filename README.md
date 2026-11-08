@@ -157,7 +157,8 @@ backup also restores its older reading progress and downloaded content.
 - **Text reader:** paginated or continuous reading for EPUBs and web novels,
   font/theme controls and saved reading positions.
 - **Web novels:** download chapters from supported sources and synchronize
-  them on a schedule.
+  them on a [persistent per-novel schedule](docs/novels/scheduling.md). Manual
+  synchronization postpones only that novel's next automatic check.
 - **Tracking:** link series to MangaUpdates or MyAnimeList and synchronize
   reading status and progress. MyAnimeList needs your OAuth configuration
   from `.env.example` and an exactly matching registered redirect URI.
