@@ -146,18 +146,37 @@ class ReplacementChecks(PaginationChecks):
         self.driver.find_element(
             "css selector", f'#reader-root a[href="{back}"]'
         ).click()
-        self.wait(f'location.pathname==="{back}" && window.userMenuBound===true')
+        self.wait(
+            f'location.pathname==="{back}" && window.userMenuBound===true && !document.getElementById("reader-root")'
+        )
         self.frames()
-        self.driver.find_element("id", "user-menu-btn").click()
-        self.wait(
-            "!document.querySelector('#user-menu-dropdown').classList.contains('hidden')"
-        )
-        self.driver.find_element(
-            "css selector", '#user-menu-dropdown a[href="/settings"]'
-        ).click()
-        self.wait(
-            "location.pathname==='/settings' && !!document.querySelector('#add-replacement select[name=target]')"
-        )
+
+        def open_settings(_):
+            # URL changes can precede the body morph; a live resync can also
+            # replace an opened dropdown. Reacquire actual controls until the
+            # requested page exists, rather than keeping a stale menu handle.
+            if self.js("return location.pathname==='/settings'"):
+                return bool(
+                    self.driver.find_elements(
+                        "css selector", "#add-replacement select[name=target]"
+                    )
+                )
+            dropdown = self.driver.find_element("id", "user-menu-dropdown")
+            if "hidden" in dropdown.get_attribute("class").split():
+                self.driver.find_element("id", "user-menu-btn").click()
+            else:
+                dropdown.find_element("css selector", 'a[href="/settings"]').click()
+            return False
+
+        WebDriverWait(
+            self.driver,
+            20,
+            ignored_exceptions=(
+                NoSuchElementException,
+                StaleElementReferenceException,
+                ElementNotInteractableException,
+            ),
+        ).until(open_settings)
 
     def add_rule(self, replacement, novel=False, item=100):
         target = "novel:100" if novel else f"series:{item}"

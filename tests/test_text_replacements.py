@@ -4,10 +4,12 @@ The rules themselves are trivial rows; what is worth pinning is the shape
 they reach the reader in (a valid JSON array, in a stable order) and the
 two ways a target can be named, since both come from a submitted form.
 """
+import asyncio
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -162,6 +164,11 @@ class TheRenderedList(unittest.TestCase):
 
 
 class DuplicateWrites(ReplacementCase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        # Contended asyncio locks belong to one IsolatedAsyncioTestCase loop.
+        self.enterContext(patch("app.database._write_lock", asyncio.Lock()))
+
     class Form:
         headers = {}
 
@@ -177,7 +184,6 @@ class DuplicateWrites(ReplacementCase):
                                           {'id': user_id}, self.db)
 
     async def test_concurrent_exact_adds_only_persist_one_rule(self):
-        import asyncio
         await asyncio.gather(self.create(), self.create(), self.create())
         self.assertEqual(len(await text_replacements.rules_for(self.db, 1, series_id=1)), 1)
 
