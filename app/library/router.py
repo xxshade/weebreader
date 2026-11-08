@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from starlette.requests import ClientDisconnect
 
 from app.templating import templates
 from app.library.series_scope import AUTOMATIC_ORDER, has_items, items_order
@@ -489,6 +490,7 @@ async def settings_page(request: Request, user=Depends(get_current_user), db=Dep
             "min_cover_blur": MIN_COVER_BLUR, "max_cover_blur": MAX_COVER_BLUR,
             "replacement_rules": await text_replacements.list_all(db, user["id"]),
             "replacement_targets": await _replacement_targets(db),
+            "replacement_error": request.query_params.get("replacement_error"),
             # Set by the profile forms in auth/router.py when a save is
             # rejected; they are plain form posts, so the message has to
             # survive a redirect. An unrecognised code renders nothing,
@@ -531,7 +533,7 @@ async def _replacement_targets(db) -> list[dict]:
     return targets
 
 
-async def _replacement_rules_response(request: Request, db, user_id: int):
+async def _replacement_rules_response(request: Request, db, user_id: int, error=None, edit=None):
     """The rules list, for htmx, or a redirect back to /settings without it.
 
     Every one of the three endpoints below answers this way, so the page
@@ -543,10 +545,11 @@ async def _replacement_rules_response(request: Request, db, user_id: int):
     the target's name, and an edit can move a rule within it.
     """
     if not is_htmx(request):
-        return RedirectResponse("/settings#text-replacements", status_code=302)
+        return RedirectResponse("/settings" + ("?replacement_error=" + error if error else "") + "#text-replacements", status_code=302)
     return templates.TemplateResponse(
         request, "_replacement_rules.html",
-        {"replacement_rules": await text_replacements.list_all(db, user_id)},
+        {"replacement_rules": await text_replacements.list_all(db, user_id), "replacement_error": error, "replacement_edit": edit},
+        status_code=409 if error else 200,
     )
 
 
@@ -562,10 +565,15 @@ async def add_text_replacement(request: Request, user=Depends(get_current_user),
         # attributes, so the list comes back unchanged rather than
         # explaining itself.
         return await _replacement_rules_response(request, db, user["id"])
+    replace_text = str(form.get("replace_text") or "")
+    error = None
     from app.reader.source_anchors import prepare_legacy_target, apply_legacy_target
     while True:
         prepared = await prepare_legacy_target(db,user["id"],series_id=series_id,novel_id=novel_id)
         async with write_transaction() as wdb:
+            if await text_replacements.exact_duplicate(wdb, user["id"], series_id, novel_id, find_text, replace_text):
+                error = "duplicate"
+                break
             if not await apply_legacy_target(wdb,prepared):
                 continue
             cursor = await wdb.execute(
@@ -580,11 +588,13 @@ async def add_text_replacement(request: Request, user=Depends(get_current_user),
                 await wdb.execute(
                     "INSERT INTO text_replacements (user_id, series_id, novel_id, find_text, replace_text) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    (user["id"], series_id, novel_id, find_text, str(form.get("replace_text") or "")),
+                    (user["id"], series_id, novel_id, find_text, replace_text),
                 )
+            else:
+                error = "limit"
             await wdb.commit()
             break
-    return await _replacement_rules_response(request, db, user["id"])
+    return await _replacement_rules_response(request, db, user["id"], error)
 
 
 @router.post("/settings/text-replacements/{rule_id}")
@@ -596,21 +606,31 @@ async def update_text_replacement(
     would move a substitution onto a book the reader never asked about."""
     form = await request.form()
     find_text = str(form.get("find_text") or "")
+    replace_text = str(form.get("replace_text") or "")
+    error = None
     if find_text:
         while True:
             prepared = await _prepare_rule_position(db,user["id"],rule_id)
             async with write_transaction() as wdb:
+                rule = await (await wdb.execute(
+                    "SELECT series_id,novel_id FROM text_replacements WHERE id=? AND user_id=?",
+                    (rule_id, user["id"]))).fetchone()
+                if rule and await text_replacements.exact_duplicate(wdb, user["id"], rule['series_id'],
+                        rule['novel_id'], find_text, replace_text, exclude_id=rule_id):
+                    error = "duplicate"
+                    break
                 if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
                     continue
                 # user_id in the WHERE, not just the id: the id comes from a form.
                 await wdb.execute(
                     "UPDATE text_replacements SET find_text = ?, replace_text = ? "
                     "WHERE id = ? AND user_id = ?",
-                    (find_text, str(form.get("replace_text") or ""), rule_id, user["id"]),
+                    (find_text, replace_text, rule_id, user["id"]),
                 )
                 await wdb.commit()
                 break
-    return await _replacement_rules_response(request, db, user["id"])
+    return await _replacement_rules_response(request, db, user["id"], error,
+        dict(id=rule_id, find_text=find_text, replace_text=replace_text) if error else None)
 
 
 @router.post("/settings/text-replacements/{rule_id}/delete")
@@ -1284,6 +1304,8 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
     with request_timing.api_phase('api_input'):
         try:
             body = json_object(await request.json())
+        except ClientDisconnect:
+            return Response(status_code=499)
         except ValueError:
             raise HTTPException(400, "Expected a JSON body")
         targets = body.get("targets")

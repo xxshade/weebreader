@@ -210,20 +210,27 @@ class Integration(EstimateCase):
             )
             await self.db.execute("UPDATE items SET series_id=1 WHERE id=1")
         target = "novel" if novel else "series"
-        for operation in ["add", "edit", "delete"]:
+        for operation in ["add", "edit", "delete", "cleanup"]:
             await self.db.execute("DELETE FROM text_replacements")
             cursor = await self.db.execute(
                 f"INSERT INTO text_replacements(user_id,{target}_id,find_text,replace_text) VALUES(1,1,?,?)",
                 ("name", "old long name"),
             )
             identity = cursor.lastrowid
+            offset = 18
+            if operation == "cleanup":
+                await self.db.execute(
+                    f"INSERT INTO text_replacements(user_id,{target}_id,find_text,replace_text) VALUES(1,1,?,?)",
+                    ("name", "old long name"),
+                )
+                offset = 27
             if novel:
                 await self.db.execute(
-                    "INSERT OR REPLACE INTO novel_reading_progress(user_id,novel_id,chapter_id,paragraph_index,character_offset) VALUES(1,1,1,0,18)"
+                    "INSERT OR REPLACE INTO novel_reading_progress(user_id,novel_id,chapter_id,paragraph_index,character_offset) VALUES(1,1,1,0,?)", (offset,)
                 )
             else:
                 await self.db.execute(
-                    "INSERT OR REPLACE INTO reading_progress(user_id,item_id,status,current_page,current_location) VALUES(1,1,'reading',0,'elidx:0:18')"
+                    "INSERT OR REPLACE INTO reading_progress(user_id,item_id,status,current_page,current_location) VALUES(1,1,'reading',0,?)", (f"elidx:0:{offset}",)
                 )
             await self.db.commit()
             if operation == "add":
@@ -245,6 +252,8 @@ class Integration(EstimateCase):
                     {"id": 1},
                     self.db,
                 )
+            elif operation == "cleanup":
+                await text_replacements.remove_duplicates()
             else:
                 await delete_text_replacement(identity, Form({}), {"id": 1}, self.db)
             table = "novel_reading_progress" if novel else "reading_progress"
@@ -256,7 +265,7 @@ class Integration(EstimateCase):
             self.assertEqual(saved["position"], {"index": 0, "offset": 9})
             self.assertEqual(
                 row["character_offset"] if novel else row["current_location"],
-                18 if novel else "elidx:0:18",
+                offset if novel else f"elidx:0:{offset}",
             )
             rules = await text_replacements.rules_for(self.db, 1, **{target + "_id": 1})
             self.assertEqual(remaining_html(source, rules, row["source_anchor"]), 3)

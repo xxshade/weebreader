@@ -10,10 +10,12 @@ from lxml import html
 def parse_html5(source):
     from bleach._vendor import html5lib
 
-    tree = html5lib.parse(source, treebuilder="lxml", namespaceHTMLElements=False)
+    # The lxml treebuilder XML-coerces valid HTML names such as epub:type
+    # and xml:lang. Repair as HTML first; retain those names in the HTML DOM.
+    tree = html5lib.parse(source, treebuilder="etree", namespaceHTMLElements=False)
     normalized = html5lib.serialize(
         tree,
-        tree="lxml",
+        tree="etree",
         omit_optional_tags=False,
         quote_attr_values="always",
         inject_meta_charset=False,

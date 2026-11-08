@@ -12,6 +12,11 @@
    form also has method/action, so the endpoints' plain-POST answers still
    work if htmx never loads; only the pencil needs JS. #}
 <div id="replacement-rules">
+    {% if replacement_error == 'duplicate' %}
+    <p role="alert" class="text-sm text-red-400 mb-2">This exact replacement already exists for this series or novel.</p>
+    {% elif replacement_error == 'limit' %}
+    <p role="alert" class="text-sm text-red-400 mb-2">This series or novel has reached the replacement limit.</p>
+    {% endif %}
     {# Both the count and the scroll cap live INSIDE the swap target: every
        add, edit and delete replaces this whole element, so a count in
        settings.html would go stale the moment a rule was added, and a cap
@@ -30,11 +35,12 @@
     {% endif %}
     <div class="space-y-2{{ ' list-scroll-cap' if replacement_rules|length > 6 else '' }}">
     {% for rule in replacement_rules %}
+    {% set retry = replacement_edit if replacement_edit and replacement_edit.id == rule.id else none %}
     {# rule.replace_text, not rule.replace: Jinja resolves an attribute with
        getattr before the mapping, and `str.replace` exists -- `rule.replace`
        renders a bound method. #}
     <div class="bg-neutral-900 border border-neutral-800 rounded px-3 py-2" data-rule-id="{{ rule.id }}">
-        <div class="flex items-center justify-between gap-3" data-rule-view>
+        <div class="flex items-center justify-between gap-3{{ ' hidden' if retry else '' }}" data-rule-view>
             <span class="min-w-0">
                 <span class="text-sm block truncate">
                     {{ rule.find_text }} → {{ rule.replace_text or '(nothing)' }}
@@ -52,7 +58,7 @@
                 </button>
                 <form method="post" action="/settings/text-replacements/{{ rule.id }}/delete"
                       hx-post="/settings/text-replacements/{{ rule.id }}/delete"
-                      hx-target="#replacement-rules" hx-swap="outerHTML">
+                      hx-target="#replacement-rules" hx-swap="outerHTML" hx-status:409="swap:outerHTML" hx-sync="this:drop">
                     <button class="btn flex items-center justify-center"
                             title="Remove" aria-label="Remove this replacement">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -72,16 +78,16 @@
            add is the honest way to do that. #}
         <form method="post" action="/settings/text-replacements/{{ rule.id }}"
               hx-post="/settings/text-replacements/{{ rule.id }}"
-              hx-target="#replacement-rules" hx-swap="outerHTML"
-              data-rule-edit-form class="hidden mt-2">
+              hx-target="#replacement-rules" hx-swap="outerHTML" hx-status:409="swap:outerHTML" hx-sync="this:drop"
+              data-rule-edit-form class="{{ 'mt-2' if retry else 'hidden mt-2' }}">
             {# The target stays on screen while editing: the view row that
                normally carries it is hidden, and "which book is this
                about" is the one thing the two text boxes cannot say. #}
             <p class="text-xs text-neutral-500 mb-2 truncate">{{ rule.target_name or 'Removed' }}</p>
             <div class="flex flex-col sm:flex-row gap-2">
-                <input autocomplete="off" name="find_text" required value="{{ rule.find_text }}" placeholder="Find this text"
+                <input autocomplete="off" name="find_text" required value="{{ retry.find_text if retry else rule.find_text }}" data-saved-value="{{ rule.find_text }}" placeholder="Find this text"
                        class="flex-1 min-w-0 bg-neutral-950 border border-neutral-700 rounded px-3 py-2 text-sm">
-                <input autocomplete="off" name="replace_text" value="{{ rule.replace_text }}" placeholder="Show this instead"
+                <input autocomplete="off" name="replace_text" value="{{ retry.replace_text if retry else rule.replace_text }}" data-saved-value="{{ rule.replace_text }}" placeholder="Show this instead"
                        class="flex-1 min-w-0 bg-neutral-950 border border-neutral-700 rounded px-3 py-2 text-sm">
                 <span class="flex items-center gap-2 flex-shrink-0">
                     <button class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm font-medium">Save</button>

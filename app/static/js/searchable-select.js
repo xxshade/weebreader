@@ -29,6 +29,7 @@
     }
 
     function enhance(select) {
+        if (select.closest("[data-searchable-wrap]")) return;
         const options = Array.from(select.options).filter((o) => o.value);
         if (!options.length) return; // nothing to search
         const placeholder = (Array.from(select.options).find((o) => !o.value) || {}).textContent || "Search…";
@@ -226,28 +227,39 @@
         // adding its own: those outlived the page on a boosted visit.
         wrap.searchableClose = close;
 
-        const form = select.form;
-        if (form) {
-            // A native reset leaves the select empty; the box has to follow.
-            form.addEventListener("reset", () => {
-                setTimeout(() => {
-                    input.value = labelFor(select.value);
-                    syncValidity();
-                }, 0);
-            });
-        }
+        // A resync can retain the form while replacing this control. Keep
+        // reset handling delegated, so old boxes do not outlive their DOM.
+        wrap.searchableReset = () => {
+            input.value = labelFor(select.value);
+            syncValidity();
+        };
 
+        select.addEventListener("change", () => {
+            input.value = labelFor(select.value);
+            syncValidity();
+        });
         input.value = labelFor(select.value);
         syncValidity();
     }
 
-    for (const select of document.querySelectorAll("select[data-searchable]")) enhance(select);
+    function refresh() {
+        for (const select of document.querySelectorAll("select[data-searchable]")) enhance(select);
+    }
+    refresh();
 
     // A click outside a box closes its list. Once per document -- a
     // boosted visit runs this file again -- and over the boxes on the page
     // NOW, so nothing here holds on to a previous page's elements.
     if (window.searchableSelectBound) return;
     window.searchableSelectBound = true;
+    document.addEventListener("htmx:after:process", refresh);
+    document.addEventListener("reset", event => {
+        const form = event.target;
+        setTimeout(() => {
+            if (!form.isConnected) return;
+            for (const wrap of form.querySelectorAll("[data-searchable-wrap]")) wrap.searchableReset?.();
+        }, 0);
+    });
     document.addEventListener("click", (e) => {
         for (const wrap of document.querySelectorAll("[data-searchable-wrap]")) {
             if (!wrap.contains(e.target)) wrap.searchableClose?.();

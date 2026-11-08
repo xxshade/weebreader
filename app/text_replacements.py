@@ -109,3 +109,46 @@ def parse_target(raw: str) -> tuple[int | None, int | None]:
     if kind == "novel":
         return None, int(raw_id)
     return None, None
+
+
+async def exact_duplicate(db, user_id, series_id, novel_id, find, replace, *, exclude_id=None):
+    """Call inside the serialized writer before inserting or editing a rule."""
+    return await (await db.execute(
+        "SELECT id FROM text_replacements WHERE user_id=? AND series_id IS ? AND novel_id IS ? "
+        "AND find_text=? AND replace_text=? AND id IS NOT ? LIMIT 1",
+        (user_id, series_id, novel_id, find, replace, exclude_id),
+    )).fetchone() is not None
+
+
+async def remove_duplicates():
+    """Keep the earliest exact rule, preserving legacy positions before cleanup.
+
+    Archive parsing happens outside the writer. Recheck the rule/position basis
+    atomically, just as for edits; a second startup with no duplicates is a read.
+    """
+    from app.database import get_connection, write_transaction
+    from app.reader.source_anchors import prepare_legacy_target, apply_legacy_target
+
+    db = await get_connection()
+    try:
+        targets = await (await db.execute(
+            "SELECT DISTINCT user_id,series_id,novel_id FROM text_replacements WHERE id NOT IN "
+            "(SELECT MIN(id) FROM text_replacements GROUP BY user_id,series_id,novel_id,find_text,replace_text)"
+        )).fetchall()
+        for target in targets:
+            while True:
+                prepared = await prepare_legacy_target(db, target['user_id'],
+                    series_id=target['series_id'], novel_id=target['novel_id'])
+                async with write_transaction() as wdb:
+                    if not await apply_legacy_target(wdb, prepared):
+                        continue
+                    await wdb.execute(
+                        "DELETE FROM text_replacements WHERE user_id=? AND series_id IS ? AND novel_id IS ? "
+                        "AND id NOT IN (SELECT MIN(id) FROM text_replacements "
+                        "GROUP BY user_id,series_id,novel_id,find_text,replace_text)",
+                        (target['user_id'], target['series_id'], target['novel_id']),
+                    )
+                    await wdb.commit()
+                    break
+    finally:
+        await db.close()

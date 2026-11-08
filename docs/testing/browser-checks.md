@@ -254,3 +254,13 @@ Run these controls sequentially in a separate checkout, like the other mutation
 suites. The standalone investigation also exercised native bfcache and continuous
 scroll; local browser evidence is documented in
 [replacement-safe reading](../reader/replacement-safe-reading.md).
+
+
+The reader replacement suite also verifies AMOLED contrast in real EPUB frames
+at desktop and 320px widths, in paginated and scroll modes. Author black and
+text-fill colors must remain legible without changing readable colors, white
+boxes, SVG artwork or textual content, including late stylesheet loads.
+Settings checks hold a save to assert busy/disabled feedback, reject exact
+repeats, preserve drafts and the searchable target across resync, and retry a
+network failure. Controls remove contrast repair, pending-state disabling and
+draft restoration; each engine must detect the corresponding defect.

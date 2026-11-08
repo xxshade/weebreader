@@ -155,7 +155,7 @@
            htmx is not there. #}
         <form method="post" action="/settings/text-replacements"
               hx-post="/settings/text-replacements"
-              hx-target="#replacement-rules" hx-swap="outerHTML"
+              hx-target="#replacement-rules" hx-swap="outerHTML" hx-status:409="swap:outerHTML" hx-sync="this:drop"
               id="add-replacement" class="space-y-2 mb-4">
             {# data-searchable turns this into a type-to-filter box (see
                searchable-select.js). Progressive enhancement on purpose:
@@ -189,6 +189,7 @@
         </p>
         {% endif %}
 
+        <p id="replacement-save-status" role="status" aria-live="polite" class="text-sm text-neutral-400 mb-2"></p>
         {% include "_replacement_rules.html" %}
     </section>
 

@@ -159,3 +159,57 @@ class TheRenderedList(unittest.TestCase):
         html = self.render(14)
         target = html[html.index('id="replacement-rules"'):]
         self.assertNotIn("list-scroll-cap", target[:target.index(">")])
+
+
+class DuplicateWrites(ReplacementCase):
+    class Form:
+        headers = {}
+
+        def __init__(self, **values):
+            self.values = values
+
+        async def form(self):
+            return self.values
+
+    async def create(self, find='A', replace='AA', *, target='series:1', user_id=1):
+        from app.library.router import add_text_replacement
+        return await add_text_replacement(self.Form(target=target, find_text=find, replace_text=replace),
+                                          {'id': user_id}, self.db)
+
+    async def test_concurrent_exact_adds_only_persist_one_rule(self):
+        import asyncio
+        await asyncio.gather(self.create(), self.create(), self.create())
+        self.assertEqual(len(await text_replacements.rules_for(self.db, 1, series_id=1)), 1)
+
+    async def test_only_exact_duplicates_are_rejected(self):
+        for args in [('A', 'AA'), ('A', 'other'), ('a', 'AA'), (' A', 'AA'), ('A', '')]:
+            await self.create(*args)
+        await self.create(target='novel:1')
+        await self.create(user_id=2)
+        await self.create()
+        rows = await (await self.db.execute('SELECT * FROM text_replacements')).fetchall()
+        self.assertEqual(len(rows), 7)
+
+    async def test_edit_cannot_duplicate_another_rule_but_can_save_itself(self):
+        from app.library.router import update_text_replacement
+        await self.create()
+        await self.create('B', 'BB')
+        rows = await (await self.db.execute('SELECT id FROM text_replacements ORDER BY id')).fetchall()
+        await update_text_replacement(rows[1]['id'], self.Form(find_text='A', replace_text='AA'), {'id': 1}, self.db)
+        self.assertEqual(await text_replacements.rules_for(self.db, 1, series_id=1),
+                         [{'find': 'A', 'replace': 'AA'}, {'find': 'B', 'replace': 'BB'}])
+        await update_text_replacement(rows[0]['id'], self.Form(find_text='A', replace_text='AA'), {'id': 1}, self.db)
+        self.assertEqual(len(await text_replacements.rules_for(self.db, 1, series_id=1)), 2)
+
+    async def test_cleanup_keeps_first_and_is_idempotent_and_scoped(self):
+        await self.add('A', 'AA', series_id=1)
+        first = (await (await self.db.execute('SELECT MIN(id) FROM text_replacements')).fetchone())[0]
+        await self.add('A', 'AA', series_id=1)
+        await self.add('A', 'other', series_id=1)
+        await self.add('A', 'AA', novel_id=1)
+        await self.add('A', 'AA', user_id=2, series_id=1)
+        await text_replacements.remove_duplicates()
+        await text_replacements.remove_duplicates()
+        rows = await (await self.db.execute('SELECT id FROM text_replacements ORDER BY id')).fetchall()
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[0]['id'], first)

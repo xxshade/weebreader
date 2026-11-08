@@ -27,6 +27,7 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Page-start position | The place in the text where a reading page begins, including a place within a paragraph. It identifies the displayed passage, not the last word the reader has actually read. |
 | Text replacement rule | An account's literal, case-sensitive replacement of one text with another for one series or web novel. Rules apply in their saved order. |
 | Exact duplicate replacement | Two rules for the same account and target with identical find and replacement text, including case and whitespace. Rules with different replacement text remain distinct. |
+| Duplicate rule cleanup | Removing later exact duplicates while keeping the earliest occurrence and the relative order of remaining rules. It can change the text produced by sequential rule application. |
 | Reflow | Redistribution of the same content across reading pages when the available reading area or reading preferences change. A position in the text remains meaningful even when page boundaries change. |
 | Estimate basis | The known amount of reading remaining at a saved position, distinct from a duration predicted using reading pace. |
 | Effective text reading pace | The estimated speed for one work, combining valid evidence from that work and other text works. It need not be identical for every work. |
@@ -45,6 +46,9 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Orphan line | The first line of a paragraph left alone at the bottom of a reading page while the rest continues on the next page. |
 | Widow line | The last line of a paragraph left alone at the top of the next reading page. |
 | Original typography | The book's intended fonts, relative text sizes, emphasis, and spacing, as distinct from adjustments made by the reader or browser. |
+| Book palette | The colors specified for a work’s text and backgrounds, including emphasis and links. It is distinct from original typography and artwork. |
+| Reader palette | The foreground and background colors chosen for the reader’s display theme. Ordinary text must remain legible when a book’s colors conflict with that palette; readable emphasis and artwork retain their meaning. |
+| Text legibility | How clearly displayed text can be distinguished from its effective background, distinct from whether the chapter content loaded successfully. |
 | Visual hyphenation | Displaying a word across lines with a hyphen where the language permits, without inserting characters into the underlying text. |
 | Hyphenation preference | The reader’s choice to enable visual hyphenation for all text books in one browser. It is distinct from each work’s language. |
 | Work language | The language used to interpret one book or web novel, supplied by its metadata or chosen by the reader for that work. |
