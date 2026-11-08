@@ -74,3 +74,25 @@ The required CI suite keeps portable regression coverage and deliberate-defect
 controls. Desktop viewport simulations are not native Android or LibreWolf tests.
 No manual migration is required: startup adds the optional progress columns;
 legacy positions are captured lazily before their replacement rules change.
+
+
+## Replacement settings and upgrade cleanup
+
+Add and Edit reject an exact duplicate within one account and series or novel;
+case, whitespace and a different replacement remain meaningful distinctions.
+The check and write share the serialized transaction, so repeated concurrent
+requests cannot insert identical rules. Settings displays pending, saved and
+failed outcomes. A refused edit stays open for correction; saving an earlier
+request cannot erase a newer draft typed while it was pending. A library resync
+restores the Add draft and rebuilds its searchable control.
+
+Startup removes later existing exact duplicates before estimate warmup, keeping
+the earliest rule and remaining order. Because applying an identical rule twice
+can produce different text, cleanup prepares available legacy source anchors
+outside the writer and revalidates them atomically before deleting rules. It does
+not change book files or the persisted display coordinates. A later startup with
+no duplicates does no cleanup writes.
+
+HTML5 repair now uses the etree builder before HTML serialization, avoiding the
+XML-name coercion of EPUB namespace attributes. Interrupted estimate request
+bodies return 499 without starting estimation; malformed JSON still returns 400.

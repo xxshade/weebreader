@@ -60,6 +60,8 @@ logger = logging.getLogger("main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from app.text_replacements import remove_duplicates
+    await remove_duplicates()
 
     # Where an earlier version persisted the SSE id sequence. Nothing reads
     # it any more (see events.py); removed so it does not sit in the data

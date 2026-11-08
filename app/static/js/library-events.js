@@ -295,8 +295,10 @@
                         return;
                     }
                     if (text === null) return;
+                    const replacementDraft = window.textReplacementSettings?.capture();
                     await htmx.swap({ text, target: document.body, swap: "innerMorph",
                                       sourceElement: document.body });
+                    window.textReplacementSettings?.restore(replacementDraft);
                     window.libraryEventsSeen = (window.libraryEventsSeen || 0) + 1;
                     window.libraryGrid?.resync?.();
                     window.novelChaptersApply?.();

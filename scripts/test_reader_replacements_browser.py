@@ -19,6 +19,7 @@ import zipfile
 
 import requests
 from selenium.webdriver.support.ui import Select, WebDriverWait
+from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
@@ -145,18 +146,37 @@ class ReplacementChecks(PaginationChecks):
         self.driver.find_element(
             "css selector", f'#reader-root a[href="{back}"]'
         ).click()
-        self.wait(f'location.pathname==="{back}" && window.userMenuBound===true')
+        self.wait(
+            f'location.pathname==="{back}" && window.userMenuBound===true && !document.getElementById("reader-root")'
+        )
         self.frames()
-        self.driver.find_element("id", "user-menu-btn").click()
-        self.wait(
-            "!document.querySelector('#user-menu-dropdown').classList.contains('hidden')"
-        )
-        self.driver.find_element(
-            "css selector", '#user-menu-dropdown a[href="/settings"]'
-        ).click()
-        self.wait(
-            "location.pathname==='/settings' && !!document.querySelector('#add-replacement select[name=target]')"
-        )
+
+        def open_settings(_):
+            # URL changes can precede the body morph; a live resync can also
+            # replace an opened dropdown. Reacquire actual controls until the
+            # requested page exists, rather than keeping a stale menu handle.
+            if self.js("return location.pathname==='/settings'"):
+                return bool(
+                    self.driver.find_elements(
+                        "css selector", "#add-replacement select[name=target]"
+                    )
+                )
+            dropdown = self.driver.find_element("id", "user-menu-dropdown")
+            if "hidden" in dropdown.get_attribute("class").split():
+                self.driver.find_element("id", "user-menu-btn").click()
+            else:
+                dropdown.find_element("css selector", 'a[href="/settings"]').click()
+            return False
+
+        WebDriverWait(
+            self.driver,
+            20,
+            ignored_exceptions=(
+                NoSuchElementException,
+                StaleElementReferenceException,
+                ElementNotInteractableException,
+            ),
+        ).until(open_settings)
 
     def add_rule(self, replacement, novel=False, item=100):
         target = "novel:100" if novel else f"series:{item}"
@@ -378,6 +398,348 @@ class ReplacementChecks(PaginationChecks):
             "Departed fullscreen button must be released",
         )
 
+    def test_settings_save_feedback_duplicate_and_resync(self):
+        self.driver.get(self.base + "/settings")
+        self.wait(
+            "!!document.querySelector('#add-replacement [role=combobox]') && !!window.libraryResync"
+        )
+        combo = self.driver.find_element(
+            "css selector", "#add-replacement [role=combobox]"
+        )
+        combo.send_keys("Book 100")
+        self.driver.find_element(
+            "css selector", '#add-replacement [data-value="series:100"]'
+        ).click()
+        self.js("""window.replacementProbe={calls:0};const original=window.fetch;window.fetch=async(...args)=>{
+            if(String(args[0]).endsWith('/settings/text-replacements') && args[1]?.method?.toUpperCase()==='POST') {
+                replacementProbe.calls++;if(replacementProbe.hold) await new Promise(r=>replacementProbe.release=r);
+                if(replacementProbe.fail){replacementProbe.fail=false;throw new TypeError('test network failure');}
+            }return original(...args);
+        };replacementProbe.hold=true;""")
+
+        def fill(find, replace):
+            for name, value in [("find_text", find), ("replace_text", replace)]:
+                box = self.driver.find_element(
+                    "css selector", "#add-replacement [name=" + name + "]"
+                )
+                box.clear()
+                box.send_keys(value)
+
+        def submit():
+            self.js("document.querySelector('#add-replacement').requestSubmit()")
+
+        fill("fixture find", "fixture replacement")
+        submit()
+        self.wait("!!replacementProbe.release")
+        self.assertTrue(
+            self.js(
+                "return document.querySelector('#add-replacement button').disabled"
+            ),
+            "Pending replacement must disable Add",
+        )
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#replacement-save-status').textContent"
+            ),
+            "Saving…",
+        )
+        submit()
+        self.assertEqual(
+            self.js("return replacementProbe.calls"),
+            1,
+            "Pending duplicate submit must not issue a second request",
+        )
+        self.js("replacementProbe.hold=false;replacementProbe.release()")
+        self.wait(
+            "document.querySelector('#replacement-save-status').textContent==='Saved.'"
+        )
+        self.wait(
+            "document.querySelectorAll('#replacement-rules [data-rule-id]').length===1"
+        )
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#add-replacement [name=find_text]').value"
+            ),
+            "",
+        )
+        fill("fixture find", "fixture replacement")
+        submit()
+        self.wait("!!document.querySelector('#replacement-rules [role=alert]')")
+        self.assertEqual(
+            self.js(
+                "return document.querySelectorAll('#replacement-rules [data-rule-id]').length"
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#add-replacement [name=find_text]').value"
+            ),
+            "fixture find",
+        )
+        fill("another find", "draft preserved")
+        self.driver.execute_async_script(
+            "const done=arguments[0];libraryResync().then(()=>done(true))"
+        )
+        self.wait("!!document.querySelector('#add-replacement [role=combobox]')")
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#add-replacement select[name=target]').value"
+            ),
+            "series:100",
+            "Resync must preserve the chosen target",
+        )
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#add-replacement [name=replace_text]').value"
+            ),
+            "draft preserved",
+        )
+        self.assertEqual(
+            self.js(
+                "return document.querySelectorAll('#add-replacement [role=combobox]').length"
+            ),
+            1,
+        )
+        combo = self.driver.find_element(
+            "css selector", "#add-replacement [role=combobox]"
+        )
+        combo.click()
+        combo.send_keys(Keys.CONTROL, "a")
+        combo.send_keys("Book 101")
+        self.assertTrue(
+            self.driver.find_element(
+                "css selector", '#add-replacement [data-value="series:101"]'
+            ).is_displayed(),
+            "Resynced combobox must filter another target",
+        )
+        self.driver.find_element(
+            "css selector", '#add-replacement [data-value="series:101"]'
+        ).click()
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#add-replacement select[name=target]').value"
+            ),
+            "series:101",
+        )
+        self.js("replacementProbe.fail=true")
+        submit()
+        self.wait(
+            "document.querySelector('#replacement-save-status').textContent==='Could not save. Try again.'"
+        )
+        self.assertFalse(
+            self.js("return document.querySelector('#add-replacement button').disabled")
+        )
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#add-replacement [name=find_text]').value"
+            ),
+            "another find",
+        )
+        submit()
+        self.wait(
+            "document.querySelector('#replacement-save-status').textContent==='Saved.'"
+        )
+        self.wait(
+            "document.querySelectorAll('#replacement-rules [data-rule-id]').length===2"
+        )
+
+        fill("third find", "third replacement")
+        self.js("replacementProbe.hold=true;replacementProbe.release=null")
+        submit()
+        self.wait("!!replacementProbe.release")
+        fill("next draft", "next replacement")
+        self.js("replacementProbe.hold=false;replacementProbe.release()")
+        self.wait(
+            "document.querySelector('#replacement-save-status').textContent==='Saved.'"
+        )
+        self.wait(
+            "document.querySelectorAll('#replacement-rules [data-rule-id]').length===3"
+        )
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#add-replacement [name=find_text]').value"
+            ),
+            "next draft",
+            "Save must retain a draft typed while pending",
+        )
+        self.assertEqual(
+            self.js(
+                "return document.querySelector('#add-replacement [name=replace_text]').value"
+            ),
+            "next replacement",
+        )
+        identity = self.js(
+            "return [...document.querySelectorAll('#replacement-rules [data-rule-id]')].at(-1).dataset.ruleId"
+        )
+        selector = '#replacement-rules [data-rule-id="' + identity + '"]'
+        self.driver.find_element("css selector", selector + " [data-rule-edit]").click()
+        for name, value in [
+            ("find_text", "another find"),
+            ("replace_text", "draft preserved"),
+        ]:
+            box = self.driver.find_element(
+                "css selector", selector + " [data-rule-edit-form] [name=" + name + "]"
+            )
+            box.clear()
+            box.send_keys(value)
+        self.driver.execute_script(
+            'document.querySelector(arguments[0]+" [data-rule-edit-form]").requestSubmit()',
+            selector,
+        )
+        self.wait("!!document.querySelector('#replacement-rules [role=alert]')")
+        self.assertTrue(
+            self.driver.find_element(
+                "css selector", selector + " [data-rule-edit-form]"
+            ).is_displayed(),
+            "Rejected duplicate edit must stay open",
+        )
+        self.assertEqual(
+            self.driver.find_element(
+                "css selector", selector + " [name=find_text]"
+            ).get_attribute("value"),
+            "another find",
+            "Rejected duplicate edit must retain typed text",
+        )
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT find_text FROM text_replacements WHERE id=?", (identity,)
+                ).fetchone()[0],
+                "third find",
+            )
+
+        self.driver.find_element(
+            "css selector", selector + " [data-rule-cancel]"
+        ).click()
+        self.driver.find_element("css selector", selector + " [data-rule-edit]").click()
+        self.assertEqual(
+            self.driver.find_element(
+                "css selector", selector + " [name=find_text]"
+            ).get_attribute("value"),
+            "third find",
+            "Cancel must restore the saved value after refusal",
+        )
+
+    def test_amoled_text_contrast_preserves_readable_palette(self):
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            path = Path(
+                db.execute("SELECT file_path FROM items WHERE id=100").fetchone()[0]
+            )
+        original = path.read_bytes()
+        try:
+            with zipfile.ZipFile(path) as book:
+                files = {name: book.read(name) for name in book.namelist()}
+            files["OEBPS/ch0.xhtml"] = PALETTE_SAMPLE.encode()
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as book:
+                for name, value in files.items():
+                    book.writestr(name, value)
+            for flow in ["paginated", "scrolled-doc"]:
+                with self.subTest(flow=flow):
+                    self.driver.get(self.base + "/")
+                    self.driver.execute_script(
+                        "localStorage.setItem('text-reader-prefs',JSON.stringify({flow:arguments[0],theme:'amoled',font:'original',fontSize:75,lineHeight:1.4,width:720,bottomGap:0}))",
+                        flow,
+                    )
+                    self.driver.get(self.base + "/reader/100")
+                    selector = (
+                        "#paginated-viewer iframe"
+                        if flow == "paginated"
+                        else "#custom-scroll iframe"
+                    )
+                    self.wait(
+                        "document.querySelector("
+                        + repr(selector)
+                        + ")?.style.visibility==='visible'"
+                    )
+                    data = self.driver.execute_script(PALETTE_SNAPSHOT, selector)
+                    rows = {r["id"]: r for r in data["rows"]}
+                    self.assertFalse(any(r.get("missing") for r in rows.values()))
+                    for key in [
+                        "baseline",
+                        "author",
+                        "inline",
+                        "priority",
+                        "fill",
+                        "system",
+                        "whitebox",
+                        "parent",
+                        "nested",
+                        "emphasis",
+                        "link",
+                        "lowColor",
+                    ]:
+                        self.assertGreaterEqual(
+                            rows[key]["contrast"], 4.5, "Legible painted prose: " + key
+                        )
+                    for key, color in [
+                        ("whitebox", "rgb(0, 0, 0)"),
+                        ("nested", "rgb(0, 0, 0)"),
+                        ("emphasis", "rgb(224, 112, 112)"),
+                        ("link", "rgb(118, 185, 255)"),
+                        ("transparent", "rgba(0, 0, 0, 0)"),
+                    ]:
+                        self.assertEqual(rows[key]["paint"], color)
+                    self.assertEqual(rows["hidden"]["opacity"], "0")
+                    self.assertEqual(
+                        data["svg"],
+                        dict(fill="rgb(238, 136, 68)", nestedFill="rgb(0, 0, 0)"),
+                    )
+                    for background, expected in [
+                        ("white", "rgb(0, 0, 0)"),
+                        ("black", "rgb(208, 208, 208)"),
+                    ]:
+                        self.driver.execute_script(
+                            "const d=document.querySelector(arguments[0]).contentDocument,l=d.createElement('link');l.rel='stylesheet';l.href='data:text/css,'+encodeURIComponent('#author{background:'+arguments[1]+'!important}');d.head.append(l)",
+                            selector,
+                            background,
+                        )
+                        self.wait(
+                            "(()=>{const f=document.querySelector("
+                            + repr(selector)
+                            + ");return f.contentWindow.getComputedStyle(f.contentDocument.getElementById('author')).webkitTextFillColor==="
+                            + repr(expected)
+                            + "})()"
+                        )
+                    self.assertEqual(
+                        self.driver.execute_script(
+                            "return document.querySelector(arguments[0]).contentDocument.body.textContent",
+                            selector,
+                        ),
+                        data["text"],
+                    )
+        finally:
+            path.write_bytes(original)
+
+
+PALETTE_SAMPLE = r"""<html><head><style>
+p {margin:2px 0!important} .black {color:#000} .priority {color:#000!important}
+.fill {color:#d0d0d0;-webkit-text-fill-color:#000}
+</style></head><body>
+<p id="baseline">Ordinary inherited text.</p>
+<p id="author" class="black">Black authored prose.</p>
+<p id="inline" style="color:#000!important">Black inline prose.</p>
+<p id="priority" class="priority">Black important prose.</p>
+<p id="fill" class="fill">Black fill prose.</p>
+<p id="system" style="color:CanvasText">System text color.</p>
+<p id="whitebox" style="background:#fff;color:#000">Black on white.</p>
+<p id="parent" class="black">Parent black on black. <span id="nested" style="background:#fff">Inherited black on white.</span><svg id="nestedGraphic" width="10" height="10"><rect id="nestedRect" width="10" height="10" fill="currentColor"/></svg></p>
+<p id="emphasis" style="color:#e07070">Readable colored prose.</p>
+<p><a id="link" href="#baseline" style="color:#76b9ff">Readable link.</a></p>
+<p id="lowColor" style="color:#202080">Low contrast blue.</p>
+<p id="transparent" style="color:transparent">Intentionally transparent.</p>
+<p id="hidden" style="opacity:0;color:#000">Intentionally hidden.</p>
+<svg id="graphic" width="20" height="10" color="#ee8844"><rect id="rect" width="20" height="10" fill="currentColor"/></svg>
+</body></html>"""
+PALETTE_SNAPSHOT = r"""const f=document.querySelector(arguments[0]),d=f.contentDocument,w=f.contentWindow;
+const rgba=v=>{const n=v.match(/[\d.]+/g)?.map(Number);return n&&n.length>=3?n:null;};
+const lum=c=>c.slice(0,3).map(n=>{n/=255;return n<=.04045?n/12.92:((n+.055)/1.055)**2.4}).reduce((a,n,i)=>a+n*[.2126,.7152,.0722][i],0);
+const bg=el=>{for(let e=el;e;e=e.parentElement){const c=rgba(w.getComputedStyle(e).backgroundColor);if(c&&(c.length===3||c[3]===1))return c;}return [0,0,0];};
+return {rows:['baseline','author','inline','priority','fill','system','whitebox','parent','nested','emphasis','link','lowColor','transparent','hidden'].map(id=>{
+ const el=d.getElementById(id);if(!el)return {id,missing:true};const s=w.getComputedStyle(el),paint=s.webkitTextFillColor||s.color,c=rgba(paint),b=bg(el);
+ return {id,color:s.color,paint,background:b,opacity:s.opacity,contrast:c?(Math.max(lum(c),lum(b))+.05)/(Math.min(lum(c),lum(b))+.05):null};
+}),svg:{fill:w.getComputedStyle(d.getElementById('rect')).fill,nestedFill:w.getComputedStyle(d.getElementById('nestedRect')).fill},text:d.body.textContent};"""
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -427,6 +789,41 @@ def main():
     if audit.ARGS.baseline_only or audit.ARGS.test:
         return 0
     for filename, before, after, test, signal in [
+        (
+            "app/templates/_replacement_rules.html",
+            "{% set retry = replacement_edit if replacement_edit and replacement_edit.id == rule.id else none %}",
+            "{% set retry = none %}",
+            "test_settings_save_feedback_duplicate_and_resync",
+            "Rejected duplicate edit must stay open",
+        ),
+        (
+            "app/static/js/text-replacements.js",
+            "if (saved && submitted && Object.entries(submitted).every(([name, value]) => form.elements[name].value === value)) {",
+            "if (saved && submitted) {",
+            "test_settings_save_feedback_duplicate_and_resync",
+            "Save must retain a draft typed while pending",
+        ),
+        (
+            "app/static/js/reader-text.js",
+            "        applyTextPalette(doc);",
+            "        /* deliberate contrast defect */",
+            "test_amoled_text_contrast_preserves_readable_palette",
+            "Legible painted prose: author",
+        ),
+        (
+            "app/static/js/text-replacements.js",
+            "button.disabled = true;",
+            "button.disabled = false;",
+            "test_settings_save_feedback_duplicate_and_resync",
+            "Pending replacement must disable Add",
+        ),
+        (
+            "app/static/js/library-events.js",
+            "window.textReplacementSettings?.restore(replacementDraft);",
+            "/* deliberate draft restoration defect */",
+            "test_settings_save_feedback_duplicate_and_resync",
+            "Resync must preserve the chosen target",
+        ),
         (
             "app/static/js/reading-time.js",
             "if (sending) { flushAgain = true; return; }",

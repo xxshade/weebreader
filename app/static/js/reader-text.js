@@ -427,13 +427,120 @@
         }
     }
 
+    // Keep author colors when legible. Repair glyph paint rather than `color`:
+    // changing currentColor globally also repaints backgrounds and SVG artwork.
+    const paletteRestorations = new WeakMap();
+    function applyTextPalette(doc) {
+        const win = doc?.defaultView;
+        if (!win || !doc.body) return;
+        const previous = paletteRestorations.get(doc);
+        for (const [element, original] of previous || []) {
+            if (original.value) element.style.setProperty('-webkit-text-fill-color', original.value, original.priority);
+            else element.style.removeProperty('-webkit-text-fill-color');
+        }
+        const colors = new Map(), states = new Map(), textElements = new Set();
+        function rgba(value) {
+            if (colors.has(value)) return colors.get(value);
+            const match = /^rgba?\(([^)]+)\)$/.exec(value);
+            let result = null;
+            if (match) {
+                const parts = match[1].split(/[\s,\/]+/).filter(Boolean);
+                if (parts.length >= 3) {
+                    result = parts.slice(0, 3).map(v => parseFloat(v) * (v.endsWith('%') ? 2.55 : 1));
+                    result.push(parts[3] === undefined ? 1 : parseFloat(parts[3]) / (parts[3].endsWith('%') ? 100 : 1));
+                    if (!result.every(Number.isFinite)) result = null;
+                }
+            }
+            colors.set(value, result);
+            return result;
+        }
+        const over = (paint, background) => paint.slice(0, 3).map((v, i) => v * paint[3] + background[i] * (1 - paint[3]));
+        function luminance(rgb) {
+            return rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; })
+                .reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+        }
+        function contrast(a, b) {
+            const x = luminance(a), y = luminance(b);
+            return (Math.max(x, y) + .05) / (Math.min(x, y) + .05);
+        }
+        const neutral = [208, 208, 208]; // AMOLED foreground; prefer it for unaccented prose.
+        function state(element) {
+            if (states.has(element)) return states.get(element);
+            const parent = element.parentElement ? state(element.parentElement) :
+                {background: [0, 0, 0], unknown: false, protected: false};
+            const style = win.getComputedStyle(element), background = rgba(style.backgroundColor);
+            const hasImage = style.backgroundImage !== 'none';
+            const current = {
+                paint: style.getPropertyValue('-webkit-text-fill-color') || style.color,
+                background: background ? over(background, parent.background) : parent.background,
+                unknown: hasImage || !background || (background[3] < 1 && parent.unknown),
+                protected: parent.protected || style.display === 'none' || style.visibility !== 'visible'
+                    || Number(style.opacity) !== 1 || style.filter !== 'none' || style.mixBlendMode !== 'normal'
+                    || ['script', 'style', 'noscript'].includes(element.localName),
+            };
+            states.set(element, current);
+            return current;
+        }
+        function readable(paint, background) {
+            const rgb = paint.slice(0, 3);
+            if (contrast(rgb, background) >= 4.5) return rgb;
+            if (Math.max(...rgb) - Math.min(...rgb) < 25 && contrast(neutral, background) >= 4.5) return neutral;
+            const white = [255, 255, 255], black = [0, 0, 0];
+            const target = contrast(white, background) >= contrast(black, background) ? white : black;
+            if (contrast(target, background) < 4.6) return target;
+            let low = 0, high = 1;
+            for (let i = 0; i < 12; i++) {
+                const amount = (low + high) / 2;
+                const trial = rgb.map((v, j) => v + (target[j] - v) * amount);
+                if (contrast(trial, background) < 4.6) low = amount;
+                else high = amount;
+            }
+            return rgb.map((v, i) => Math.round(v + (target[i] - v) * high));
+        }
+        const walker = doc.createTreeWalker(doc.body, win.NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) if (node.data.trim()) textElements.add(node.parentElement);
+        const repairs = new Map();
+        for (const element of textElements) {
+            const current = state(element), paint = rgba(current.paint);
+            if (element.namespaceURI !== 'http://www.w3.org/1999/xhtml' || current.protected || current.unknown || !paint || paint[3] === 0) continue;
+            if (contrast(over(paint, current.background), current.background) < 4.5) {
+                repairs.set(element, `rgb(${readable(paint, current.background).join(', ')})`);
+            }
+        }
+        // An explicit repaired fill is inherited. Freeze already legible child
+        // paints (including white boxes and SVG labels) before changing a parent.
+        const writes = new Map(repairs);
+        for (const element of textElements) {
+            if (writes.has(element)) continue;
+            for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+                if (repairs.has(parent)) { writes.set(element, state(element).paint); break; }
+            }
+        }
+        const originals = new Map();
+        for (const [element, paint] of writes) {
+            originals.set(element, {value: element.style.getPropertyValue('-webkit-text-fill-color'),
+                priority: element.style.getPropertyPriority('-webkit-text-fill-color')});
+            element.style.setProperty('-webkit-text-fill-color', paint, 'important');
+        }
+        paletteRestorations.set(doc, originals);
+        // A stylesheet still loading at the reader's bounded readiness timeout
+        // must not introduce unreadable colors after the first palette pass.
+        if (!doc.readerPaletteBound) {
+            doc.readerPaletteBound = true;
+            doc.addEventListener('load', event => {
+                if (event.target.localName === 'link' && doc.defaultView?.frameElement?.isConnected) applyTextPalette(doc);
+            }, true);
+        }
+    }
+
     function themeCssText() {
         const t = THEMES[prefs.theme];
         const fontFamily = prefs.font === "original" ? "inherit" : `'${prefs.font}', serif`;
         // Gecko Android accepts auto/none here, not the 100% value in the
         // shared stylesheet. Its inflation can enlarge long flow roots while
         // leaving short paragraphs small. CSS font sizes and zoom still apply.
-        return `html { -moz-text-size-adjust: none; } ` +
+        return `html { -moz-text-size-adjust: none; color-scheme: dark; } ` +
             `html, body { overflow-y: auto !important; overflow-x: hidden !important; } ` +
             `body { background: ${t.background} !important; color: ${t.color} !important; ` +
             `font-family: ${fontFamily} !important; font-size: ${prefs.fontSize}% !important; ` +
@@ -667,6 +774,7 @@
             if (styleEl) {
                 applyChapterLanguage(iframe.contentDocument);
                 styleEl.textContent = css;
+                applyTextPalette(iframe.contentDocument);
             }
         }
     }
@@ -752,6 +860,7 @@
             }
             return null;
         }
+        applyTextPalette(iframe.contentDocument);
         await prepareSourceMap(index, originalHtml, window.readerBlocks.collect(iframe.contentDocument.body));
         // A chapter's height is read ONCE and becomes the wrapper's height
         // for the rest of the session, so anything that arrives after the
@@ -1566,6 +1675,7 @@
         }
         if (stale()) { iframe.remove(); return false; }
 
+        applyTextPalette(doc);
         for (const child of Array.from(paginatedViewerEl.children)) {
             if (child !== iframe) child.remove();
         }
