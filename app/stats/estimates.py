@@ -603,8 +603,9 @@ async def build_estimator(db, user_id: int, *, cached_only=False) -> ReadingEsti
         comic_fallback_rate=percentile(list(rate_by_series.values()) + gone_series_rates,
                                        COMIC_FALLBACK_PERCENTILE),
     )
-    account = await (await db.execute('SELECT password_hash,created_at FROM users WHERE id=?', (user_id,))).fetchone()
-    estimator.cache_account = (user_id, snapshots.signature(tuple(account) if account else None))
+    account = await (await db.execute('SELECT password_hash,created_at,(SELECT incarnation FROM stats_account_generations WHERE user_id=users.id) AS incarnation FROM users WHERE id=?', (user_id,))).fetchone()
+    estimator.cache_account = (user_id, snapshots.signature(tuple(account)[:2] if account else None))
+    estimator.account_identity = account['incarnation'] if account else None
     estimator.cached_only = cached_only
     return estimator
 

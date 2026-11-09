@@ -334,8 +334,10 @@ async def revalidate_pages(request: Request, call_next):
     """
     api = request.method == "POST" and request.url.path == "/library/reading-estimates"
     stats = request.method == "GET" and request.url.path == "/stats"
-    enabled = settings.detailed_server_timing and (api or stats or (request.method == "GET" and request.url.path == "/"))
-    with request_timing.collect(enabled, api=api, stats=stats):
+    from app.text_replacements import is_save_request
+    replacements = is_save_request(request.scope)
+    enabled = settings.detailed_server_timing and (api or stats or replacements or (request.method == "GET" and request.url.path == "/"))
+    with request_timing.collect(enabled, api=api, stats=stats, replacements=replacements):
         return await _revalidate_page(request, call_next)
 
 
@@ -343,7 +345,7 @@ async def _revalidate_page(request, call_next):
     started = perf_counter()
     response = await call_next(request)
     if "text/html" not in response.headers.get("content-type", ""):
-        if request_timing.api_enabled():
+        if request_timing.api_enabled() or request_timing.replacements_enabled():
             return _time_page(response, started)
         return response
     if "cache-control" not in response.headers:

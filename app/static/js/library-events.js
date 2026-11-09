@@ -684,6 +684,7 @@
         scheduleRefresh("text-estimates", refreshTextEstimates);
     }
     function renderTextEstimate(node, value) {
+        if (value.remaining === null && value.state === "calculating" && node.textContent.trim().startsWith("~")) return false;
         node.hidden = value.remaining === null && value.state === "complete";
         const scope = node.dataset.etaScope ? ` in ${node.dataset.etaScope}` : "";
         const labels = {collecting: "Collecting data", calculating: "Calculating…",
@@ -742,7 +743,7 @@
                         id: Number(node.dataset.textEtaId), volume_id: Number(node.dataset.textEtaVolume) || undefined});
                     const value = results.get(key);
                     if (!value) continue;
-                    renderTextEstimate(node, value);
+                    if (renderTextEstimate(node, value) === false) continue;
                     const card = node.closest("[data-item-id]");
                     if (card) {
                         if (value.total === null) delete card.dataset.eta;

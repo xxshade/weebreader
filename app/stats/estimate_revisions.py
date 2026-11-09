@@ -60,4 +60,10 @@ def triggers():
                 f"DELETE FROM estimate_work_revisions WHERE kind='{kind}' AND identity=OLD.id;")
     trigger('account', 'users', 'UPDATE', account('NEW.id'), 'password_hash,created_at')
     trigger('account', 'users', 'DELETE', global_change)
+    for table, kind in (('items', 'item'), ('series', 'series'), ('novels', 'novel'), ('volumes', 'volume')):
+        trigger('identity_' + kind, table, 'INSERT',
+                f"INSERT OR REPLACE INTO estimate_target_incarnations VALUES('{kind}',NEW.id,lower(hex(randomblob(16))));")
+        trigger('identity_' + kind, table, 'DELETE',
+                f"DELETE FROM estimate_target_incarnations WHERE kind='{kind}' AND identity=OLD.id;")
+        statements.append(f"INSERT OR IGNORE INTO estimate_target_incarnations SELECT '{kind}',id,lower(hex(randomblob(16))) FROM {table};")
     return '\n'.join(statements)

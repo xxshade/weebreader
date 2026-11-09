@@ -3,6 +3,7 @@ import json
 import logging
 import urllib.parse
 from collections import namedtuple
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
@@ -118,7 +119,11 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
         from app.stats.ready_estimates import cache
         await cache.get(db, user_id, estimator)
 
-    await estimator.prepare_items(reading_comics)
+    from app.stats.ready_estimates import cache
+    previous = await cache.display_values(db, user_id, estimator,
+        keys={('item', row['id'], None) for row in reading_comics}
+             | {('novel', row['id'], row['volume_id']) for row in reading_novels})
+    await estimator.prepare_items([row for row in reading_comics if ('item', row['id'], None) not in previous])
     reading_items = []
     for it in reading_comics:
         # page_count is already known for every item since scan time (just
@@ -143,9 +148,9 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
             # The row is both halves of what the estimator asks for: it
             # joins items to reading_progress, so it carries the format and
             # size on one side and the status and percentage on the other.
-            "eta": estimator.for_item(it, it),
+            "eta": previous.get(("item", it["id"], None)) or estimator.for_item(it, it),
             "text_eta": it["file_format"] == "epub",
-            "eta_state": estimator.item_states.get(it["id"], "complete"),
+            "eta_state": previous[("item", it["id"], None)].state if ("item", it["id"], None) in previous else estimator.item_states.get(it["id"], "complete"),
             # The estimate is about the item the card already names, so
             # there is nothing further to say (see the novel branch).
             "eta_scope": "",
@@ -159,7 +164,9 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
         chnum = format_chapter_number(nv["chapter_number"])
         # The estimator counts actual words in this volume, anchored to the
         # current chapter/block/character position, independently of percent.
-        await estimator.prepare_novel(nv["id"], nv["volume_id"])
+        old = previous.get(('novel', nv['id'], nv['volume_id'])) if nv['volume_has_unread'] else None
+        if old is None:
+            await estimator.prepare_novel(nv["id"], nv["volume_id"])
         # A novel's card is about the VOLUME for the time left and the
         # CHAPTER for everything else, and the two are labelled so neither
         # can be read as the other. The percentage and the bar stay on the
@@ -191,9 +198,9 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
             # The stretch handed over is ONE VOLUME -- rest_bytes above is
             # grouped by volume_id. The same call on the home grid's novel
             # card hands over the whole novel (see _novel_reading).
-            "eta": estimator.for_novel(nv["id"], nv["volume_id"]),
+            "eta": old or estimator.for_novel(nv["id"], nv["volume_id"]),
             "text_eta": bool(nv["volume_has_unread"]),
-            "eta_state": estimator.novel_states.get((nv["id"], nv["volume_id"]), "complete"),
+            "eta_state": old.state if old else estimator.novel_states.get((nv["id"], nv["volume_id"]), "complete"),
             "eta_volume_id": nv["volume_id"],
             "last_read_at": nv["updated_at"],
             "clear_url": f"/novels/{nv['id']}/clear-status",
@@ -238,13 +245,17 @@ async def _series_reading(db, user_id: int, estimator, series_ids=None):
     with request_timing.item_preparation():
         state = await cache.get(db, user_id, estimator)
     request_timing.finish('series_prepare', started)
+    previous = await cache.display_values(db, user_id, estimator, kind='series')
     if state is not None:
-        return {key: value for key, value in state.series.items()
-                if series_ids is None or key in series_ids}
-    return await _series_reading_uncached(db, user_id, estimator, series_ids)
+        return {key: (value._replace(remaining=previous[('series', key, None)].remaining,
+                                    missing=previous[('series', key, None)].missing,
+                                    state=previous[('series', key, None)].state)
+                      if value.unread and value.state == 'calculating' and ('series', key, None) in previous else value)
+                for key, value in state.series.items() if series_ids is None or key in series_ids}
+    return await _series_reading_uncached(db, user_id, estimator, series_ids, previous)
 
 
-async def _series_reading_uncached(db, user_id: int, estimator, series_ids=None):
+async def _series_reading_uncached(db, user_id: int, estimator, series_ids=None, previous=None):
     """What each series still has waiting, keyed by series id.
 
     "Unread" is NOT COMPLETED, which is the same rule the time beside it
@@ -296,7 +307,7 @@ async def _series_reading_uncached(db, user_id: int, estimator, series_ids=None)
     request_timing.finish("series_query", phase_started)
     phase_started = None if estimator.collect_ready else request_timing.start()
     with request_timing.item_preparation():
-        await estimator.prepare_items(rows)
+        await estimator.prepare_items([row for row in rows if not previous or ('series', row['series_id'], None) not in previous])
     request_timing.finish("series_prepare", phase_started)
     phase_started = None if estimator.collect_ready else request_timing.start()
     by_series: dict[int, list] = {}
@@ -309,6 +320,10 @@ async def _series_reading_uncached(db, user_id: int, estimator, series_ids=None)
         for sid, items in by_series.items()
     }
 
+    for sid, value in result.items():
+        old = (previous or {}).get(('series', sid, None))
+        if old is not None:
+            result[sid] = value._replace(remaining=old.remaining, missing=old.missing, state=old.state)
     request_timing.finish("series_aggregate", phase_started)
     return result
 
@@ -316,13 +331,16 @@ async def _series_reading_uncached(db, user_id: int, estimator, series_ids=None)
 async def _novel_reading(db, user_id: int, estimator, novel_id: int | None = None):
     from app.stats.ready_estimates import cache
     state = await cache.get(db, user_id, estimator)
+    previous = await cache.display_values(db, user_id, estimator, kind='novel')
     if state is not None:
-        return {key: value for key, value in state.novels.items()
-                if novel_id is None or key == novel_id}
-    return await _novel_reading_uncached(db, user_id, estimator, novel_id)
+        return {key: (value._replace(remaining=previous[('novel', key, None)].remaining,
+                                    state=previous[('novel', key, None)].state)
+                      if value.unread and value.state == 'calculating' and ('novel', key, None) in previous else value)
+                for key, value in state.novels.items() if novel_id is None or key == novel_id}
+    return await _novel_reading_uncached(db, user_id, estimator, novel_id, previous)
 
 
-async def _novel_reading_uncached(db, user_id: int, estimator, novel_id: int | None = None):
+async def _novel_reading_uncached(db, user_id: int, estimator, novel_id: int | None = None, previous=None):
     """Home-card scope: every unmarked chapter of the novel, across volumes.
 
     The inventory estimator owns word counts and the exact saved text anchor.
@@ -344,13 +362,15 @@ async def _novel_reading_uncached(db, user_id: int, estimator, novel_id: int | N
     if estimator.collect_ready:
         estimator.ready_novels.update((row["novel_id"], dict(row)) for row in rows)
     for row in rows:
-        await estimator.prepare_novel(row["novel_id"])
-        estimate = estimator.for_novel(row["novel_id"])
+        old = (previous or {}).get(('novel', row['novel_id'], None)) if row['unread'] else None
+        if old is None:
+            await estimator.prepare_novel(row["novel_id"])
+        estimate = old or estimator.for_novel(row["novel_id"])
         shelf[row["novel_id"]] = NovelShelf(
             unread=row["unread"] or 0,
             remaining=estimate.remaining if estimate else None,
             newest=row["newest"], text_eta=bool(row["unread"]),
-            state=estimator.novel_states.get((row["novel_id"], None), "complete"),
+            state=old.state if old else estimator.novel_states.get((row["novel_id"], None), "complete"),
         )
     return shelf
 
@@ -533,6 +553,14 @@ async def _replacement_targets(db) -> list[dict]:
     return targets
 
 
+@asynccontextmanager
+async def _replacement_writer():
+    started = request_timing.start() if request_timing.replacements_enabled() else None
+    async with write_transaction() as db:
+        request_timing.finish("replacement_writer_wait", started)
+        yield db
+
+
 async def _replacement_rules_response(request: Request, db, user_id: int, error=None, edit=None):
     """The rules list, for htmx, or a redirect back to /settings without it.
 
@@ -546,11 +574,12 @@ async def _replacement_rules_response(request: Request, db, user_id: int, error=
     """
     if not is_htmx(request):
         return RedirectResponse("/settings" + ("?replacement_error=" + error if error else "") + "#text-replacements", status_code=302)
-    return templates.TemplateResponse(
-        request, "_replacement_rules.html",
-        {"replacement_rules": await text_replacements.list_all(db, user_id), "replacement_error": error, "replacement_edit": edit},
-        status_code=409 if error else 200,
-    )
+    with request_timing.replacement_phase("render"):
+        return templates.TemplateResponse(
+            request, "_replacement_rules.html",
+            {"replacement_rules": await text_replacements.list_all(db, user_id), "replacement_error": error, "replacement_edit": edit},
+            status_code=409 if error else 200,
+        )
 
 
 @router.post("/settings/text-replacements")
@@ -569,30 +598,33 @@ async def add_text_replacement(request: Request, user=Depends(get_current_user),
     error = None
     from app.reader.source_anchors import prepare_legacy_target, apply_legacy_target
     while True:
-        prepared = await prepare_legacy_target(db,user["id"],series_id=series_id,novel_id=novel_id)
-        async with write_transaction() as wdb:
-            if await text_replacements.exact_duplicate(wdb, user["id"], series_id, novel_id, find_text, replace_text):
-                error = "duplicate"
-                break
-            if not await apply_legacy_target(wdb,prepared):
-                continue
-            cursor = await wdb.execute(
-                "SELECT COUNT(*) AS n FROM text_replacements WHERE user_id = ? "
-                "AND series_id IS ? AND novel_id IS ?",
-                (user["id"], series_id, novel_id),
-            )
-            # A cap rather than no cap: every rule is a pass over the text of
-            # every chapter as it renders, and this is a personal setting, not
-            # a rules engine.
-            if (await cursor.fetchone())["n"] < text_replacements.MAX_RULES_PER_TARGET:
-                await wdb.execute(
-                    "INSERT INTO text_replacements (user_id, series_id, novel_id, find_text, replace_text) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (user["id"], series_id, novel_id, find_text, replace_text),
+        with request_timing.replacement_phase("replacement_legacy"):
+            prepared = await prepare_legacy_target(db,user["id"],series_id=series_id,novel_id=novel_id)
+        async with _replacement_writer() as wdb:
+            with request_timing.replacement_phase("replacement_validate"):
+                if await text_replacements.exact_duplicate(wdb, user["id"], series_id, novel_id, find_text, replace_text):
+                    error = "duplicate"
+                    break
+                if not await apply_legacy_target(wdb,prepared):
+                    continue
+            with request_timing.replacement_phase("replacement_write"):
+                cursor = await wdb.execute(
+                    "SELECT COUNT(*) AS n FROM text_replacements WHERE user_id = ? "
+                    "AND series_id IS ? AND novel_id IS ?",
+                    (user["id"], series_id, novel_id),
                 )
-            else:
-                error = "limit"
-            await wdb.commit()
+                # A cap rather than no cap: every rule is a pass over the text of
+                # every chapter as it renders, and this is a personal setting, not
+                # a rules engine.
+                if (await cursor.fetchone())["n"] < text_replacements.MAX_RULES_PER_TARGET:
+                    await wdb.execute(
+                        "INSERT INTO text_replacements (user_id, series_id, novel_id, find_text, replace_text) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (user["id"], series_id, novel_id, find_text, replace_text),
+                    )
+                else:
+                    error = "limit"
+                await wdb.commit()
             break
     return await _replacement_rules_response(request, db, user["id"], error)
 
@@ -610,24 +642,27 @@ async def update_text_replacement(
     error = None
     if find_text:
         while True:
-            prepared = await _prepare_rule_position(db,user["id"],rule_id)
-            async with write_transaction() as wdb:
-                rule = await (await wdb.execute(
-                    "SELECT series_id,novel_id FROM text_replacements WHERE id=? AND user_id=?",
-                    (rule_id, user["id"]))).fetchone()
-                if rule and await text_replacements.exact_duplicate(wdb, user["id"], rule['series_id'],
-                        rule['novel_id'], find_text, replace_text, exclude_id=rule_id):
-                    error = "duplicate"
-                    break
-                if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
-                    continue
-                # user_id in the WHERE, not just the id: the id comes from a form.
-                await wdb.execute(
-                    "UPDATE text_replacements SET find_text = ?, replace_text = ? "
-                    "WHERE id = ? AND user_id = ?",
-                    (find_text, replace_text, rule_id, user["id"]),
-                )
-                await wdb.commit()
+            with request_timing.replacement_phase("replacement_legacy"):
+                prepared = await _prepare_rule_position(db,user["id"],rule_id)
+            async with _replacement_writer() as wdb:
+                with request_timing.replacement_phase("replacement_validate"):
+                    rule = await (await wdb.execute(
+                        "SELECT series_id,novel_id FROM text_replacements WHERE id=? AND user_id=?",
+                        (rule_id, user["id"]))).fetchone()
+                    if rule and await text_replacements.exact_duplicate(wdb, user["id"], rule['series_id'],
+                            rule['novel_id'], find_text, replace_text, exclude_id=rule_id):
+                        error = "duplicate"
+                        break
+                    if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
+                        continue
+                with request_timing.replacement_phase("replacement_write"):
+                    # user_id in the WHERE, not just the id: the id comes from a form.
+                    await wdb.execute(
+                        "UPDATE text_replacements SET find_text = ?, replace_text = ? "
+                        "WHERE id = ? AND user_id = ?",
+                        (find_text, replace_text, rule_id, user["id"]),
+                    )
+                    await wdb.commit()
                 break
     return await _replacement_rules_response(request, db, user["id"], error,
         dict(id=rule_id, find_text=find_text, replace_text=replace_text) if error else None)
@@ -638,14 +673,17 @@ async def delete_text_replacement(
     rule_id: int, request: Request, user=Depends(get_current_user), db=Depends(get_db),
 ):
     while True:
-        prepared = await _prepare_rule_position(db,user["id"],rule_id)
-        async with write_transaction() as wdb:
-            if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
-                continue
-            await wdb.execute(
-                "DELETE FROM text_replacements WHERE id = ? AND user_id = ?", (rule_id, user["id"])
-            )
-            await wdb.commit()
+        with request_timing.replacement_phase("replacement_legacy"):
+            prepared = await _prepare_rule_position(db,user["id"],rule_id)
+        async with _replacement_writer() as wdb:
+            with request_timing.replacement_phase("replacement_validate"):
+                if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
+                    continue
+            with request_timing.replacement_phase("replacement_write"):
+                await wdb.execute(
+                    "DELETE FROM text_replacements WHERE id = ? AND user_id = ?", (rule_id, user["id"])
+                )
+                await wdb.commit()
             break
     return await _replacement_rules_response(request, db, user["id"])
 
@@ -1328,11 +1366,37 @@ async def reading_estimates(request: Request, user=Depends(get_streaming_user), 
         prepared = await cache.api(db, user["id"], estimator, parsed)
     if prepared is not None:
         return prepared
+    previous = await cache.display_values(db, user['id'], estimator, keys=set(parsed.values()), targets=parsed)
+    preview = {}
+    for key, (kind, identity, volume) in parsed.items():
+        old = previous.get((kind, identity, volume))
+        if old is None:
+            continue
+        if kind == 'item':
+            row = await (await db.execute("""SELECT 1 FROM items i LEFT JOIN reading_progress p
+                ON p.item_id=i.id AND p.user_id=? WHERE i.id=? AND i.file_format='epub'
+                AND (p.status IS NULL OR p.status<>'completed')""", (user['id'], identity))).fetchone()
+        elif kind == 'series':
+            row = await (await db.execute("""SELECT 1 FROM items i LEFT JOIN reading_progress p
+                ON p.item_id=i.id AND p.user_id=? WHERE i.series_id=?
+                AND (p.status IS NULL OR p.status<>'completed') LIMIT 1""", (user['id'], identity))).fetchone()
+        else:
+            row = await (await db.execute("""SELECT 1 FROM chapters c LEFT JOIN novel_read_chapters m
+                ON m.chapter_id=c.id AND m.user_id=? WHERE c.novel_id=? AND m.chapter_id IS NULL
+                AND (? IS NULL OR c.volume_id=?) LIMIT 1""", (user['id'], identity, volume, volume))).fetchone()
+        if row is not None:
+            preview[key] = dict(key=key, remaining=old.remaining, total=old.total,
+                                collecting=False, state=old.state, missing=old.missing)
+    if preview and hasattr(request, 'scope'):
+        request.scope['ready_estimates_preview'] = True
     with request_timing.api_phase('api_fallback'):
-        series_ids = {identity for kind, identity, _ in parsed.values() if kind == "series"}
+        series_ids = {identity for key, (kind, identity, _) in parsed.items() if kind == "series" and key not in preview}
         series_reading = await _series_reading(db, user["id"], estimator, series_ids) if series_ids else {}
         results = []
         for key, (kind, identity, volume) in parsed.items():
+            if key in preview:
+                results.append(preview[key])
+                continue
             estimate, state, missing = None, "complete", 0
             if kind == "item":
                 item = await (await db.execute("SELECT * FROM items WHERE id=? AND file_format='epub'",

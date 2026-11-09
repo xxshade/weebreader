@@ -41,6 +41,12 @@ PROBE = """() => {
             if(sessionStorage.getItem('hold-estimates')) return new Promise(resolve=>{
                 etaProbe.release=()=>resolve(original(...args));etaProbe.held=true;
             });
+            if(etaProbe.calculating) {
+                etaProbe.calculations=(etaProbe.calculations||0)+1;
+                const values=JSON.parse(args[1].body).targets.map(t=>({key:`${t.kind}:${t.id}:${t.volume_id||''}`,
+                    remaining:null,total:null,state:'calculating',missing:0}));
+                return Promise.resolve(new Response(JSON.stringify({estimates:values}),{status:200}));
+            }
             if(etaProbe.fail) return Promise.resolve(new Response('',{status:503}));
         }
         return original(...args);
@@ -188,7 +194,12 @@ class EstimateAvailabilityChecks(TextEtaChecks):
         self.wait("document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]').dataset.estimateState==='temporary_failure'")
         self.assertTrue(self.js("return document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]').textContent.startsWith('~')"),
                         'Transport failure must retain a known result')
-        self.js('etaProbe.fail=false')
+        self.js("etaProbe.fail=false;etaProbe.calculating=true;etaProbe.previous=document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]').textContent;document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]').click()")
+        self.wait('etaProbe.calculations>0')
+        self.wait('etaProbe.requests>0')
+        self.assertEqual(self.js("return document.querySelector('[data-text-eta-kind=novel][data-text-eta-id=\"200\"]').textContent"),
+                         self.js('return etaProbe.previous'), 'Calculating must retain a known result')
+        self.js('etaProbe.calculating=false')
         shutil.copyfile(self.fixture.fixture / 'estimate.epub', self.fixture.fixture / 'missing.epub')
         node=self.driver.find_element('css selector','[data-text-eta-kind=series][data-text-eta-id="200"]')
         node.send_keys(Keys.ENTER)
@@ -264,6 +275,11 @@ class ScopedEstimateChecks(audit.AuditChecks):
         self.edit(300)
         # Do not navigate: a full home validation must not hide a broken API.
         after = self.estimate(300)['value']['estimates'][0]['remaining']
+        try:
+            WebDriverWait(self.driver,10).until(lambda _: self.estimate(300)['value']['estimates'][0]['remaining'] > before)
+        except TimeoutException:
+            pass
+        after = self.estimate(300)['value']['estimates'][0]['remaining']
         self.assertGreater(after, before, 'Changed requested EPUB must invalidate prepared estimate')
         self.assertEqual(self.js('return etaProbe.errors'), [])
 
@@ -309,8 +325,9 @@ if __name__=='__main__':
     if not baseline_passed(result,len(selected_browsers(ARGS))*8):
         sys.exit(1)
     for filename,before,after,signal in (
-        ('app/account_events.py', "if path.startswith('/settings/text-replacements'):", 'if False:',
-         'Replacement changes must refresh an available estimate'),
+        ('app/static/js/library-events.js',
+         'if (value.remaining === null && value.state === "calculating" && node.textContent.trim().startsWith("~")) return false;',
+         'if (false) return false;', 'Calculating must retain a known result'),
         ('app/static/js/library-events.js','reading_estimate_updated: () => scheduleTextEstimates(),',
          'reading_estimate_updated: () => {},','New valid reading activity must refresh Collecting data through SSE'),
         ('app/static/js/library-events.js',
@@ -343,7 +360,7 @@ if __name__=='__main__':
             control=unittest.TextTestRunner(stream=output,verbosity=2).run(suite(mobile=False, availability=signal in (
                 "Reload must show the saved novel estimate before refresh completes",
                 "Series must identify its partial known total", "Transport failure must retain a known result",
-                "The partial total must be readable without clipping")))
+                "The partial total must be readable without clipping", "Calculating must retain a known result")))
         finally:
             path.write_text(original)
         if not mutation_rejected(control,selected_browsers(ARGS),'TextEta',signal):
@@ -352,7 +369,7 @@ if __name__=='__main__':
         print(' and '.join(browser.title() for browser in selected_browsers(ARGS))+' rejected: '+signal,flush=True)
 
     for before, after, test, signal in (
-        ('series_ids.update(await self._files(state, targets=file_targets))', 'series_ids.update(set())',
+        ('dirty_files = await self._files(state, targets=file_targets)', 'dirty_files = set()',
          'test_requested_content_edit_invalidates_without_home_navigation',
          'Changed requested EPUB must invalidate prepared estimate'),
         ('if targets is not None:', 'if False and targets is not None:',

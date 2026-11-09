@@ -20,6 +20,7 @@ import weakref
 from app import request_timing
 from app.config import settings
 from app.stats import estimate_snapshots as snapshots
+from app.stats.last_estimates import LastEstimates, identities, keys_for
 
 log = logging.getLogger(__name__)
 MAX_ACCOUNTS = 4
@@ -135,6 +136,9 @@ class State:
     revision: tuple
     snapshot_version: tuple
     snapshot_rows: dict
+    account_identity: str | None = None
+    identities: dict = field(default_factory=dict)
+    refreshed_work: frozenset = frozenset()
     items: dict = field(default_factory=dict)
     sources: dict = field(default_factory=dict)
     file_checks: _PreparedFiles | None = None
@@ -199,6 +203,8 @@ class ReadyEstimates:
     def __init__(self):
         self.enabled = False
         self.states = OrderedDict()
+        self.last = LastEstimates(MAX_ACCOUNTS, MAX_ENTRIES)
+        self.eager = {}
         self.locks = weakref.WeakValueDictionary()
         self.warming = set()
         self.task = None
@@ -212,6 +218,8 @@ class ReadyEstimates:
         path = str(settings.db_path)
         if self.path != path:
             self.states.clear()
+            self.last.clear()
+            self.eager.clear()
             self.locks.clear()
             self.uncacheable.clear()
             self.path = path
@@ -351,6 +359,7 @@ class ReadyEstimates:
     def _state(fresh, before, version, rows, file_checks=None):
         from app.library.router import ShelfReading, NovelShelf
         state = State(account=fresh.cache_account, revision=before, snapshot_version=version, snapshot_rows=rows,
+                      account_identity=fresh.account_identity,
                       items=fresh.ready_items, sources=fresh.ready_sources, file_checks=file_checks, words=fresh.word_counts,
                       item_estimates=fresh.item_estimates, item_states=fresh.item_states,
                       novel_estimates=fresh.novel_estimates, novel_states=fresh.novel_states,
@@ -381,7 +390,7 @@ class ReadyEstimates:
         return state
 
     async def get(self, db, uid, estimator, *, force=False, authoritative=False, allow_authoritative=False,
-                  seed=True, file_targets=None):
+                  seed=True, file_targets=None, eager_scopes=()):
         if file_targets is not None and (seed or force or not allow_authoritative):
             raise ValueError('Scoped file validation requires an unseeded API read')
         if not self.enabled or (not estimator.cached_only and not force and not allow_authoritative):
@@ -389,6 +398,7 @@ class ReadyEstimates:
         self._current_path()
         if not force and seed and getattr(estimator, "_ready_state", None) is not None:
             return estimator._ready_state
+        forced_work = set(eager_scopes)
         lock = self.locks.setdefault(uid, asyncio.Lock())
         if not force and (uid in self.warming or lock.locked()):
             return None  # Original path, not a waiter behind background work.
@@ -435,7 +445,15 @@ class ReadyEstimates:
                         series_ids.update(identity for kind, identity in changed if kind == 'series')
                         novel_ids.update(identity for kind, identity in changed if kind == 'novel')
                         if not force:
-                            series_ids.update(await self._files(state, targets=file_targets))
+                            dirty_files = await self._files(state, targets=file_targets)
+                            series_ids.update(dirty_files)
+                            estimator._ready_files_checked = True
+                            self.queue(uid, {('series', identity) for identity in dirty_files}, schedule=False)
+                    if authoritative:
+                        eager_work.update(forced_work)
+                        series_ids.update(identity for kind, identity in eager_work if kind == 'series')
+                        novel_ids.update(identity for kind, identity in eager_work if kind == 'novel')
+                    changed_display = False
                     if full or pace or series_ids or novel_ids:
                         from app.stats.estimates import build_estimator
                         fresh = await build_estimator(db, uid, cached_only=True)
@@ -445,11 +463,34 @@ class ReadyEstimates:
                             novel_ids.update(dirty_novels)
                         file_checks = await self._build(db, uid, fresh, None if full else state, series_ids, novel_ids,
                                                        eager_work if not full else set())
+                        _, current_identities = await identities(db, keys_for(fresh.ready_items, fresh.novel_states))
+                        if authoritative and eager_work and not full:
+                            probe = replace(state, items=fresh.ready_items, sources=fresh.ready_sources, file_checks=file_checks)
+                            checked = {str(index): (kind, identity, None) for index, (kind, identity) in enumerate(eager_work)}
+                            changed_files = await self._files(probe, targets=checked)
+                            if changed_files:
+                                extra = {('series', identity) for identity in changed_files}
+                                forced_work.update(extra)
+                                self.queue(uid, extra)
+                                continue
                         version_after, rows = await _snapshot(snapshots.versioned_read)
                         after = await revisions(db, uid)
                         if after != before or version_after != version:
                             continue
                         state = self._state(fresh, after, version_after, rows, file_checks)
+                        state.identities = current_identities
+                        state.refreshed_work = frozenset(eager_work if not full else ())
+                        needed = {('series', identity) for identity in state.missing_word_series
+                                  if state.series[identity].state == 'calculating' and self.last.valid(uid, state, ('series', identity, None))}
+                        needed.update(('series', state.items[identity]['series_id'])
+                                      for identity, status in state.item_states.items()
+                                      if status == 'calculating' and identity in state.items
+                                      and self.last.valid(uid, state, ('item', identity, None)))
+                        needed.update(('novel', identity) for (identity, volume), status in state.novel_states.items()
+                                      if status == 'calculating' and self.last.valid(uid, state, ('novel', identity, volume)))
+                        self.queue(uid, needed, schedule=False)
+                        changed_display = self.last.remember(uid, state)
+                        estimator._ready_files_checked = True
                     else:
                         # No source work or JSON decode on a stable hit.
                         state.revision = before
@@ -462,12 +503,17 @@ class ReadyEstimates:
                         self.states[uid] = state
                         self.states.move_to_end(uid)
                         while len(self.states) > MAX_ACCOUNTS:
-                            self.states.popitem(last=False)
+                            evicted, _ = self.states.popitem(last=False)
+                            self.last.forget(evicted)
+                            self.eager.pop(evicted, None)
                     else:
                         self.states.pop(uid, None)
                         self.uncacheable[uid] = limit_token
                         while len(self.uncacheable) > MAX_ACCOUNTS:
                             self.uncacheable.pop(next(iter(self.uncacheable)))
+                    if changed_display:
+                        from app.library import events
+                        events.publish({'type': 'reading_estimate_updated', 'user_id': uid})
                     if seed:
                         with request_timing.item_phase('items_snapshots'):
                             state.seed(estimator)
@@ -526,7 +572,18 @@ class ReadyEstimates:
         with request_timing.collect(False):
             async with _dedicated_connection() as db:
                 estimator = await build_estimator(db, uid, cached_only=True)
-                return await self.get(db, uid, estimator, force=True, authoritative=authoritative)
+                requested = set(self.eager.get(uid, ()))
+                state = await self.get(db, uid, estimator, force=True, authoritative=authoritative, eager_scopes=requested)
+                if state is None:
+                    self.eager.pop(uid, None)
+                else:
+                    pending = self.eager.get(uid, set())
+                    pending.difference_update(state.refreshed_work)
+                    if pending:
+                        self.dirty = True
+                    else:
+                        self.eager.pop(uid, None)
+                return state
 
     async def _drain(self):
         try:
@@ -536,16 +593,51 @@ class ReadyEstimates:
                 if not self.dirty or not self.enabled:
                     break
                 self.dirty = False
-                for uid in list(self.states):
+                for uid in list(dict.fromkeys((*self.states, *self.eager))):
                     await self._refresh(uid, authoritative=True)
         except asyncio.CancelledError:
             raise
         except Exception:
+            accounts = list(self.states)
             self.states.clear()
+            self.last.clear()
+            self.eager.clear()
+            from app.library import events
+            for uid in accounts:
+                events.publish({'type': 'reading_estimate_updated', 'user_id': uid})
             log.exception('ready_estimates state=refresh_failed')
         finally:
             if self.dirty and self.enabled:
                 self.task = asyncio.create_task(self._drain())
+
+    def queue(self, uid, scopes, *, schedule=True):
+        if not self.enabled or not scopes:
+            return
+        pending = self.eager.setdefault(uid, set())
+        new = set(scopes) - pending
+        if new:
+            pending.update(new)
+            if schedule:
+                self.notify()
+
+    def pending(self, uid):
+        lock = self.locks.get(uid)
+        return self.enabled and (uid in self.warming or bool(lock and lock.locked())
+                                 or bool(self.eager.get(uid)) or bool(self.task and not self.task.done()))
+
+    async def display_values(self, db, uid, estimator, keys=None, kind=None, targets=None):
+        if not self.pending(uid):
+            return {}
+        if self.eager.get(uid):
+            self.notify()
+        state = self.states.get(uid)
+        if state is None or state.account != estimator.cache_account:
+            return {}
+        if not getattr(estimator, '_ready_files_checked', False):
+            changed = await self._files(state, targets=targets)
+            estimator._ready_files_checked = True
+            self.queue(uid, {('series', identity) for identity in changed})
+        return await self.last.get(db, uid, estimator, keys, kind)
 
     def notify(self):
         if not self.enabled:
@@ -597,6 +689,8 @@ class ReadyEstimates:
                 with suppress(asyncio.CancelledError):
                     await task
         self.states.clear()
+        self.last.clear()
+        self.eager.clear()
         self.locks.clear()
         self.uncacheable.clear()
         self.warming.clear()
@@ -608,14 +702,18 @@ cache = ReadyEstimates()
 
 
 class ReadyEstimateUpdates:
-    """Finish eager maintenance before acknowledging a committed HTTP mutation."""
+    """Gate ordinary mutations; replacement saves acknowledge their commit first."""
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
         async def updated(message):
+            from app.text_replacements import is_save_request
+            checked_api = (scope.get('method') == 'POST' and scope.get('path') == '/library/reading-estimates'
+                           and scope.get('ready_estimates_preview'))
             if (message['type'] == 'http.response.start' and 200 <= message['status'] < 400
-                    and scope.get('method') in ('POST', 'PUT', 'PATCH', 'DELETE')):
+                    and scope.get('method') in ('POST', 'PUT', 'PATCH', 'DELETE')
+                    and not is_save_request(scope) and not checked_api):
                 with request_timing.api_phase('api_flush'):
                     await cache.flush()
             await send(message)

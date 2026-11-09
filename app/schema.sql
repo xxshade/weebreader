@@ -966,6 +966,14 @@ AFTER UPDATE OF content_html,volume_id,order_index,novel_id ON chapters BEGIN
     UPDATE novel_content_revisions SET revision=lower(hex(randomblob(16))) WHERE novel_id=OLD.novel_id AND OLD.novel_id<>NEW.novel_id;
 END;
 
+-- Values retained for display must not follow a recycled item/work ID.
+CREATE TABLE IF NOT EXISTS estimate_target_incarnations (
+    kind TEXT NOT NULL CHECK(kind IN ('item','series','novel','volume')),
+    identity INTEGER NOT NULL,
+    incarnation TEXT NOT NULL,
+    PRIMARY KEY(kind,identity)
+);
+
 -- Derived estimate generations. Mutations increment these in their own commit;
 -- an in-process notification is only an eager-refresh hint, never correctness.
 CREATE TABLE IF NOT EXISTS estimate_revision (
