@@ -692,6 +692,36 @@ CREATE TABLE IF NOT EXISTS chapters (
 CREATE INDEX IF NOT EXISTS idx_chapters_novel ON chapters(novel_id);
 CREATE INDEX IF NOT EXISTS idx_chapters_volume ON chapters(volume_id);
 
+-- Keep numeric bookmarks at their pre-repair destination. Volume numbers are
+-- values rather than foreign keys: emptied source volumes can be deleted.
+CREATE TABLE IF NOT EXISTS novel_chapter_aliases (
+    novel_id INTEGER NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+    volume_number INTEGER NOT NULL,
+    chapter_number REAL NOT NULL,
+    chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    PRIMARY KEY(novel_id,volume_number,chapter_number)
+);
+CREATE TABLE IF NOT EXISTS novel_reader_revisions (
+    novel_id INTEGER PRIMARY KEY REFERENCES novels(id) ON DELETE CASCADE,
+    revision TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS novel_reader_insert AFTER INSERT ON chapters BEGIN
+    INSERT INTO novel_reader_revisions VALUES(NEW.novel_id,lower(hex(randomblob(16))))
+    ON CONFLICT(novel_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER IF NOT EXISTS novel_reader_delete AFTER DELETE ON chapters BEGIN
+    INSERT INTO novel_reader_revisions SELECT OLD.novel_id,lower(hex(randomblob(16))) WHERE EXISTS(SELECT 1 FROM novels WHERE id=OLD.novel_id)
+    ON CONFLICT(novel_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER IF NOT EXISTS novel_reader_update
+AFTER UPDATE OF title,number,volume_id,order_index,novel_id ON chapters
+WHEN OLD.title IS NOT NEW.title OR OLD.number IS NOT NEW.number OR OLD.volume_id IS NOT NEW.volume_id
+ OR OLD.order_index IS NOT NEW.order_index OR OLD.novel_id IS NOT NEW.novel_id BEGIN
+    INSERT INTO novel_reader_revisions VALUES(NEW.novel_id,lower(hex(randomblob(16))))
+    ON CONFLICT(novel_id) DO UPDATE SET revision=excluded.revision;
+    UPDATE novel_reader_revisions SET revision=lower(hex(randomblob(16))) WHERE novel_id=OLD.novel_id AND OLD.novel_id<>NEW.novel_id;
+END;
+
 -- Single current position per (user, novel) -- same shape as reading_progress
 -- above, kept as a separate table since it references chapters/novels
 -- instead of items, and tracks a scroll percentage + paragraph anchor

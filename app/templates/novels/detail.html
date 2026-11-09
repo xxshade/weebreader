@@ -277,7 +277,7 @@
                 {# draggable="false" -- same reasoning as series-reorder.js's
                    card link: without it this link's own default drag
                    would hijack the gesture novel-reorder.js listens for. #}
-                <a href="/novels/{{ novel.id }}/read/{{ volume.number }}/{{ chapter.number|chnum }}"
+                <a href="/novels/{{ novel.id }}/read/{{ chapter.id }}"
                    {% if novel.manual_sort_editing %}draggable="false"{% endif %}
                    class="min-w-0 truncate {{ 'text-neutral-500' if chapter.id in read_ids else 'text-neutral-200' }} hover:text-indigo-400">
                     {% if chapter.id == current_chapter_id %}<span title="You're reading this chapter">▶</span>{% endif %}

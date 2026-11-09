@@ -372,6 +372,7 @@
           data-thumb-size-key="{{ thumb_key }}" data-viewport="{{ viewport_content }}"
           {% if user %}data-reading-account="{{ user.id }}"{% endif %}
           data-reader-replacements-url="{{ asset_url('js/reader-replacements.js') }}"
+          data-reader-resume-url="{{ asset_url('js/reader-resume.js') }}"
           data-reader-source-anchor-url="{{ asset_url('js/reader-source-anchor.js') }}"
           data-reading-tracker-url="{{ asset_url('js/reading-time.js') }}"
           {%- set thumb_px = ui_thumb_size(request, thumb_key) %}{% if thumb_px %} style="--thumb-size: {{ thumb_px }}px"{% endif %}

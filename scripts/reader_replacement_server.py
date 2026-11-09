@@ -29,6 +29,8 @@ class ReaderFixture:
                     prepare: async index => { await loadChapterBlocks(index); },
                     show: async index => { await initPaginated(index, {index:0,offset:0}); },
                     sizes: () => ({chapters:pgChapterCache.size,maps:sourceMaps.size}),
+                    navigation: () => ({busy:pgNavigating, atEnd:pgPageEnd.index >= (pgChapterCache.get(pgSpineIndex)?.blocks.length || Infinity)}),
+                    progress: () => ({refreshing:refreshingOrder,pending:progressRequests.size}),
                 };
 """
                     + marker,

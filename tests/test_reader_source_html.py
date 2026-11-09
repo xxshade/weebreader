@@ -168,7 +168,7 @@ class Freshness(ProgressCase):
         current = json.loads((await read_progress(1, self.user, self.db)).body)
         self.assertEqual(first["position"], current["position"])
         self.assertEqual(
-            current["current_replacements"], [dict(find="old", replace="new")]
+            [r for r in current["current_replacements"] if r.get("find")], [dict(find="old", replace="new")]
         )
         self.assertEqual(current["source_version"], "h")
 
@@ -200,9 +200,9 @@ class FirstOpeningFreshness(ProgressCase):
             (await read_novel_progress(1, self.user, self.db, chapter_id=1)).body
         )
         self.assertIsNone(current["position"])
-        self.assertEqual(current["resume_url"], "/novels/1/read/1/1")
+        self.assertEqual(current["resume_url"], "/novels/1/read/1")
         self.assertEqual(
-            current["current_replacements"], [dict(find="old", replace="new")]
+            [r for r in current["current_replacements"] if r.get("find")], [dict(find="old", replace="new")]
         )
         row = await (
             await self.db.execute("SELECT 1 FROM novel_reading_progress")

@@ -126,7 +126,7 @@ class WhatTheServerAnswers(_Case):
         await self.db.commit()
         body = _body(await read_novel_progress(1, user=self.user, db=self.db))
         self.assertEqual(body["progress_percent"], 73.5)
-        self.assertEqual(body["resume_url"], "/novels/1/read/2/41")
+        self.assertEqual(body["resume_url"], "/novels/1/read/141")
 
     async def test_a_whole_numbered_chapter_is_not_linked_as_a_float(self):
         # `chapters.number` is a REAL, and "/read/1/41.0" is a URL the
@@ -138,7 +138,7 @@ class WhatTheServerAnswers(_Case):
             " VALUES (1, 1, 141, 10.0, 1.0, 0)")
         await self.db.commit()
         body = _body(await read_novel_progress(1, user=self.user, db=self.db))
-        self.assertEqual(body["resume_url"], "/novels/1/read/1/41")
+        self.assertEqual(body["resume_url"], "/novels/1/read/141")
 
     async def test_the_novel_reader_is_rendered_with_the_baseline_in_it(self):
         # The other end of the same number. A page rendered with 0 while

@@ -42,13 +42,17 @@ async def rules_for(db, user_id: int, *, series_id=None, novel_id=None) -> list[
             for row in await cursor.fetchall()]
 
 
-async def rules_json(db, user_id: int, *, series_id=None, novel_id=None) -> str:
+async def rules_json(db, user_id: int, *, series_id=None, novel_id=None, reader_order=None) -> str:
     """The same rules, as the JSON the reader templates put on #reader-root.
 
-    Always a valid JSON array, "[]" when there is nothing -- the reader
-    parses this unconditionally, and an empty attribute is not JSON.
+    Always a valid JSON array. Novel readers also carry an order marker,
+    ignored when applying replacements, to refresh older cached readers.
     """
-    return json.dumps(client_rules(await rules_for(db, user_id, series_id=series_id, novel_id=novel_id)))
+    order = reader_order
+    if novel_id is not None and order is None:
+        from app.novels.links import revision
+        order = await revision(db, novel_id)
+    return json.dumps(client_rules(await rules_for(db, user_id, series_id=series_id, novel_id=novel_id), order=order))
 
 
 async def rules_for_series(db, user_id: int, series_ids) -> dict[int, list[dict]]:
@@ -154,7 +158,10 @@ async def remove_duplicates():
         await db.close()
 
 
-def client_rules(rules):
+def client_rules(rules, *, order=None):
     """The extra field makes old restored readers refresh changed semantics."""
     from app.replacement_matching import affected
-    return [dict(rule, space_matching=2) if affected([rule]) else rule for rule in rules]
+    result = [dict(rule, space_matching=2) if affected([rule]) else rule for rule in rules]
+    # Older restored readers already compare this transport array. An entry
+    # without Find is ignored by rendering/digests but makes them refresh too.
+    return result + ([{"reader_order": order}] if order is not None else [])

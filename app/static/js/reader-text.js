@@ -78,6 +78,7 @@
     const sharedAssets = [
         [window.readerReplacements, main?.dataset.readerReplacementsUrl],
         [window.readerSourceAnchor, main?.dataset.readerSourceAnchorUrl],
+        [window.readerResume, main?.dataset.readerResumeUrl],
     ];
     if ((!window.readerReplacements && !document.querySelector('script[src*="/reader-replacements.js"]')) ||
         sharedAssets.some(([api, url]) => api && (api.version !== 2 || (url && api.assetUrl !== new URL(url,location.href).href)))) {
@@ -584,6 +585,8 @@
             // Before normalizeSpine, so the first chapter URL built from
             // this spine already carries it.
             contentVersion = data.version || "";
+            // Keep the SSR/history order token: replacing it here would hide
+            // a stale restored position when the fetched spine has moved backwards.
             metadataLanguage = canonicalLanguage(data.language);
             renderWorkPrefs();
             spineList = adapter.normalizeSpine(data);
@@ -766,6 +769,7 @@
     let bottomSentinelObserver = null;
     let topSentinelObserver = null;
     let customHasNavigated = false;
+    let lastCustomPosition = null;
     let customReflowing = false;
     let customReflowGeneration = 0;
 
@@ -1019,6 +1023,7 @@
         advancingMount = true;
         let mounted = null;
         try {
+            if (userHasInteracted && await window.readerResume?.checkOrder()) return;
             mounted = await mountSection(mountedUpTo + 1);
             if (mounted) {
                 mountRetries = 0;
@@ -1051,6 +1056,7 @@
         if (mountedFrom - 1 < 0) return;
         retreatingMount = true;
         try {
+            if (userHasInteracted && await window.readerResume?.checkOrder()) return;
             const targetIndex = mountedFrom - 1;
             const heightBefore = customScrollEl.scrollHeight;
             const mounted = await mountSection(targetIndex);
@@ -1175,6 +1181,7 @@
         clearLoadingIndicator();
         ensureCustomScrollListeners();
         lastAdvanceCheckSpineIndex = targetIndex;
+        lastCustomPosition = measureCustomPosition();
         reportContinuousTiming(false);
     }
 
@@ -1190,11 +1197,13 @@
             if (customReflowing) return;
             if (scrollRafPending) return;
             scrollRafPending = true;
-            requestAnimationFrame(() => {
+            requestAnimationFrame(async () => {
                 scrollRafPending = false;
                 if (!userHasInteracted) return; // never save from an automatic adjustment
                 customHasNavigated = true;
                 const { spineIndex, elementIndex, offset = 0, elementFraction } = measureCustomPosition();
+                if (spineIndex !== lastAdvanceCheckSpineIndex && await window.readerResume?.checkOrder()) return;
+                lastCustomPosition = {spineIndex,elementIndex,offset,elementFraction};
                 const percentage = bookFraction(spineIndex, elementFraction);
                 reportContinuousTiming(!customScrollInitializing);
                 updateIndicator(elementIndex, getBlocks(sectionWrappers[spineIndex]).length, spineIndex);
@@ -1749,6 +1758,7 @@
             markInteraction();
             const { blocks } = await loadChapterBlocks(pgSpineIndex);
             let shown;
+            if (pgPageEnd.index >= blocks.length && await window.readerResume?.checkOrder()) return;
             if (pgPageEnd.index < blocks.length) {
                 shown = await gotoPaginatedForward(pgSpineIndex, pgPageEnd, true);
             } else if (pgSpineIndex + 1 < spineList.length) {
@@ -1782,6 +1792,7 @@
         try {
             markInteraction();
             let shown;
+            if (pagination.compare(pgPageStart, pagination.position(0)) <= 0 && await window.readerResume?.checkOrder()) return;
             if (pagination.compare(pgPageStart, pagination.position(0)) > 0) {
                 shown = await gotoPaginatedBackwardEnd(pgSpineIndex, pgPageStart, true);
             } else if (pgSpineIndex > 0) {
@@ -1948,10 +1959,12 @@
             value.toString(16).padStart(2, "0")).join("").replace(
                 /(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5");
     let progressSaveSequence = 0;
+    const progressRequests = new Set();
+    let refreshingOrder = false;
 
-    function saveProgress(spineIndex, entry, location, percentage, chapterFraction, useBeacon = false) {
+    function saveProgress(spineIndex, entry, location, percentage, chapterFraction, useBeacon = false, force = false) {
         const {index: elidx, offset} = pagination.position(location);
-        if (!entry || root.dataset.resumePending === "true" || !root.isConnected) return;
+        if (!entry || root.dataset.resumePending === "true" || !root.isConnected || (refreshingOrder && !force)) return;
         const chapter = sourceMaps.get(spineIndex);
         const originalPosition = chapter?.anchorMap?.toSource({index: elidx, offset});
         const sourceAnchor = originalPosition ? JSON.stringify({
@@ -1977,16 +1990,46 @@
             // is not an error to show. Uncaught, it reached the page's
             // unhandledrejection handler and told the reader their EPUB
             // had malformed HTML.
-            fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, keepalive: true })
-                .catch(() => {});
+            const request = fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, keepalive: true }).catch(() => {});
+            progressRequests.add(request);
+            request.then(() => progressRequests.delete(request));
+            return request;
         }
     }
+
+    root.readerPersistPosition = async () => {
+        if (source !== "novel") return null;
+        let index, position, fraction;
+        if (customMode) {
+            if (mountedFrom < 0) return null;
+            const measured = lastCustomPosition || measureCustomPosition();
+            index = measured.spineIndex;
+            position = {index:measured.elementIndex,offset:measured.offset || 0};
+            fraction = measured.elementFraction;
+        } else {
+            if (pgSpineIndex === null) return null;
+            index = pgSpineIndex; position = pgPageStart;
+            const blocks = pgChapterCache.get(index)?.blocks || [];
+            fraction = blocks.length ? (position.index + position.offset / Math.max(1,pagination.length(blocks[position.index]))) / blocks.length : 0;
+        }
+        const entry = spineList[index];
+        refreshingOrder = true;
+        cancelScrollSave();
+        await Promise.all([...progressRequests]);
+        const response = await saveProgress(index,entry,position,bookFraction(index,fraction),fraction,false,true);
+        if (!response?.ok) {
+            refreshingOrder = false;
+            showLoadWarning("Couldn't save your position before updating the chapter list. Please try again.");
+            throw new Error("Position could not be saved before refreshing chapter order");
+        }
+        return `/novels/${itemId}/read/${entry.chapterId}`;
+    };
 
     function saveOnExit() {
         if (leavingForNextItem) return; // already saved, as finished
         if (customMode) {
             if (!customHasNavigated) return;
-            const { spineIndex, elementIndex, offset = 0, elementFraction } = measureCustomPosition();
+            const { spineIndex, elementIndex, offset = 0, elementFraction } = (source === "novel" && lastCustomPosition) || measureCustomPosition();
             const percentage = bookFraction(spineIndex, elementFraction);
             saveProgress(spineIndex, spineList[spineIndex], {index: elementIndex, offset}, percentage, elementFraction, true);
         } else {
