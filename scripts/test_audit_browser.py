@@ -18,6 +18,7 @@ import unittest
 
 import requests
 from selenium import webdriver
+from selenium.common.exceptions import ElementClickInterceptedException
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
@@ -193,7 +194,14 @@ class AuditChecks(unittest.TestCase):
 
     def next_page(self):
         self.js("audit.oldFrame=document.querySelector('#paginated-viewer iframe')")
-        self.driver.find_element('id', 'btn-next').click()
+        try:
+            self.driver.find_element('id', 'btn-next').click()
+        except ElementClickInterceptedException:
+            # Completion can arrive after read_to_end checked it but before
+            # WebDriver dispatches this click. Accept only that terminal panel;
+            # another overlay still means the interaction failed.
+            if not self.end_visible():
+                raise
         self.wait("[...document.querySelectorAll('#reader-root div')].some(e=>e.textContent==='End of series') || (document.querySelector('#paginated-viewer iframe')!==audit.oldFrame && document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible')")
 
     def read_to_end(self):
@@ -350,6 +358,29 @@ class AuditChecks(unittest.TestCase):
                          {'status': 'completed', 'progress_percent': 100.0})
 
 
+    def test_completion_panel_before_next_click_is_a_terminal_result(self):
+        # Keep completion/progress separate from the final-chapter audit below.
+        with sqlite3.connect(self.fixture.data / 'library.db') as db:
+            db.execute("INSERT INTO novels(id,title,source_url,sync_status,active) VALUES(109,'Terminal panel novel','https://example.invalid/terminal-novel','idle',0)")
+            db.execute('INSERT INTO volumes(id,novel_id,number) VALUES(109,109,1)')
+            db.execute("INSERT INTO chapters(id,novel_id,volume_id,number,title,url,order_index,content_html,content_size) SELECT 109,109,109,1,title,'https://example.invalid/terminal-chapter',0,content_html,content_size FROM chapters WHERE id=100")
+        self.open_reader('/novels/109/read/109')
+        self.js("const e=document.createElement('div');e.id='audit-obstruction';e.style='position:fixed;inset:0;z-index:9999;background:black';document.body.append(e)")
+        with self.assertRaises(ElementClickInterceptedException):
+            self.next_page()
+        self.js("document.getElementById('audit-obstruction').remove()")
+        self.read_to_end()
+        self.assertTrue(self.end_visible())
+        # The observed race's click-time state: the terminal panel has arrived
+        # since the caller decided to turn another page.
+        try:
+            self.next_page()
+        except ElementClickInterceptedException:
+            self.fail('A terminal panel must finish the audit turn instead of raising a click error')
+        self.assertTrue(self.end_visible())
+        self.assertEqual(self.row('SELECT chapter_id FROM novel_read_chapters WHERE chapter_id=109'),
+                         {'chapter_id': 109})
+
     def test_final_novel_chapter_keeps_illustration_completes_and_returns_to_novel(self):
         self.open_reader('/novels/100/read/1/1')
         self.assertTrue(self.js("return !!document.querySelector('#paginated-viewer iframe').contentDocument.querySelector('img')"))
@@ -470,6 +501,7 @@ if __name__ == '__main__':
         mobile = type(browser.title() + 'MobileAudit', (AuditChecks,), {
             'browser': browser, 'viewport_width': 320})
         suite.addTest(mobile('test_bulk_completion_reopens_epub_at_the_beginning'))
+        suite.addTest(mobile('test_completion_panel_before_next_click_is_a_terminal_result'))
         suite.addTest(mobile('test_epub_stylesheets_resolve_without_extra_requests'))
         suite.addTest(mobile('test_late_epub_page_save_does_not_undo_completion_or_rereading'))
         suite.addTest(mobile('test_html_server_timing_survives_cache_revalidation'))
