@@ -6,6 +6,9 @@ from time import perf_counter
 from starlette.responses import JSONResponse
 
 _PHASES = ('db_acquire', 'auth', 'home_data', 'render', 'revalidate')
+_REPLACEMENT_PHASES = ('replacement_legacy', 'replacement_writer_wait',
+                       'replacement_validate', 'replacement_write')
+_replacements_enabled: ContextVar[bool] = ContextVar('replacement_timing_enabled', default=False)
 _STATS_PHASES = ('stats_daily', 'stats_by_kind', 'stats_pace', 'stats_recent',
                  'stats_series_status', 'stats_item_status', 'stats_novels',
                  'stats_libraries', 'stats_totals', 'stats_finish')
@@ -29,7 +32,8 @@ _metrics: ContextVar[dict | None] = ContextVar('request_timing', default=None)
 
 
 @contextmanager
-def collect(enabled, *, api=False, stats=False):
+def collect(enabled, *, api=False, stats=False, replacements=False):
+    replacements_token = _replacements_enabled.set(enabled and replacements)
     stats_token = _stats_enabled.set(enabled and stats)
     token = _metrics.set({} if enabled else None)
     api_token = _api_enabled.set(enabled and api)
@@ -41,6 +45,26 @@ def collect(enabled, *, api=False, stats=False):
         _api_enabled.reset(api_token)
         _metrics.reset(token)
         _stats_enabled.reset(stats_token)
+        _replacements_enabled.reset(replacements_token)
+
+
+def replacements_enabled():
+    return _replacements_enabled.get() and _metrics.get() is not None
+
+
+def replacement_phase(name):
+    if not replacements_enabled():
+        return nullcontext()
+    return _measure_replacement_phase(name)
+
+
+@contextmanager
+def _measure_replacement_phase(name):
+    started = start()
+    try:
+        yield
+    finally:
+        finish(name, started)
 
 
 def stats_phase(name):
@@ -160,7 +184,7 @@ def finish(name, started):
     metrics = _metrics.get()
     if metrics is not None and started is not None:
         if name not in (_PHASES + _HOME_PHASES + _SERIES_PHASES + _ITEM_PHASES
-                        + _STATS_PHASES + _API_PHASES + _API_CACHE_PHASES + _API_VALIDATION_PHASES + _RENDER_PHASES):
+                        + _STATS_PHASES + _REPLACEMENT_PHASES + _API_PHASES + _API_CACHE_PHASES + _API_VALIDATION_PHASES + _RENDER_PHASES):
             raise ValueError('Unknown timing phase')
         metrics[name] = metrics.get(name, 0.0) + (perf_counter() - started) * 1000
 
@@ -169,6 +193,10 @@ def _phase_headers(total):
     metrics = _metrics.get()
     if metrics is None:
         return []
+    if replacements_enabled():
+        phases = ('db_acquire', 'auth', *_REPLACEMENT_PHASES, 'render')
+        return [f'{name};dur={metrics.get(name, 0.0):.3f}' for name in phases] + [
+            f'replacement_other;dur={max(0.0, total - sum(metrics.get(name, 0.0) for name in phases)):.3f}']
     if _stats_enabled.get():
         phases = ('db_acquire', 'auth', *_STATS_PHASES, 'render', 'revalidate')
         return [f'{name};dur={metrics.get(name, 0.0):.3f}' for name in phases] + [

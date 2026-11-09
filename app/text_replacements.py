@@ -13,6 +13,14 @@ few words. And doing it in the reader is what makes "visual only"
 structural rather than a promise: the file is never in the path at all.
 """
 import json
+import re
+
+_SAVE_PATH = re.compile(r"/settings/text-replacements(?:/[0-9]+(?:/delete)?)?")
+
+
+def is_save_request(scope):
+    return scope.get("method") == "POST" and _SAVE_PATH.fullmatch(scope.get("path", "")) is not None
+
 
 MAX_RULES_PER_TARGET = 50
 RULE_QUERY_BATCH_SIZE = 500
