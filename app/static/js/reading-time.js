@@ -112,17 +112,17 @@
             const activities = pending();
             if (!activities.length) return;
             const body = JSON.stringify({activities});
-            if (useBeacon && body.length < 60000 && navigator.sendBeacon) {
+            const beaconBody = useBeacon ? new Blob([body], {type:"application/json"}) : null;
+            if (useBeacon && beaconBody.size < 60000 && navigator.sendBeacon) {
                 // A beacon only confirms submission to the browser, never receipt.
                 // Keep the outbox until a later acknowledged fetch.
-                try { navigator.sendBeacon(endpoint, new Blob([body], {type:"application/json"})); }
-                catch { /* Submission is unconfirmed; retain the outbox. */ }
-                return;
+                try { if (navigator.sendBeacon(endpoint, beaconBody)) return; }
+                catch { /* Retry through acknowledged delivery below. */ }
             }
             sending = true;
             try {
                 const response = await fetch(endpoint, {method:"POST", headers:{"Content-Type":"application/json"}, body,
-                    keepalive: useBeacon && body.length < 60000});
+                    keepalive: !!(useBeacon && beaconBody.size < 60000)});
                 if (!response.ok) return;
                 const value = await response.json();
                 for (const ack of value.accepted || []) acknowledge(ack);

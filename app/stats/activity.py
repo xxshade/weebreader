@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 from lxml import html
 
-from app import text_replacements
+from app.stats import activity_rules
 from app.library.parsers.epub import list_spine_resources
 from app.reader.streaming import epub_resource_bytes
 
@@ -166,7 +166,7 @@ async def content(db, user_id, value):
             raise ValueError('Invalid reading section.')
         raw, _ = await asyncio.to_thread(epub_resource_bytes, item['file_path'], spine[section]['href'])
         source = raw.decode('utf-8-sig', errors='replace')
-        rules = await text_replacements.rules_for(db, user_id, series_id=item['series_id'])
+        rules = await activity_rules.resolve(db, user_id, value, series_id=item['series_id'])
         kind, novel_id = 'epub', None
     else:
         chapter = await row(db, 'SELECT novel_id,content_html,content_size,content_fetched_at FROM chapters WHERE id=?', (chapter_id,))
@@ -177,7 +177,7 @@ async def content(db, user_id, value):
                     f'W/"{chapter_id}-{chapter["content_fetched_at"] or ""}-{chapter["content_size"] or 0}"')
         if value.get('source_version') is not None and value['source_version'] not in versions:
             raise ValueError('Reading content has changed.')
-        rules = await text_replacements.rules_for(db, user_id, novel_id=novel_id)
+        rules = await activity_rules.resolve(db, user_id, value, novel_id=novel_id)
     readable = await asyncio.to_thread(readable_text, source, rules, matching_version=value.get("replacement_version", 1))
     try:
         positions = await asyncio.to_thread(passage_positions, value.get('passage'), readable)
@@ -239,6 +239,9 @@ async def record_activity(db, user_id, comic_cap, text_cap, value, now=None):
     identity_data = {k:value.get(k) for k in ('item_id','chapter_id','section_index','page_index','character_offset','source_version')}
     if 'replacement_version' in value:
         identity_data['replacement_version'] = matching_version
+    if 'rule_set_ref' in value:
+        activity_rules.validate_reference(value['rule_set_ref'])
+        identity_data['rule_set_ref'] = value['rule_set_ref']
     parts = value.get('passage') or []
     if not isinstance(parts,list) or len(parts) > 100:
         raise ValueError('Invalid passage.')

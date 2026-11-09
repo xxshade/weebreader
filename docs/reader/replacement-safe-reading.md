@@ -124,3 +124,54 @@ no duplicates does no cleanup writes.
 HTML5 repair now uses the etree builder before HTML serialization, avoiding the
 XML-name coercion of EPUB namespace attributes. Interrupted estimate request
 bodies return 499 without starting estimation; malformed JSON still returns 400.
+
+## Delayed activity after editing rules
+
+A passage measured before a rule edit can reach `/reading-time` for the first
+time after the edit. Revalidating it with the new rules rejects valid activity;
+waiting several minutes before reopening does not fix that mismatch. A controlled
+single-tab browser flow reproduces this by holding activity delivery while making
+a real Settings edit. This proves a compatible failure, not the reason any
+particular user's delivery was pending.
+
+New EPUB and novel readers attach a server-derived rule-set reference to measured
+activity. It binds the account and work incarnations, ordered rules and matching
+algorithm. Add, Edit, Delete and startup duplicate cleanup preserve the previous
+rules in the same writer transaction as the change. Current reading always uses
+the latest saved rules; delayed activity can validate against its measured basis
+after restart. Source identity, passage coordinates and content validation remain
+mandatory. An open checkpoint cannot switch references; accepted replay remains
+idempotent. Deleting the account or work deletes its archived rule sets, and
+reusing an ID does not reuse its identity.
+
+This archive is durable validation metadata, separate from rebuildable estimate
+caches and saved-position source anchors. Startup creates the additive
+`activity_rule_sets` table automatically. Include it in normal database backups.
+There is no expiration: offline delivery has no agreed maximum delay. Each distinct
+ordered basis stores two matching-version rows, shared by all visits using it;
+repeated preservation deduplicates. Storage grows with rule edits and the full
+rule-list size (adding N rules successively can store O(N²) rule text). Reader
+opens only read/hash metadata and do not traverse book contents for this feature.
+
+An isolated local SQLite study with 50 short rules and 100 subsequent edits
+stored 300 archive rows: 608,912 bytes of rule JSON and 1,019,904 bytes of database
+growth. Preservation alone took median 0.44 ms and p95 0.58 ms, excluding commit,
+legacy-position preparation and HTTP handling. These are fixture measurements,
+not N100 latency predictions. Existing asynchronous estimate refresh is unchanged.
+
+Exit delivery falls back to acknowledged fetch when `sendBeacon` refuses or
+throws, and measures its quota in UTF-8 bytes. A successful beacon still leaves
+the outbox until server acknowledgment. An interrupted large fetch may deliver
+later. Already rejected records remain excluded from retry; this change does not
+recover them. Legacy activity without a reference retains its previous validation
+path, so old unreferenced passages cannot acquire historical rules retroactively.
+A constant protocol marker makes tested htmx history restores refresh old reader
+markup and assets; this is not a universal pre-measurement gate for native bfcache.
+
+Validation adds eight backend cases covering actual CRUD, a fresh-process first
+delivery, checkpoint identity, forged/cross-scope references, rollback, duplicate
+cleanup and recycled account/work IDs. Chrome 157.0.8103.38 and Firefox 159.0.1
+passed the three new browser cases at desktop and 320px simulated widths: held
+first delivery through Settings, beacon/byte/rejection boundaries and old htmx
+history refresh. Each backend case and all eight new browser defect controls
+failed for its intended defect in isolated copies.

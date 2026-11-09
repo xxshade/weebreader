@@ -36,6 +36,7 @@
          {# Display-only find-and-replace, from /settings. A JSON array,
             always present and always valid -- "[]" when there are none. #}
          data-replacements="{{ replacements_json }}"
+         data-activity-rule-set="{{ activity_rule_set_ref or '' }}"
          class="h-full w-full flex flex-col">
 
         <div class="relative flex items-center justify-between p-2 border-b border-neutral-800 text-sm">

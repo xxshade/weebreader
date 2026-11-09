@@ -248,6 +248,11 @@ structural substitutions, HTML5 passage validation, restored history without a
 newer saved position, bounded prepared-chapter caches and reader lifecycle cleanup.
 Its disposable ASGI fixture exposes cache and navigation observation only; source mapping,
 resource loading, progress persistence and activity validation use production code.
+The suite also holds first activity delivery across a real Settings edit, checks
+beacon refusal and UTF-8 quota boundaries, retains rejected records outside retry,
+and refreshes an old htmx history reader to the activity-reference protocol.
+Controls disable rule preservation/reference attachment, break each transport
+boundary, revive rejected records and remove the protocol marker.
 Deliberate defects remove queued-activity draining, position conversion, cache eviction,
 watcher cleanup and fullscreen cleanup; every selected browser must detect the intended failure.
 Run these controls sequentially in a separate checkout, like the other mutation

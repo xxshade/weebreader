@@ -177,6 +177,8 @@
         }
     })();
 
+    const activityRuleSet = root.dataset.activityRuleSet || undefined;
+
     function applyReplacements(html) {
         return window.readerReplacements.replaceHtml(html, replacementRules);
     }
@@ -1573,7 +1575,7 @@
         markDisplayedSource(spine);
         const payload = {...adapter.buildTimingPayload(spine, spineList[spine], start.index),
             source_version:source === 'epub' ? contentVersion : timingSourceVersions.get(spine),
-            replacement_version:2, character_offset:start.offset || 0, passage:timingPassage(blocks, start, end)};
+            replacement_version:2, ...(activityRuleSet ? {rule_set_ref:activityRuleSet} : {}), character_offset:start.offset || 0, passage:timingPassage(blocks, start, end)};
         normal = normal && performance.now() >= timingReflowUntil;
         let completed = normal, traversedEnd = null;
         if (continuous && previousTiming) {

@@ -57,6 +57,8 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Comic pages | The count of recorded comic image pages, including repeated reading of the same page. It is distinct from unique pages completed and from rendered text pages. |
 | Sufficient pace evidence | At least 1,000 words, five minutes and three valid reading pace samples across EPUBs and web novels together. |
 | Pending reading activity | Measured reading activity awaiting confirmation that it has been recorded. It belongs to the original account and remains the same activity when submitted again. |
+| Measured reading passage | The text presented during a measured reading activity, even when replacement rules later change. It is distinct from the text shown on a subsequent opening. |
+| Activity rule basis | The ordered replacements and matching behavior used to present a measured reading passage. It is distinct from the rules used on a later opening. |
 | Rejected reading activity | Measured activity that the server refused to record. Its rejection is distinct from pending delivery and from the saved reading position. |
 | Orphan line | The first line of a paragraph left alone at the bottom of a reading page while the rest continues on the next page. |
 | Widow line | The last line of a paragraph left alone at the top of the next reading page. |
