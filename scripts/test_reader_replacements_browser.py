@@ -504,6 +504,9 @@ class ReplacementChecks(PaginationChecks):
 
     def add_rule(self, replacement, novel=False, item=100):
         target = "novel:100" if novel else f"series:{item}"
+        prior_count = self.js(
+            "return document.querySelectorAll('#replacement-rules [data-rule-id]').length"
+        )
 
         def choose_target(_):
             # Enhancement and the first live resync may replace this control.
@@ -545,7 +548,7 @@ class ReplacementChecks(PaginationChecks):
         ).send_keys(replacement)
         self.driver.find_element("css selector", "#add-replacement button").click()
         self.wait(
-            "document.querySelectorAll('#replacement-rules [data-rule-id]').length===1"
+            f"document.querySelectorAll('#replacement-rules [data-rule-id]').length==={prior_count + 1}"
         )
         time.sleep(2)  # ordinary user sequence, not a millisecond navigation race
 
@@ -570,8 +573,9 @@ class ReplacementChecks(PaginationChecks):
     def test_replacement_preserves_epub_and_novel_passage(self):
         for novel in (False, True):
             with self.subTest(novel=novel):
-                with sqlite3.connect(self.fixture.data / "library.db") as db:
-                    db.execute("DELETE FROM text_replacements")
+                # Keep the EPUB's rules while leaving its resumed reader. Raw SQL
+                # deletion here bypasses preservation for its pending exit activity.
+                # The novel uses its own independent rule scope.
                 path = "/novels/100/read/1/1" if novel else "/reader/100"
                 self.open_reader(path)
                 self.next_page()
