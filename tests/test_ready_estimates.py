@@ -793,6 +793,9 @@ class ReadyEstimates(EstimateCase):
             finally:
                 release.set()
                 await asyncio.wait_for(task, 3)
+        # The permitted last-known response can finish before its queued refresh.
+        # Compare native parity only after that background publication completes.
+        await cache.flush()
         await self.equivalent()
 
     async def test_partial_api_pace_race_retimes_all_series_and_novels(self):
