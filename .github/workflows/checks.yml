@@ -216,13 +216,13 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
+          pull: true
+          no-cache: true
           push: false
           tags: weebreader-ci:validation
           outputs: |
             type=oci,dest=${{ runner.temp }}/ci-image.tar
             type=docker,name=weebreader-ci:validation
-          cache-from: type=gha,scope=ci
-          cache-to: type=gha,scope=ci,mode=min
       - name: Scan the built runtime image before accepting validation
         uses: ./.github/actions/container-scan
         with:

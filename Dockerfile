@@ -6,7 +6,7 @@ ARG ALPINE_VERSION=3.23
 FROM python:${PYTHON_VERSION}-alpine${ALPINE_VERSION} AS python-builder
 
 WORKDIR /build
-RUN apk add --no-cache build-base libffi-dev jpeg-dev zlib-dev libxml2-dev libxslt-dev
+RUN apk upgrade --no-cache && apk add --no-cache build-base libffi-dev jpeg-dev zlib-dev libxml2-dev libxslt-dev
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
@@ -16,7 +16,7 @@ FROM python:${PYTHON_VERSION}-alpine${ALPINE_VERSION}
 
 RUN addgroup -g 1000 app && adduser -D -u 1000 -G app -h /app -s /sbin/nologin app
 
-RUN apk add --no-cache chromium chromium-chromedriver setpriv \
+RUN apk upgrade --no-cache && apk add --no-cache chromium chromium-chromedriver setpriv \
         libffi libjpeg-turbo zlib libxml2 libxslt libstdc++ tzdata font-dejavu
 
 ENV APP_NOVEL_CHROMIUM_BINARY_PATH=/usr/bin/chromium \

@@ -94,6 +94,7 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 
 | Term | Meaning |
 | --- | --- |
+| Dependency refresh | Selecting currently available dependencies within the configured compatibility constraints for a build. It is distinct from changing the application source or replacing an already published image. |
 | Stable release | A numbered application version whose publication and artifact identity checks completed successfully. Artifact consistency and source validation are distinct requirements. |
 | Latest | The moving reference to the most recent successfully published stable release. It identifies the same published image as that release's numbered version. |
 | Commit alias | An additional reference to a released image, identifying the source commit from which it was built. It selects the same image as the corresponding numbered version. |
