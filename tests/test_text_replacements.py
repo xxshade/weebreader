@@ -76,10 +76,10 @@ class Rules(ReplacementCase):
     async def test_the_reader_always_gets_a_parseable_array(self):
         # #reader-root's data-replacements is parsed unconditionally; an
         # empty attribute is not JSON.
-        self.assertEqual(json.loads(await text_replacements.rules_json(self.db, 1, series_id=1)), [])
+        self.assertEqual(json.loads(await text_replacements.rules_json(self.db, 1, series_id=1)), [{"activity_protocol": 1}])
         await self.add("A", "B", series_id=1)
         self.assertEqual(json.loads(await text_replacements.rules_json(self.db, 1, series_id=1)),
-                         [{"find": "A", "replace": "B"}])
+                         [{"find": "A", "replace": "B"}, {"activity_protocol": 1}])
 
     async def test_no_target_means_no_rules_rather_than_every_rule(self):
         # A comic has no series-wide text to substitute and an item with no

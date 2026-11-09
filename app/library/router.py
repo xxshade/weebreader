@@ -608,6 +608,8 @@ async def add_text_replacement(request: Request, user=Depends(get_current_user),
                 if not await apply_legacy_target(wdb,prepared):
                     continue
             with request_timing.replacement_phase("replacement_write"):
+                from app.stats.activity_rules import preserve
+                await preserve(wdb,user['id'],series_id=series_id,novel_id=novel_id)
                 cursor = await wdb.execute(
                     "SELECT COUNT(*) AS n FROM text_replacements WHERE user_id = ? "
                     "AND series_id IS ? AND novel_id IS ?",
@@ -656,6 +658,8 @@ async def update_text_replacement(
                     if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
                         continue
                 with request_timing.replacement_phase("replacement_write"):
+                    from app.stats.activity_rules import preserve_rule
+                    await preserve_rule(wdb,user['id'],rule_id)
                     # user_id in the WHERE, not just the id: the id comes from a form.
                     await wdb.execute(
                         "UPDATE text_replacements SET find_text = ?, replace_text = ? "
@@ -680,6 +684,8 @@ async def delete_text_replacement(
                 if not await _apply_rule_position(wdb,user["id"],rule_id,prepared):
                     continue
             with request_timing.replacement_phase("replacement_write"):
+                from app.stats.activity_rules import preserve_rule
+                await preserve_rule(wdb,user['id'],rule_id)
                 await wdb.execute(
                     "DELETE FROM text_replacements WHERE id = ? AND user_id = ?", (rule_id, user["id"])
                 )

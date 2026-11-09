@@ -504,6 +504,9 @@ class ReplacementChecks(PaginationChecks):
 
     def add_rule(self, replacement, novel=False, item=100):
         target = "novel:100" if novel else f"series:{item}"
+        prior_count = self.js(
+            "return document.querySelectorAll('#replacement-rules [data-rule-id]').length"
+        )
 
         def choose_target(_):
             # Enhancement and the first live resync may replace this control.
@@ -545,7 +548,7 @@ class ReplacementChecks(PaginationChecks):
         ).send_keys(replacement)
         self.driver.find_element("css selector", "#add-replacement button").click()
         self.wait(
-            "document.querySelectorAll('#replacement-rules [data-rule-id]').length===1"
+            f"document.querySelectorAll('#replacement-rules [data-rule-id]').length==={prior_count + 1}"
         )
         time.sleep(2)  # ordinary user sequence, not a millisecond navigation race
 
@@ -570,8 +573,9 @@ class ReplacementChecks(PaginationChecks):
     def test_replacement_preserves_epub_and_novel_passage(self):
         for novel in (False, True):
             with self.subTest(novel=novel):
-                with sqlite3.connect(self.fixture.data / "library.db") as db:
-                    db.execute("DELETE FROM text_replacements")
+                # Keep the EPUB's rules while leaving its resumed reader. Raw SQL
+                # deletion here bypasses preservation for its pending exit activity.
+                # The novel uses its own independent rule scope.
                 path = "/novels/100/read/1/1" if novel else "/reader/100"
                 self.open_reader(path)
                 self.next_page()
@@ -613,6 +617,173 @@ class ReplacementChecks(PaginationChecks):
                 "return document.querySelector('#reader-root').dataset.replacements"
             ),
             "History must refresh the currently displayed rules",
+        )
+
+    def test_pending_activity_survives_replacement_edit(self):
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            db.execute(
+                "INSERT INTO reading_progress(user_id,item_id,status,current_page,current_location,progress_percent,replacement_version) VALUES(1,100,'reading',0,'elidx:0:0',10,2)"
+            )
+        self.open_reader("/reader/100")
+        self.js("""window.pendingActivityProbe={blocked:true,responses:[]};
+            const original=window.fetch,beacon=navigator.sendBeacon.bind(navigator);
+            window.fetch=async(...args)=>{
+                if(String(args[0])==='/reading-time'&&pendingActivityProbe.blocked)return new Response('',{status:503});
+                const response=await original(...args);
+                if(String(args[0])==='/reading-time')pendingActivityProbe.responses.push(await response.clone().json());
+                return response;
+            };
+            navigator.sendBeacon=(url,body)=>String(url)==='/reading-time'&&pendingActivityProbe.blocked?false:beacon(url,body);
+        """)
+        time.sleep(1.2)
+        self.settings_from_reader(item=100)
+        identities = self.js(
+            "return Object.keys(localStorage).filter(k=>k.startsWith('reading-activity:v1:')).map(k=>JSON.parse(localStorage[k])).filter(v=>!v.rejected&&v.item_id===100).map(v=>v.id)"
+        )
+        self.assertTrue(identities, "The first delivery must really remain pending")
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            missing = sum(
+                not db.execute(
+                    "SELECT 1 FROM reading_activity WHERE id=?", (identity,)
+                ).fetchone()
+                for identity in identities
+            )
+        self.assertGreater(
+            missing, 0, "The held delivery must not have reached the server"
+        )
+        self.add_rule("replacement0000", item=100)
+        self.js("pendingActivityProbe.blocked=false")
+        self.resume_from_home("/reader/100")
+        self.wait("pendingActivityProbe.responses.length>0")
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            recorded = sum(
+                bool(
+                    db.execute(
+                        "SELECT 1 FROM reading_activity WHERE id=?", (identity,)
+                    ).fetchone()
+                )
+                for identity in identities
+            )
+        self.assertEqual(
+            recorded,
+            len(identities),
+            "Pending activity must be recorded after replacement edits",
+        )
+        self.assertFalse(
+            self.js(
+                "return pendingActivityProbe.responses.some(r=>r.rejected.length>0)||!!document.getElementById('reading-sync-status')"
+            ),
+            "A valid old passage must not show the rejection warning",
+        )
+        self.assertTrue(
+            self.js(
+                "return document.querySelector('#paginated-viewer iframe').contentDocument.body.textContent.includes('replacement0000')"
+            ),
+            "Resume must show the current replacement",
+        )
+
+    def test_exit_delivery_and_rejected_activity_boundaries(self):
+        rows = self.driver.execute_async_script("""const done=arguments[0];(async()=>{
+            const original=window.fetch,beacon=navigator.sendBeacon.bind(navigator),rows=[];
+            const account=document.querySelector('main[data-reading-account]').dataset.readingAccount;
+            const prefix=`reading-activity:v1:${account}:`,rejectedId='fixture-rejected-00000000';
+            localStorage.setItem(prefix+rejectedId,JSON.stringify({id:rejectedId,revision:1,rejected:true}));
+            let sentRejected=false;
+            try {
+                for(const [scenario,text] of [['false','one two'],['bytes','漢'.repeat(30000)],['true','one two']]){
+                    let requests=0,calls=0,keepalive=null;
+                    window.fetch=async(url,options)=>{
+                        if(url!=='/fixture-reading-time')return original(url,options);
+                        requests++;keepalive=options.keepalive;
+                        const activities=JSON.parse(options.body).activities;
+                        sentRejected ||= activities.some(a=>a.id===rejectedId);
+                        return new Response(JSON.stringify({accepted:activities.map(a=>({id:a.id,revision:a.revision})),rejected:[]}),{status:200});
+                    };
+                    navigator.sendBeacon=(url,body)=>{
+                        if(url!=='/fixture-reading-time')return beacon(url,body);
+                        calls++;return scenario==='true';
+                    };
+                    const tracker=createReadingTimeTracker({endpoint:'/fixture-reading-time'});
+                    await tracker.activate();
+                    tracker.at({item_id:100,page_index:0,character_offset:0,passage:[{text,start:0,end:text.length}]});
+                    await new Promise(r=>setTimeout(r,100));tracker.stop();
+                    if(scenario!=='true'){
+                        const until=performance.now()+1500;
+                        while(!requests&&performance.now()<until)await new Promise(r=>setTimeout(r,20));
+                    }
+                    await new Promise(requestAnimationFrame);
+                    const retained=Object.keys(localStorage).filter(k=>k.startsWith(prefix)).map(k=>JSON.parse(localStorage[k])).filter(a=>!a.rejected).length;
+                    rows.push({scenario,requests,calls,keepalive,retained});
+                    await tracker.flush();await new Promise(requestAnimationFrame);
+                }
+                return {rows,sentRejected,rejectedRetained:JSON.parse(localStorage.getItem(prefix+rejectedId))?.rejected};
+            }finally{window.fetch=original;navigator.sendBeacon=beacon;}
+        })().then(done,e=>done({error:String(e)}));""")
+        self.assertNotIn("error", rows)
+        self.assertFalse(
+            rows["sentRejected"], "Previously rejected activity must remain excluded"
+        )
+        self.assertTrue(rows["rejectedRetained"])
+        short, large, accepted = rows["rows"]
+        self.assertEqual(
+            short["requests"], 1, "Refused beacon must use acknowledged delivery"
+        )
+        self.assertTrue(short["keepalive"])
+        self.assertEqual(large["calls"], 0, "Beacon quota must use UTF-8 bytes")
+        self.assertEqual(large["requests"], 1)
+        self.assertFalse(
+            large["keepalive"], "Oversized delivery must not use keepalive"
+        )
+        self.assertEqual(
+            accepted["requests"],
+            0,
+            "An accepted beacon must not duplicate delivery immediately",
+        )
+        self.assertGreater(
+            accepted["retained"], 0, "Accepted beacon must await acknowledgment"
+        )
+
+    def test_old_cached_reader_refreshes_the_activity_protocol(self):
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            db.execute(
+                "INSERT INTO reading_progress(user_id,item_id,status,current_page,current_location,progress_percent,replacement_version) VALUES(1,100,'reading',0,'elidx:0:0',10,2)"
+            )
+        self.open_reader("/reader/100")
+        before = self.js("return audit.document")
+        self.js("""const root=document.getElementById('reader-root');
+            root.dataset.replacements=JSON.stringify(JSON.parse(root.dataset.replacements).filter(r=>!r.activity_protocol));
+            delete root.dataset.activityRuleSet;""")
+        self.driver.find_element(
+            "css selector", '#reader-root a[href="/series/100"]'
+        ).click()
+        self.wait(
+            "location.pathname==='/series/100'&&!document.getElementById('reader-root')"
+        )
+        self.driver.back()
+        try:
+            WebDriverWait(self.driver, 10).until(
+                lambda _: self.js("return audit.document") != before
+            )
+        except TimeoutException:
+            pass
+        self.assertNotEqual(
+            self.js("return audit.document"),
+            before,
+            "Old cached reader must refresh the activity protocol",
+        )
+        self.wait(
+            "document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
+        )
+        self.assertEqual(
+            self.js(
+                "return document.getElementById('reader-root').dataset.activityRuleSet.length"
+            ),
+            64,
+        )
+        self.assertTrue(
+            self.js(
+                "return JSON.parse(document.getElementById('reader-root').dataset.replacements).some(r=>r.activity_protocol===1)"
+            )
         )
 
     def test_natural_html5_activity_survives_settings_and_resume(self):
@@ -1356,6 +1527,62 @@ def main():
     if audit.ARGS.baseline_only or audit.ARGS.test:
         return 0
     for filename, before, after, test, signal in [
+        (
+            "app/stats/activity_rules.py",
+            "if basis.identity is None:\n        return\n    rules_json",
+            "if True:\n        return\n    rules_json",
+            "test_pending_activity_survives_replacement_edit",
+            "Pending activity must be recorded after replacement edits",
+        ),
+        (
+            "app/static/js/reader-text.js",
+            "...(activityRuleSet ? {rule_set_ref:activityRuleSet} : {})",
+            "...{}",
+            "test_pending_activity_survives_replacement_edit",
+            "Pending activity must be recorded after replacement edits",
+        ),
+        (
+            "app/static/js/reading-time.js",
+            "if (navigator.sendBeacon(endpoint, beaconBody)) return;",
+            "navigator.sendBeacon(endpoint, beaconBody); return;",
+            "test_exit_delivery_and_rejected_activity_boundaries",
+            "Refused beacon must use acknowledged delivery",
+        ),
+        (
+            "app/static/js/reading-time.js",
+            "if (useBeacon && beaconBody.size < 60000 && navigator.sendBeacon)",
+            "if (useBeacon && body.length < 60000 && navigator.sendBeacon)",
+            "test_exit_delivery_and_rejected_activity_boundaries",
+            "Beacon quota must use UTF-8 bytes",
+        ),
+        (
+            "app/static/js/reading-time.js",
+            "keepalive: !!(useBeacon && beaconBody.size < 60000)",
+            "keepalive: !!(useBeacon && body.length < 60000)",
+            "test_exit_delivery_and_rejected_activity_boundaries",
+            "Oversized delivery must not use keepalive",
+        ),
+        (
+            "app/static/js/reading-time.js",
+            "if (navigator.sendBeacon(endpoint, beaconBody)) return;",
+            "if (navigator.sendBeacon(endpoint, beaconBody)) { for (const v of activities) acknowledge(v); return; }",
+            "test_exit_delivery_and_rejected_activity_boundaries",
+            "Accepted beacon must await acknowledgment",
+        ),
+        (
+            "app/static/js/reading-time.js",
+            "const value = JSON.parse(localStorage.getItem(key));",
+            "const value = JSON.parse(localStorage.getItem(key)); if(value)delete value.rejected;",
+            "test_exit_delivery_and_rejected_activity_boundaries",
+            "Previously rejected activity must remain excluded",
+        ),
+        (
+            "app/text_replacements.py",
+            ' + [{"activity_protocol": 1}]',
+            "",
+            "test_old_cached_reader_refreshes_the_activity_protocol",
+            "Old cached reader must refresh the activity protocol",
+        ),
         (
             "app/static/js/library-events.js",
             "if (location.pathname === `/novels/${data.novel_id}`) window.libraryResync?.();",

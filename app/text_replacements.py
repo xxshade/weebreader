@@ -63,6 +63,11 @@ async def rules_json(db, user_id: int, *, series_id=None, novel_id=None, reader_
     return json.dumps(client_rules(await rules_for(db, user_id, series_id=series_id, novel_id=novel_id), order=order))
 
 
+async def reader_rules_context(db, user_id, *, series_id=None, novel_id=None, reader_order=None):
+    from app.stats.activity_rules import reader_context
+    return await reader_context(db, user_id, series_id=series_id, novel_id=novel_id, reader_order=reader_order)
+
+
 async def rules_for_series(db, user_id: int, series_ids) -> dict[int, list[dict]]:
     """Rules for just these series, including empty results, in reader order."""
     identities = sorted(set(series_ids) - {None})
@@ -154,6 +159,8 @@ async def remove_duplicates():
                 async with write_transaction() as wdb:
                     if not await apply_legacy_target(wdb, prepared):
                         continue
+                    from app.stats.activity_rules import preserve
+                    await preserve(wdb,target['user_id'],series_id=target['series_id'],novel_id=target['novel_id'])
                     await wdb.execute(
                         "DELETE FROM text_replacements WHERE user_id=? AND series_id IS ? AND novel_id IS ? "
                         "AND id NOT IN (SELECT MIN(id) FROM text_replacements "
@@ -172,4 +179,6 @@ def client_rules(rules, *, order=None):
     result = [dict(rule, space_matching=2) if affected([rule]) else rule for rule in rules]
     # Older restored readers already compare this transport array. An entry
     # without Find is ignored by rendering/digests but makes them refresh too.
-    return result + ([{"reader_order": order}] if order is not None else [])
+    # A constant protocol marker refreshes pre-upgrade cached readers. The
+    # reference itself remains separate from this display-rules transport.
+    return result + [{"activity_protocol": 1}] + ([{"reader_order": order}] if order is not None else [])

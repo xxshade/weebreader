@@ -137,8 +137,8 @@ async def open_reader(request: Request, item_id: int, user=Depends(get_current_u
          # Display-only find-and-replace for this series, applied by the
          # reader as it renders (see app/text_replacements.py). Always a
          # JSON array, so the reader can parse it unconditionally.
-         "replacements_json": await text_replacements.rules_json(
-             db, user["id"], series_id=item["series_id"])},
+         **(await text_replacements.reader_rules_context(
+             db, user["id"], series_id=item["series_id"]))},
     )
 
 

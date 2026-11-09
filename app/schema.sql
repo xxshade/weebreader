@@ -1006,3 +1006,18 @@ END;
 CREATE TRIGGER IF NOT EXISTS stats_account_delete AFTER DELETE ON users BEGIN
     DELETE FROM stats_account_generations WHERE user_id=OLD.id;
 END;
+
+-- Server-known ordered rules for delayed activity recorded before an edit.
+-- Retained until the account or rule scope is deleted; not reading history.
+CREATE TABLE IF NOT EXISTS activity_rule_sets (
+    reference TEXT PRIMARY KEY CHECK(length(reference)=64),
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    series_id INTEGER REFERENCES series(id) ON DELETE CASCADE,
+    novel_id INTEGER REFERENCES novels(id) ON DELETE CASCADE,
+    account_identity TEXT NOT NULL,
+    target_identity TEXT NOT NULL,
+    matching_version INTEGER NOT NULL CHECK(matching_version IN (1,2)),
+    rules_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK ((series_id IS NOT NULL) <> (novel_id IS NOT NULL))
+);

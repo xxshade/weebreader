@@ -394,7 +394,7 @@ async def _load_chapter_context(novel_id: int, volume_number: int, chapter_numbe
         # Display-only find-and-replace for this novel, applied by the
         # reader as it renders (see app/text_replacements.py) -- the
         # scraped chapter in `chapters.content_html` is never rewritten.
-        "replacements_json": await text_replacements.rules_json(db, user["id"], novel_id=novel_id, reader_order=order),
+        **(await text_replacements.reader_rules_context(db, user["id"], novel_id=novel_id, reader_order=order)),
     }
 
 
