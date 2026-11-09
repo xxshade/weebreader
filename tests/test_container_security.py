@@ -4,6 +4,7 @@ import copy
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import tarfile
 import unittest
@@ -163,6 +164,27 @@ class SecurityWorkflow(unittest.TestCase):
         self.assertNotIn('if', steps[scanner])
         self.assertIn('docker', checks['jobs']['passed']['needs'])
         self.assertEqual(checks['permissions'], {'contents': 'read'})
+
+    def test_pr_and_release_refresh_dependencies_instead_of_reusing_old_layers(self):
+        for workflow, job in (("checks.yml", "docker"), ("release.yml", "security")):
+            with self.subTest(workflow=workflow):
+                steps = self.workflow(workflow)["jobs"][job]["steps"]
+                build = next(step for step in steps if step.get("uses", "").startswith("docker/build-push-action@"))
+                options = build["with"]
+                self.assertEqual(options.get("pull"), "true", "Fetch the current base before resolving dependencies")
+                self.assertEqual(options.get("no-cache"), "true", "A cached APK/pip layer must not replace dependency refresh")
+                self.assertNotIn("cache-from", options)
+                self.assertNotIn("cache-to", options)
+
+    def test_both_image_stages_upgrade_their_stable_os_packages(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        stages = re.split(r"(?m)^FROM ", dockerfile)[1:]
+        self.assertEqual(len(stages), 2)
+        for stage in stages:
+            with self.subTest(stage=stage.splitlines()[0]):
+                self.assertRegex(stage, r"RUN apk upgrade --no-cache\s*&&\s*apk add --no-cache", "Upgrade base OS packages before installing stage dependencies")
+                self.assertNotIn("--repository", stage)
+                self.assertNotIn("/edge/", stage)
 
     def test_publication_scans_before_checks_and_reuses_exact_artifact(self):
         jobs = self.workflow('release.yml')['jobs']

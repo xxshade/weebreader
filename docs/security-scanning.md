@@ -14,6 +14,26 @@ The scanner uses vulnerability detection only. Repository `trivy.yaml` and
 `ignore-unfixed` exceptions. A future policy exception requires a reviewed code
 change with its justification; it must not be introduced just to make CI green.
 
+## Fresh build dependencies
+
+PR and release builds both use `pull: true` and `no-cache: true`. They resolve
+the current Python/Alpine base and execute package installation again instead
+of importing a previously built dependency layer. Both Dockerfile stages run
+`apk upgrade --no-cache` before installing their packages, using the configured
+stable Alpine repositories. Direct Python pins remain unchanged; compatible
+transitive dependencies are resolved again. No edge repositories are added.
+
+This trades longer builds and package downloads for current dependencies.
+`apk --no-cache` alone controls APK's local index cache; it does not prevent
+BuildKit from reusing the entire `RUN` layer. Separate historical PR/release
+layer caches previously allowed a passing PR with glib 2.86.5-r0 and a release
+with cached glib 2.86.3-r0, which the release scan correctly blocked.
+
+A fresh PR build and a later release build still need independent scans:
+repositories and vulnerability databases can change between them. Publication
+continues to use the exact archive that passed the release scan. An immutable
+recovery image is scanned as-is; it is not silently rebuilt or upgraded.
+
 ## Publication and recovery
 
 - Pull requests build and scan an OCI archive without registry credentials or

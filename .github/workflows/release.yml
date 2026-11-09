@@ -114,6 +114,8 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
+          pull: true
+          no-cache: true
           push: false
           outputs: type=oci,dest=${{ runner.temp }}/release-image.tar
           tags: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
@@ -121,8 +123,6 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.prepare.outputs.commit }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
       - name: Scan the exact image that will be published
         if: steps.stage.outputs.build == 'true'
         uses: ./.github/actions/container-scan
