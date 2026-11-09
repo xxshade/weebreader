@@ -25,6 +25,7 @@ from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
     ElementNotInteractableException,
+    TimeoutException,
 )
 
 import test_audit_browser as audit
@@ -132,6 +133,328 @@ class ReplacementChecks(PaginationChecks):
         self.assertIsNotNone(match, "A visible fixture passage is required")
         return match[0]
 
+    @contextmanager
+    def novel_order_fixture(self):
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            before = db.execute(
+                "SELECT number,order_index,title FROM chapters WHERE id=100"
+            ).fetchone()
+            db.execute("DELETE FROM novel_chapter_aliases WHERE novel_id=100")
+            db.execute("DELETE FROM novel_read_chapters WHERE chapter_id=100")
+            db.execute("UPDATE chapters SET number=2,order_index=1 WHERE id=100")
+            text = '<p>Correct next chapter</p><p id="long">' + WORDS + "</p>"
+            db.execute(
+                "INSERT INTO chapters(id,novel_id,volume_id,number,title,url,order_index,content_html,content_size) VALUES(101,100,100,1,'Other','https://example.invalid/other',0,?,?)",
+                (text, len(text)),
+            )
+        try:
+            yield
+        finally:
+            with sqlite3.connect(self.fixture.data / "library.db") as db:
+                db.execute("PRAGMA foreign_keys=ON")
+                db.execute("DELETE FROM chapters WHERE id=101")
+                db.execute("DELETE FROM novel_chapter_aliases WHERE novel_id=100")
+                db.execute(
+                    "UPDATE chapters SET number=?,order_index=?,title=? WHERE id=100",
+                    before,
+                )
+
+    def repair_novel_order(self):
+        with sqlite3.connect(self.fixture.data / "library.db") as db:
+            db.executemany(
+                "INSERT OR IGNORE INTO novel_chapter_aliases VALUES(100,1,?,?)",
+                [(2, 100), (1, 101)],
+            )
+            db.execute(
+                "UPDATE chapters SET number=1,order_index=0,title='Correct first chapter' WHERE id=100"
+            )
+            db.execute("UPDATE chapters SET number=63,order_index=1 WHERE id=101")
+
+    def test_novel_numeric_bookmarks_and_new_id_links_keep_their_chapter(self):
+        with self.novel_order_fixture():
+            self.open_reader("/novels/100/read/1/2")
+            self.assertEqual(
+                self.js(
+                    "return document.getElementById('reader-root').dataset.startChapterId"
+                ),
+                "100",
+            )
+            self.driver.get(self.base + "/novels/100")
+            self.wait(
+                "document.getElementById('library-events')?.libraryEventsBound===true"
+            )
+            document = self.js("return audit.document")
+            self.repair_novel_order()
+            status = self.driver.execute_async_script(
+                "const done=arguments[arguments.length-1];fetch('/novels/100/publication-status',{method:'POST',body:new URLSearchParams({publication_status:'ongoing'})}).then(r=>done(r.status)).catch(()=>done(0))"
+            )
+            self.assertEqual(status, 200)
+            try:
+                self.wait(
+                    "document.querySelector('#chapter-row-100 a').textContent.includes('Ch. 1 —')"
+                )
+            except TimeoutException:
+                self.fail("A metadata event must refresh the open chapter list")
+            self.assertEqual(
+                self.js("return audit.document"),
+                document,
+                "A metadata update must refresh the open chapter list without a reload",
+            )
+            self.open_reader("/novels/100/read/1/2")
+            self.assertEqual(
+                self.js(
+                    "return document.getElementById('reader-root').dataset.startChapterId"
+                ),
+                "100",
+                "Numeric bookmarks must retain their pre-repair chapter",
+            )
+            self.driver.get(self.base + "/novels/100")
+            link = self.driver.find_element(
+                "css selector", '#chapter-row-100 a[href="/novels/100/read/100"]'
+            )
+            link.click()
+            self.wait(
+                "document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
+            )
+            self.assertEqual(
+                self.js("return location.pathname"),
+                "/novels/100/read/100",
+                "Generated chapter links must use stable IDs",
+            )
+
+    def test_novel_order_change_refreshes_at_a_chapter_boundary(self):
+        with self.novel_order_fixture():
+            self.open_reader("/novels/100/read/100")
+            for _ in range(40):
+                if self.js(
+                    "return document.getElementById('reader-root').readerFixture.navigation().atEnd"
+                ):
+                    break
+                self.next_page()
+            else:
+                self.fail("Fixture must reach the last page of its chapter")
+            text = self.page()["text"].strip()
+            match = re.search(r"word\d{4}", text)
+            before = match[0] if match else text
+            document = self.js("return audit.document")
+            self.repair_novel_order()
+            self.wait(
+                "!document.getElementById('reader-root').readerFixture.navigation().busy"
+            )
+            self.driver.find_element("id", "btn-next").click()
+            try:
+                self.wait(
+                    "audit.document!=="
+                    + repr(document)
+                    + " && document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
+                )
+            except TimeoutException:
+                self.fail("A chapter boundary must refresh a changed order")
+            self.assertTrue(
+                self.page()["text"].strip().startswith(before),
+                "Order refresh must retain the current passage",
+            )
+            self.assertEqual(
+                self.js(
+                    "return document.getElementById('reader-root').dataset.startSpineIndex"
+                ),
+                "0",
+                "A repaired chapter must use the new order",
+            )
+            self.show_controls()
+            self.next_page()
+            self.assertIn(
+                "Correct next chapter",
+                self.page()["text"],
+                "Next must follow the repaired manifest",
+            )
+
+    def test_novel_history_keeps_passage_when_order_moves_backwards(self):
+        from selenium.webdriver.common.action_chains import ActionChains
+        from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
+
+        with self.novel_order_fixture():
+            for flow in ("paginated", "scrolled-doc"):
+                with self.subTest(flow=flow):
+                    with sqlite3.connect(self.fixture.data / "library.db") as db:
+                        db.execute(
+                            "DELETE FROM novel_reading_progress WHERE novel_id=100"
+                        )
+                        db.execute(
+                            "UPDATE chapters SET order_index=1,number=2 WHERE id=100"
+                        )
+                        db.execute(
+                            "UPDATE chapters SET order_index=0,number=1 WHERE id=101"
+                        )
+                    self.driver.get(self.base + "/")
+                    self.js(
+                        "localStorage.setItem('text-reader-prefs',JSON.stringify({flow:"
+                        + repr(flow)
+                        + ",font:'original',fontSize:100,lineHeight:1.6,width:720,bottomGap:0}))"
+                    )
+                    self.driver.get(self.base + "/novels/100/read/100")
+                    selector = (
+                        "#paginated-viewer iframe"
+                        if flow == "paginated"
+                        else "#custom-scroll iframe"
+                    )
+                    self.wait(
+                        "document.querySelector("
+                        + repr(selector)
+                        + ")?.style.visibility==='visible'"
+                    )
+                    if flow == "paginated":
+                        self.show_controls()
+                        self.next_page()
+                    else:
+                        ActionChains(self.driver).scroll_from_origin(
+                            ScrollOrigin.from_element(
+                                self.driver.find_element("id", "custom-scroll")
+                            ),
+                            0,
+                            400,
+                        ).perform()
+                    WebDriverWait(self.driver, 10).until(lambda _: self.saved(True))
+                    saved = self.row(
+                        "SELECT paragraph_index,character_offset FROM novel_reading_progress WHERE novel_id=100"
+                    )
+                    if flow == "paginated":
+                        # Emulate a history snapshot from before order tokens:
+                        # its ordinary replacement comparison must also refresh.
+                        self.js(
+                            "const r=document.getElementById('reader-root');delete r.dataset.readingManifestVersion;r.dataset.replacements=JSON.stringify(JSON.parse(r.dataset.replacements).filter(x=>x.find))"
+                        )
+                    self.driver.find_element(
+                        "css selector", '#reader-root a[href="/novels/100"]'
+                    ).click()
+                    self.wait(
+                        "location.pathname==='/novels/100' && !document.getElementById('reader-root')"
+                    )
+                    self.repair_novel_order()
+                    self.driver.back()
+                    try:
+                        self.wait(
+                            "location.pathname==='/novels/100/read/100' && document.querySelector("
+                            + repr(selector)
+                            + ")?.style.visibility==='visible' && document.getElementById('reader-root').dataset.startSpineIndex==='0'"
+                        )
+                    except TimeoutException:
+                        self.fail("History must refresh an earlier chapter order")
+                    self.assertEqual(
+                        self.js(
+                            "return document.getElementById('reader-root').dataset.startCfi"
+                        ),
+                        f"elidx:{saved['paragraph_index']}:{saved['character_offset']}",
+                        "History must preserve the saved passage after an earlier order index",
+                    )
+
+    def test_scroll_order_change_keeps_last_confirmed_chapter(self):
+        from selenium.webdriver.common.action_chains import ActionChains
+        from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
+
+        with self.novel_order_fixture():
+            self.js(
+                "localStorage.setItem('text-reader-prefs',JSON.stringify({flow:'scrolled-doc',font:'original',fontSize:100,lineHeight:1.6,width:720,bottomGap:0}))"
+            )
+            self.driver.get(self.base + "/novels/100/read/101")
+            self.wait(
+                "document.querySelectorAll('#custom-scroll iframe').length===2 && [...document.querySelectorAll('#custom-scroll iframe')].every(f=>f.style.visibility==='visible')"
+            )
+            ActionChains(self.driver).scroll_from_origin(
+                ScrollOrigin.from_element(
+                    self.driver.find_element("id", "custom-scroll")
+                ),
+                0,
+                300,
+            ).perform()
+            WebDriverWait(self.driver, 10).until(lambda _: self.saved(True))
+            self.assertEqual(
+                self.row(
+                    "SELECT chapter_id FROM novel_reading_progress WHERE novel_id=100"
+                )["chapter_id"],
+                101,
+            )
+            document = self.js("return audit.document")
+            self.repair_novel_order()
+            ActionChains(self.driver).scroll_from_origin(
+                ScrollOrigin.from_element(
+                    self.driver.find_element("id", "custom-scroll")
+                ),
+                0,
+                8000,
+            ).perform()
+            try:
+                self.wait(
+                    "audit.document!=="
+                    + repr(document)
+                    + " && document.querySelector('#custom-scroll iframe')?.style.visibility==='visible'"
+                )
+            except TimeoutException:
+                self.fail("Scroll must refresh before retaining an old neighbour")
+            self.assertEqual(
+                self.js(
+                    "return document.getElementById('reader-root').dataset.startChapterId"
+                ),
+                "101",
+                "Scroll order refresh must keep the last confirmed chapter",
+            )
+
+    def test_order_refresh_waits_for_older_progress_requests(self):
+        with self.novel_order_fixture():
+            self.open_reader("/novels/100/read/100")
+            self.js(
+                "const send=fetch;window.fetch=(url,options)=>{if(String(url)==='/novels/100/progress'&&options?.method==='POST'){if(!audit.heldProgress){audit.heldProgress=true;return new Promise(resolve=>{audit.releaseProgress=()=>{audit.progressSent=(audit.progressSent||0)+1;resolve(send(url,options));};});}audit.progressSent=(audit.progressSent||0)+1;}return send(url,options);}"
+            )
+            self.next_page()
+            self.wait("audit.heldProgress===true")
+            for _ in range(40):
+                if self.js(
+                    "return document.getElementById('reader-root').readerFixture.navigation().atEnd"
+                ):
+                    break
+                self.next_page()
+            else:
+                self.fail("Fixture must reach its chapter boundary")
+            self.wait(
+                "!document.getElementById('reader-root').readerFixture.navigation().busy"
+            )
+            before = self.page()["text"].strip()
+            document = self.js("return audit.document")
+            self.repair_novel_order()
+            sent = self.js("return audit.progressSent || 0")
+            self.driver.find_element("id", "btn-next").click()
+            self.wait(
+                "audit.document!=="
+                + repr(document)
+                + " || document.getElementById('reader-root')?.readerFixture?.progress().refreshing"
+            )
+            self.assertEqual(
+                self.js("return audit.progressSent || 0"),
+                sent,
+                "Order refresh must await older progress before saving its checkpoint",
+            )
+            self.assertEqual(
+                self.js("return audit.document"),
+                document,
+                "Order refresh must await older progress before saving its checkpoint",
+            )
+            self.js("audit.releaseProgress()")
+            try:
+                self.wait(
+                    "audit.document!=="
+                    + repr(document)
+                    + " && document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
+                )
+            except TimeoutException:
+                self.fail("Order refresh must finish after the older request settles")
+            expected = re.search(r"word\d{4}", before)
+            self.assertTrue(
+                self.page()["text"]
+                .strip()
+                .startswith(expected[0] if expected else before),
+                "An older request must not overwrite the refresh checkpoint",
+            )
+
     def saved(self, novel=False):
         with sqlite3.connect(self.fixture.data / "library.db") as db:
             table = (
@@ -227,6 +550,8 @@ class ReplacementChecks(PaginationChecks):
         time.sleep(2)  # ordinary user sequence, not a millisecond navigation race
 
     def resume_from_home(self, path):
+        if path == "/novels/100/read/1/1":
+            path = "/novels/100/read/100"
         self.driver.find_element("css selector", 'a[aria-label="Library"]').click()
         self.wait(
             f'location.pathname==="/" && !!document.querySelector(\'#reading-grid a[href="{path}"]\')'
@@ -279,7 +604,7 @@ class ReplacementChecks(PaginationChecks):
             "location.pathname==='/reader/100' && document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
         )
         self.wait(
-            "document.querySelector('#reader-root')?.dataset.replacements && JSON.parse(document.querySelector('#reader-root').dataset.replacements).length===1 && document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
+            "document.querySelector('#reader-root')?.dataset.replacements && JSON.parse(document.querySelector('#reader-root').dataset.replacements).filter(r=>r.find).length===1 && document.querySelector('#paginated-viewer iframe')?.style.visibility==='visible'"
         )
         self.assertEqual(self.first_marker(), before)
         self.assertIn(
@@ -994,6 +1319,7 @@ def main():
         parser.add_argument("--" + name, default=default)
     parser.add_argument(
         "--test",
+        action="append",
         choices=[
             name for name in ReplacementChecks.__dict__ if name.startswith("test_")
         ],
@@ -1006,7 +1332,7 @@ def main():
     audit.ARGS = parser.parse_args()
     browsers = selected_browsers(audit.ARGS)
     names = (
-        [audit.ARGS.test]
+        audit.ARGS.test
         if audit.ARGS.test
         else [name for name in ReplacementChecks.__dict__ if name.startswith("test_")]
     )
@@ -1030,6 +1356,41 @@ def main():
     if audit.ARGS.baseline_only or audit.ARGS.test:
         return 0
     for filename, before, after, test, signal in [
+        (
+            "app/static/js/library-events.js",
+            "if (location.pathname === `/novels/${data.novel_id}`) window.libraryResync?.();",
+            "/* deliberate novel detail refresh defect */",
+            "test_novel_numeric_bookmarks_and_new_id_links_keep_their_chapter",
+            "A metadata event must refresh the open chapter list",
+        ),
+        (
+            "app/static/js/reader-text.js",
+            "if (pgPageEnd.index >= blocks.length && await window.readerResume?.checkOrder()) return;",
+            "/* deliberate chapter boundary defect */",
+            "test_novel_order_change_refreshes_at_a_chapter_boundary",
+            "A chapter boundary must refresh a changed order",
+        ),
+        (
+            "app/static/js/reader-resume.js",
+            "window.location.replace(saved.resume_url);",
+            "/* deliberate history refresh defect */",
+            "test_novel_history_keeps_passage_when_order_moves_backwards",
+            "History must refresh an earlier chapter order",
+        ),
+        (
+            "app/static/js/reader-text.js",
+            "const measured = lastCustomPosition || measureCustomPosition();",
+            "const measured = measureCustomPosition();",
+            "test_scroll_order_change_keeps_last_confirmed_chapter",
+            "Scroll order refresh must keep the last confirmed chapter",
+        ),
+        (
+            "app/static/js/reader-text.js",
+            "await Promise.all([...progressRequests]);",
+            "/* deliberate pending progress defect */",
+            "test_order_refresh_waits_for_older_progress_requests",
+            "Order refresh must await older progress before saving its checkpoint",
+        ),
         (
             "app/static/js/reader-text.js",
             "api.version !== 2 ||",

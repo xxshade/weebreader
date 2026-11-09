@@ -13,6 +13,7 @@ from app.http_utils import (
 )
 from app import text_replacements
 from app.library import events
+from app.novels.links import resolve_number
 from app.novels.scraper import tag_paragraphs
 from app.novels.sync import renumber_chapters_by_natural_order, sync_novel
 from app.status_badges import publication_badge, tracking_badge
@@ -263,7 +264,8 @@ async def novel_manifest(novel_id: int, user=Depends(get_current_user), db=Depen
     rows = await (
         await db.execute(
             """
-            SELECT id, number, url, title, COALESCE(content_size, 0) AS size
+            SELECT id, number, url, title, COALESCE(content_size, 0) AS size,
+                   COALESCE((SELECT revision FROM novel_reader_revisions WHERE novel_id=chapters.novel_id),'') AS manifest_version
             FROM chapters WHERE novel_id = ? ORDER BY order_index, id
             """,
             (novel_id,),
@@ -271,6 +273,7 @@ async def novel_manifest(novel_id: int, user=Depends(get_current_user), db=Depen
     ).fetchall()
     return {
         "title": novel["title"],
+        "revision": rows[0]["manifest_version"] if rows else "",
         "spine": [
             {"chapter_id": r["id"], "source_url": r["url"], "title": r["title"], "size": r["size"]}
             for r in rows
@@ -330,7 +333,7 @@ async def novel_resource(novel_id: int, chapter_id: int, request: Request,
     )
 
 
-async def _load_chapter_context(novel_id: int, volume_number: int, chapter_number: float, user, db):
+async def _load_chapter_context(novel_id: int, volume_number: int, chapter_number: float, user, db, *, chapter_id=None):
     """Everything novels/reader.html needs to bootstrap the reader: which
     novel, which chapter (title + its spine position), and the saved
     paragraph anchor to resume at.
@@ -350,16 +353,13 @@ async def _load_chapter_context(novel_id: int, volume_number: int, chapter_numbe
     already applies it, and is where the HTML is actually served from),
     not on the page load that no longer renders any chapter text.
     """
-    chapter = await (
-        await db.execute(
-            """
-            SELECT chapters.id, chapters.title, chapters.order_index
-            FROM chapters JOIN volumes ON volumes.id = chapters.volume_id
-            WHERE chapters.novel_id = ? AND volumes.number = ? AND chapters.number = ?
-            """,
-            (novel_id, volume_number, chapter_number),
-        )
-    ).fetchone()
+    if chapter_id is None:
+        chapter_id = await resolve_number(db, novel_id, volume_number, chapter_number)
+    chapter = await (await db.execute(
+        '''SELECT id,title,order_index,
+               COALESCE((SELECT revision FROM novel_reader_revisions WHERE novel_id=chapters.novel_id),'') AS manifest_version
+        FROM chapters WHERE novel_id=? AND id=?''',
+        (novel_id, chapter_id))).fetchone()
     if chapter is None:
         return None
 
@@ -380,8 +380,10 @@ async def _load_chapter_context(novel_id: int, volume_number: int, chapter_numbe
         else -1
     )
 
+    order = chapter["manifest_version"]
     return {
         "novel": novel, "chapter": chapter, "saved_paragraph": saved_paragraph,
+        "manifest_version": order,
         "source_anchor": progress["source_anchor"] if saved_paragraph >= 0 else None,
         "replacement_version": progress["replacement_version"] if saved_paragraph >= 0 else 2,
         "saved_offset": progress["character_offset"] if saved_paragraph >= 0 else 0,
@@ -392,7 +394,7 @@ async def _load_chapter_context(novel_id: int, volume_number: int, chapter_numbe
         # Display-only find-and-replace for this novel, applied by the
         # reader as it renders (see app/text_replacements.py) -- the
         # scraped chapter in `chapters.content_html` is never rewritten.
-        "replacements_json": await text_replacements.rules_json(db, user["id"], novel_id=novel_id),
+        "replacements_json": await text_replacements.rules_json(db, user["id"], novel_id=novel_id, reader_order=order),
     }
 
 
@@ -409,6 +411,18 @@ async def read_chapter(
     )
 
 
+@router.get("/novels/{novel_id}/read/{chapter_id}", response_class=HTMLResponse)
+async def read_chapter_by_id(novel_id: int, chapter_id: int, request: Request,
+                             user=Depends(get_current_user), db=Depends(get_db)):
+    ctx = await _load_chapter_context(novel_id, 0, 0, user, db, chapter_id=chapter_id)
+    if ctx is None:
+        raise HTTPException(404, "Chapter not found")
+    return templates.TemplateResponse(
+        request, "novels/reader.html", {"user": user, **ctx},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 # ---------- Progress / read-status APIs ----------
 
 @router.get("/novels/{novel_id}/progress")
@@ -422,7 +436,7 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
     2 is behind 10% of chapter 40.
 
     The URL is not this page. A novel reader is opened per chapter
-    (/novels/{id}/read/{volume}/{chapter}), so reloading where you are
+    (/novels/{id}/read/{chapter_id}), so reloading where you are
     would re-render the chapter you were already on and land at the top of
     it while the saved position sits eleven chapters further on. What goes
     back is the URL of the chapter the saved position is IN.
@@ -437,7 +451,8 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
                    (SELECT COUNT(*) FROM chapters earlier WHERE earlier.novel_id=chapters.novel_id
                      AND (earlier.order_index<chapters.order_index OR
                        (earlier.order_index=chapters.order_index AND earlier.id<chapters.id))) AS order_index,
-                   volumes.number AS volume_number, chapters.number AS chapter_number
+                   volumes.number AS volume_number, chapters.number AS chapter_number,
+                   COALESCE((SELECT revision FROM novel_reader_revisions WHERE novel_id=chapters.novel_id),'') AS manifest_version
             FROM novel_reading_progress
             LEFT JOIN chapters ON chapters.id = novel_reading_progress.chapter_id
             LEFT JOIN volumes ON volumes.id = chapters.volume_id
@@ -453,7 +468,8 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
             0 AS character_offset,NULL AS source_anchor,2 AS replacement_version,c.id AS source_id,c.content_size,c.content_fetched_at,
             (SELECT COUNT(*) FROM chapters earlier WHERE earlier.novel_id=c.novel_id
              AND (earlier.order_index<c.order_index OR (earlier.order_index=c.order_index AND earlier.id<c.id))) AS order_index,
-            v.number AS volume_number,c.number AS chapter_number
+            v.number AS volume_number,c.number AS chapter_number,
+            COALESCE((SELECT revision FROM novel_reader_revisions WHERE novel_id=c.novel_id),'') AS manifest_version
             FROM chapters c JOIN volumes v ON v.id=c.volume_id WHERE c.id=? AND c.novel_id=?''',
             (chapter_id,novel_id))).fetchone()
     # Nothing to go to: no saved position, a chapter with no NUMBER (the
@@ -464,17 +480,18 @@ async def read_novel_progress(novel_id: int, user=Depends(get_current_user), db=
     # exactly where it was, which is the right answer for all three.
     if row is None or row["volume_number"] is None or row["chapter_number"] is None:
         return JSONResponse({"progress_percent": 0, "resume_url": None})
+    order = row["manifest_version"]
     return JSONResponse({
         "progress_percent": row["percent"] or 0,
         "source_anchor": row["source_anchor"],
         "replacement_version": row["replacement_version"],
-        "current_replacements": text_replacements.client_rules(await text_replacements.rules_for(db,user["id"],novel_id=novel_id)),
+        "current_replacements": text_replacements.client_rules(await text_replacements.rules_for(db,user["id"],novel_id=novel_id), order=order),
         "source_identity": row["source_id"],
         "source_version": f'W/"{row["source_id"]}-{row["content_fetched_at"] or ""}-{row["content_size"] or 0}"',
         "position": ([row["order_index"], row["paragraph_index"], row["character_offset"]]
                      if row["paragraph_index"] is not None else None),
-        "resume_url": f"/novels/{novel_id}/read/"
-                      f"{row['volume_number']}/{format_chapter_number(row['chapter_number'])}",
+        "resume_url": f"/novels/{novel_id}/read/{row['source_id']}",
+        "manifest_version": order,
     })
 
 

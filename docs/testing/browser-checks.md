@@ -246,7 +246,7 @@ See [private cover caching](../performance/cover-cache-reloads.md).
 actual Settings edits and resumed reading at desktop and 320px widths. It checks
 structural substitutions, HTML5 passage validation, restored history without a
 newer saved position, bounded prepared-chapter caches and reader lifecycle cleanup.
-Its disposable ASGI fixture exposes cache observation only; source mapping,
+Its disposable ASGI fixture exposes cache and navigation observation only; source mapping,
 resource loading, progress persistence and activity validation use production code.
 Deliberate defects remove queued-activity draining, position conversion, cache eviction,
 watcher cleanup and fullscreen cleanup; every selected browser must detect the intended failure.
@@ -264,3 +264,8 @@ Settings checks hold a save to assert busy/disabled feedback, reject exact
 repeats, preserve drafts and the searchable target across resync, and retry a
 network failure. Controls remove contrast repair, pending-state disabling and
 draft restoration; each engine must detect the corresponding defect.
+
+Novel-number repair checks also retain numeric bookmarks, refresh open chapter lists,
+restore history after an earlier order index, and save the current passage before
+using a changed manifest. Continuous-scroll neighbour and held-progress controls
+run in both engines. See [chapter number repair](../novels/chapter-number-repair.md).

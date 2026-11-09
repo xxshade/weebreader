@@ -16,6 +16,7 @@ import logging
 from app.covers.thumbnails import THUMBNAIL_EXTENSION, encode_cover_thumbnail
 from app.database import get_connection, write_transaction
 from app.library import events
+from app.novels.links import capture_numbers, revision
 from app.novels.scraper import fetch_all_chapter_contents, fetch_image, fetch_novel_index
 
 logger = logging.getLogger("novels.sync")
@@ -149,6 +150,7 @@ async def sync_novel(novel_id: int, *, manual: bool = False, scheduled: bool = F
         needs_content_urls: list[str] = []
         cover_url_to_fetch: str | None = None
         new_count = 0
+        changed = False
 
         async with write_transaction() as db:
             # `cover_image IS NULL` rather than selecting the BLOB itself:
@@ -213,6 +215,14 @@ async def sync_novel(novel_id: int, *, manual: bool = False, scheduled: bool = F
                 await db.execute("SELECT id, number, title FROM volumes WHERE novel_id = ?", (novel_id,))
             ).fetchall()
             volumes_by_number = {r["number"]: r["id"] for r in volume_rows}
+            old_volumes = {r["id"]: r["number"] for r in volume_rows}
+            if any(ref.url in existing_by_url and
+                   (existing_by_url[ref.url]["number"] != ref.chapter_number or
+                    old_volumes.get(existing_by_url[ref.url]["volume_id"]) != ref.volume_number)
+                   for ref in meta.chapters):
+                await capture_numbers(db, novel_id)
+            old_revision = await revision(db, novel_id)
+
             # Normalized once per VOLUME, and only when it is not already:
             # this was an UPDATE per CHAPTER, every sync.
             for row in volume_rows:
@@ -286,8 +296,9 @@ async def sync_novel(novel_id: int, *, manual: bool = False, scheduled: bool = F
                 (novel_id,),
             )
 
+            changed = old_revision != await revision(db, novel_id)
             await db.commit()
-        if new_count:
+        if new_count or changed:
             # The home card's unread count, time left and "Recently
             # modified" place all move with a new chapter.
             events.publish({"type": "novel_updated", "novel_id": novel_id})

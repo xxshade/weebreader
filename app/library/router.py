@@ -171,7 +171,7 @@ async def _reading_items(db, user_id: int, estimator=None) -> list[dict]:
         # which is the unit a novel is followed in.
         reading_items.append({
             "kind": "novel", "id": nv["id"], "title": nv["title"],
-            "url": f"/novels/{nv['id']}/read/{nv['volume_number']}/{chnum}",
+            "url": f"/novels/{nv['id']}/read/{nv['chapter_id']}",
             "cover_url": (
                 f"/novels/{nv['id']}/cover?v={nv['cover_image_hash']}"
                 if nv["cover_image_hash"] else f"/novels/{nv['id']}/cover"

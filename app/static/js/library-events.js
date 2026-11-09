@@ -1307,6 +1307,7 @@
         // series twin, since two of them can land together.
         novel_updated: (data) => {
             if (data.novel_id) {
+                if (location.pathname === `/novels/${data.novel_id}`) window.libraryResync?.();
                 scheduleRefresh(`novel-card:${data.novel_id}`,
                                 () => refreshCard("novel", data.novel_id));
             }

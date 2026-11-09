@@ -11,6 +11,8 @@ Library entities and reading statuses are defined in [GLOSSARY.md](GLOSSARY.md).
 | Manual synchronization | A synchronization requested by a person for one novel. It postpones that novel's next automatic check without postponing checks for other novels. |
 | Recovery synchronization | One synchronization replacing an absent or missed schedule. Multiple missed times do not represent a backlog of separate checks to replay. |
 | Interrupted synchronization | A synchronization that started but did not finish because execution stopped. It is distinct from an attempt that finished with a recorded error. |
+| Source chapter number | The volume/chapter designation supplied by a novel's source. It is distinct from the chapter's position in a displayed list, which can be reversed or manually rearranged. |
+| Chapter identity | One particular chapter, retained when its title, number or list position is corrected. Reading marks and the saved passage belong to that chapter. |
 
 ## Library navigation
 

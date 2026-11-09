@@ -10,6 +10,7 @@
     // Set by whichever reader is on this page, and read when the handler
     // below fires rather than captured, so there is nothing to go stale.
     let watched = null;
+    let orderCheck = null;
 
     // Set by htmx's history cache, consumed by the `watch()` below.
     //
@@ -39,6 +40,11 @@
     document.addEventListener("htmx:before:history:update", () => { restoring = false; });
 
     window.readerResume = {
+        version: 2, assetUrl: document.currentScript?.src,
+        checkOrder() {
+            if (watched?.root?.dataset.source !== "novel") return Promise.resolve(false);
+            return orderCheck ||= catchUp({orderOnly:true,persist:true}).finally(() => { orderCheck = null; });
+        },
         /**
          * url     -- the progress endpoint to ask.
          * percent -- what this page was rendered at, 0-100.
@@ -92,7 +98,8 @@
         return entry?.type === "back_forward";
     }
 
-    async function catchUp() {
+    async function catchUp({orderOnly = false, persist = false} = {}) {
+        if (!orderOnly && orderCheck) return orderCheck;
         if (!watched?.root?.isConnected) return;
         const baseline = watched;
         const sentPosition = baseline.position;
@@ -112,7 +119,7 @@
             // already on screen has nothing to gain from saying so.
             return;
         }
-        if (watched !== baseline || !baseline.root.isConnected || baseline.position !== sentPosition || baseline.sent !== sentPercent) return;
+        if (watched !== baseline || !baseline.root.isConnected || (!orderOnly && (baseline.position !== sentPosition || baseline.sent !== sentPercent))) return;
         const there = Number(saved?.progress_percent);
         if (!saved?.resume_url || !Number.isFinite(there)) return;
         // A whole percent of slack. The two ends round differently -- an
@@ -124,6 +131,18 @@
             baseline.root.dataset.resumePending = "true";
             window.location.replace(saved.resume_url);
         };
+        if (saved.manifest_version !== undefined && baseline.root.dataset.readingManifestVersion !== undefined
+                && saved.manifest_version !== baseline.root.dataset.readingManifestVersion) {
+            if (persist) {
+                try {
+                    const url = await baseline.root.readerPersistPosition?.();
+                    if (url) saved.resume_url = url;
+                } catch { return true; } // keep the current page until its position can be saved
+                if (watched !== baseline || !baseline.root.isConnected) return false;
+            }
+            replaceSaved(); return true;
+        }
+        if (orderOnly) return false;
         if (saved.source_version && baseline.root.dataset.readingSourceVersion &&
                 String(saved.source_identity) === baseline.root.dataset.readingSourceIdentity &&
                 saved.source_version !== baseline.root.dataset.readingSourceVersion) {

@@ -17,7 +17,7 @@ time (it only exists after JS runs). The parser below is deliberately
 defensive: volume/chapter numbers are read primarily from each entry's own
 listing label ("[Vol. X] Ch. Y" or "Ch. Y.Z" for a multi-part chapter — see
 CHAPTER_LABEL_RE), falling back to the chapter URL slug pattern
-"...-v{volume}c{chapter}.html" (VOLUME_CHAPTER_URL_RE) — confirmed stable on
+"...-v{volume}c{chapter}.html" or "...-c{chapter}.html" (VOLUME_CHAPTER_URL_RE) — confirmed stable on
 real chapter links — for anything the label regex can't resolve. If the live
 markup differs from what's assumed here, adjust CHAPTER_LIST_CONTAINER,
 CHAPTER_LABEL_RE, or VOLUME_CHAPTER_URL_RE below after inspecting the real
@@ -49,7 +49,7 @@ from app.config import settings
 logger = logging.getLogger("novels.scraper.cardboard")
 
 CHAPTER_LIST_CONTAINER = "#episodeNime"
-VOLUME_CHAPTER_URL_RE = re.compile(r"-v(\d+)c(\d+)(?:[.-]|$)", re.IGNORECASE)
+VOLUME_CHAPTER_URL_RE = re.compile(r"-(?:v(\d+))?c(\d+)(?:[.-]|$)", re.IGNORECASE)
 
 # The site's listing label is "[Vol. X] Ch. Y" — and for multi-part chapters
 # (e.g. an interlude split into several posts), "Ch. Y.Z" with a decimal
@@ -60,7 +60,7 @@ VOLUME_CHAPTER_URL_RE = re.compile(r"-v(\d+)c(\d+)(?:[.-]|$)", re.IGNORECASE)
 # specifically because it's the only place the decimal sub-part appears at
 # all; the URL is kept only as a fallback for links that don't match this.
 CHAPTER_LABEL_RE = re.compile(
-    r"^\[?\s*Vol\.?\s*(\d+)\s*\]?\s*Ch(?:apter|\.)?\s*(\d+(?:\.\d+)?)\.?\s*", re.IGNORECASE
+    r"^(?:\[?\s*Vol\.?\s*(\d+)\s*\]?\s*)?Ch(?:apter|\.)?\s*(\d+(?:\.\d+)?)\.?\s*", re.IGNORECASE
 )
 # Same label pattern but not anchored to the start — some listing entries
 # render the whole "[Vol.X] Ch.Y Title" block twice in a row (looks like a
@@ -116,7 +116,7 @@ def _guess_volume_chapter_from_url(url: str) -> tuple[int | None, float | None]:
     m = VOLUME_CHAPTER_URL_RE.search(url)
     if not m:
         return None, None
-    return int(m.group(1)), float(m.group(2))
+    return int(m.group(1) or 1), float(m.group(2))
 
 
 def _translate_date(raw_date: str) -> str:
@@ -139,7 +139,7 @@ def _clean_chapter_entry(raw_text: str) -> tuple[str, str | None, int | None, fl
     chapter_number = None
     label_match = CHAPTER_LABEL_RE.match(text)
     if label_match:
-        volume_number = int(label_match.group(1))
+        volume_number = int(label_match.group(1)) if label_match.group(1) else None
         chapter_number = float(label_match.group(2))
         text = text[label_match.end():].strip()
 
@@ -229,7 +229,7 @@ def _parse_chapter_list_html(list_html: str) -> list[ScrapedChapterRef]:
         )
 
     if not chapters:
-        # Fallback: no vNcN pattern matched anything -> bucket every link
+        # Fallback: no vNcN or cN pattern matched anything -> bucket every link
         # inside the container into volume 1, numbered by DOM order.
         for idx, a in enumerate(container.find_all("a", href=True), start=1):
             title, release_date, _, _ = _clean_chapter_entry(a.get_text(separator=" ", strip=True))
