@@ -576,6 +576,11 @@ class ReadyEstimates:
                 state = await self.get(db, uid, estimator, force=True, authoritative=authoritative, eager_scopes=requested)
                 if state is None:
                     self.eager.pop(uid, None)
+                    # An interim numeric response may already be visible. Let
+                    # the client retry through the native path after a failed
+                    # projection rather than waiting for an unrelated mutation.
+                    from app.library import events
+                    events.publish({'type': 'reading_estimate_updated', 'user_id': uid})
                 else:
                     pending = self.eager.get(uid, set())
                     pending.difference_update(state.refreshed_work)

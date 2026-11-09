@@ -34,6 +34,25 @@ class LastKnownEstimates(fixtures.ReadyEstimates):
         )
         self.assertGreater(result[key].remaining, 0)
 
+    async def test_unavailable_projection_signals_a_fresh_client_request(self):
+        await self.state()
+        import sqlite3
+        from app.library import events
+
+        with (
+            patch.object(
+                ready,
+                "revisions",
+                side_effect=sqlite3.OperationalError(
+                    "controlled derived revision failure"
+                ),
+            ),
+            patch.object(events, "publish") as published,
+        ):
+            self.assertIsNone(await ready.cache._refresh(1, authoritative=True))
+        self.assertNotIn(1, ready.cache.states)
+        published.assert_called_with({"type": "reading_estimate_updated", "user_id": 1})
+
     async def test_scope_identity_account_and_bounds(self):
         state = await self.state()
         values = LastEstimates(1, 2)
